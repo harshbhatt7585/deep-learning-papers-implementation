@@ -20,7 +20,7 @@ LR = 0.01
 MOMENTUM = 0.9
 CHECKPOINT_DIR = 'checkpoints/'
 
-device = torch.device('mps')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Input Image Dim = 256 x 256
 # Transformations - 

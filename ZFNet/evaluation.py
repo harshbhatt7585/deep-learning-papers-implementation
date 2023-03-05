@@ -12,7 +12,7 @@ def cal_accuracy(pred, y):
     return acc
 
 def evaluate(args):
-    device = torch.device('mps')
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # laod pre-trained model
     model = ZFNet().to(device)
