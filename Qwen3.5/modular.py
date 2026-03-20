@@ -1,4 +1,5 @@
-from typing import Any
+from typing import Any, Optional
+import torch
 
 
 class Qwen3NextRMSNormGated(nn.Module):
@@ -88,7 +89,120 @@ class Qwen3NextDynamicCache:
     @property
     def has_previous_state(self):
         return self.conv_states[self.last_linear_layer] is not None
+
     
+
+class Qwen3NextRotataryEmbedding():
+    @staticmethod
+    def compute_default_rope_parameters(
+        config: Qwen3NextConfig | None = None,
+        device: Optional["torch.device"] = None,
+        seq_len = int | None = None
+    ) -> tuple["torch.Tensor", float]:
+
+        base = config.rope_parameters["rope_theta"]
+        partial_rotary_factor = config.rope_parameters.get("partial_rotary_factor", 1.0)
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
+
+        attention_factor = 1.0
+
+        inv_freq = 1.0 / (
+            base ** torch (
+                torch.arange(0, dim, 2, dtype=int64).to(device=device, dtype=torch.float / dim) 
+            )
+        ) 
+        return inv_freq, attention_factor
+
+
+class Qwen3NextRMSNorm(Gemma3RMSNorm):
+    pass
+
+
+class Qwen3NextAttention(Qwen3MoeAttention):
+    def __init__(self, config: QwenNextConfig, layer_idx: int):
+        super().__init__(config, layer_idx)
+        self.q_proj = nn.Linear(
+            config.hidden_size, config.num_attetion_heads * self.head_dim * 2, bias=config.attention_bias
+        )
+        del self.sliding_window
+
     
+    def forward(
+        self, 
+        hidden_states: torch.Tensor,
+        positional_encodings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None,
+        past_key_values: Cache | None = None,
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        input_shape = hidden_states.shape[: -1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        query_states, gate = torch.chunk(
+            self.q_proj(
+                hidden_states
+            ).view(*input_shape, -1, self.head_dim * 2),
+            2, 
+            dim=-1
+        )
+
+        gate= gate.reshape(*input_shape, -1)
+
+        query_states = self.q_norm(query_states.view(
+            hidden_shape
+        )).transpose(1,2)
+        key_states = self.k_norm(
+            self.k_proj(hidden_states).view(hidden_shape)
+        ).transpose(1, 2)
+
+        value_states = self.v_proj(
+            hidden_states
+        ).view(hidden_shape).transpose(1,2)
+
+        cos, sin = positional_encodings
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states,
+            key_states,
+            cos,
+            sin
+        )
+        
+        if past_key_values is not None:
+            key_states, value_states = past_key_values.update(
+                key_states,
+                value_states,
+                self.layer_idx
+            )
+
+        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
+            self.config._attn_implementation, eager_attention_forward
+        )
+
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            **kwargs
+        )
+        attn_output = self.o_proj(attn_output)
+        return attn_output, attn_weights
+
+        
+
+
+
+
+        
+
+
+
+
+    
+
     
 
