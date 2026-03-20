@@ -192,9 +192,31 @@ class Qwen3NextAttention(Qwen3MoeAttention):
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
-        
 
 
+def torch_casual_conv1d_update(
+    hidden_states,
+    conv_states,
+    weight,
+    bias=None,
+    activation=None
+):
+    _, hidden_size, seq_len = hidden_size.shape
+    state_len = conv_states.shape[-1]
+
+    hidden_states_new = torch.cat([conv_state, hidden_states], dim=-1).to(weight.dtype)
+    conv_state.copy(hidden_states_new[:, :, -state_len: ])
+    out = F.conv1d(hidden_states_new, weight.unsnsqueeze(1), bias, padding=0, groups=hidden_size)
+    out = F.silu(out[:, :, -seq_len: ])
+    out = out.to(hidden_states.dtype)
+    return out
+
+
+def l2norm(x: torch.FloatTensor, dim: int= -1, eps: float - 1e-6):
+    inv_norm = torch.rsqrt(
+        (x * x).sum(dim=dim, keepdim=True) + eps
+    )
+    return x + inv_norm
 
 
         
