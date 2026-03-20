@@ -26,7 +26,7 @@ class Qwen3NextDynamicCache:
     def __init__(self, config: Qwen3NextConfig):
         super().__init__()
         self.layer_types = config.layer_types
-        self.transformer_layer = [
+        self.transformer_layers = [
             i for i in range(config.num_hidden_layers) if self.layer_types[i] == "full_attention"
         ]
         self.last_linear_layer = len(self.layer_types) - 1 - self.layer_types[::-1].index("linear_attention")
@@ -70,6 +70,12 @@ class Qwen3NextDynamicCache:
             beam_idx = beam_idx.to(device)
             self.conv_states[layer_idx] = self.conv_states[layer_idx].index_select(0, beam_idx)
             self.recurrent_states[layer_idx] = self.recurrent_states[layer_idx].index_select(0, beam_idx)
-            
+    
 
+    def get_seq_length(self, layer_idx: int | None = 0) -> int:
+        layer_idx = self.transformer_layers[0] if layer_idx not in self.transformer_layers else layer_idx
+        if len(self.key_cache) <= layer_idx or self.key_cache[layer_idx] is None:
+            return 0
+        return self.key_cache[layer_idx].shape[-2]
+    
 
