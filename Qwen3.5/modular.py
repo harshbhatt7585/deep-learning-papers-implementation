@@ -77,5 +77,18 @@ class Qwen3NextDynamicCache:
         if len(self.key_cache) <= layer_idx or self.key_cache[layer_idx] is None:
             return 0
         return self.key_cache[layer_idx].shape[-2]
+
+    
+    def get_mask_size(self, query_length: int, layer_idx: int) -> tuple[int, int]:
+        kv_offset = 0
+        past_seen_tokens = self.get_seq_length(layer_idx)
+        kv_length = query_length + past_seen_tokens
+        return kv_length, kv_offset
+    
+    @property
+    def has_previous_state(self):
+        return self.conv_states[self.last_linear_layer] is not None
+    
+    
     
 
