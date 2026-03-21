@@ -312,13 +312,89 @@ def torch_chunk_gated_delta_rule(
 
 
 
+class Qwen3_5GatedDeltaNet(nn.Module):
+    def __init__(self, config: Qwen3_5Config, layer_idx: int):
+        super().__init__()
 
+        self.hidden_size = config.hidden_size
+        self.num_v_heads = config.linear_num_value_heads
+        self.num_k_heads = config.linear_new_key_heads
+        self.head_k_dim = config.linear_key_head_dim
+        self.head_v_dim = config.linear_value_head_dim
+        self.key_dim = self.head_k_dim * self.num_k_heads
+        self.value_dim = self.head_v_dim * self.num_v_heads
 
+        self.conv_kernel_size = config.linear_conv_kernel_dim
+        self.layer_idx = layer_idx
+        self.activation = config.hidden_act
+        self.act = ACT2FN[config.hidden_act]
+        self.layer_norm_epsilon = config.rms_norm_eps
+
+        # QKV
+        self.conv_dim = self.key_dim * 2 + self.value_dim
+        self.conv1d = nn.Conv1d(
+            in_channels=self.conv_dim,
+            out_channels=self.conv_dim,
+            bias=False,
+            kernel_size=self.conv_kernel_size,
+            groups=self.conv_dim,
+            padding=self.conv_kernel_size - 1
+        )
+
+        self.dt_bias = nn.Parameter(
+            torch.ones(self.num_v_heads)
+        )
+
+        A = torch.empty(
+            self.num_v_heads
+        ).uniform(0, 16)
+
+        self.A_log = nn.Parameter(torch.log(A))
+
+        self.norm = (
+            Qwen3_5GatedDeltaNet(
+                self.head_v_dim,
+                eps=self.layer_norm_epsilon
+            )
+            if FusedRMSNormGated(
+                self.head_v_dim,
+                eps=self.layer_normalization,
+                activaition=self.activation,
+                device=torch.cuda.current_device(),
+                dtype=config.dtype if config.dtype is not None else torch.get_default_dtype(),
+            )
+        )
+        self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=True)
+
+        self.casual_conv1d_fn = casual_conv1d_fn
+        self.casual_conv1d_update = casual_conv1d_update or torch.casual_conv1d_update
+        self.chunk_gated_delta_rule = chunk_gated_delta_rule pr torch_chunk_gated_delta_rule
+        self.recurrent_gated_delta_rule = fused_recurrent_gated_delta_rule or torch_recurrent_gated_delta_rule
+
+        self.in_proj_qkv = nn.Linear(
+            self.hidden_size,
+            self.key_dim * 2 + self.value_dim,
+            bias=True
+        )            
+
+        self.in_proj_z = nn.Linear(
+            self.hidden_size, 
+            self.num_v_heads,
+            bias=True
+        )
+        self.in_proj_b = nn.Linear(
+            self.hidden_size,
+            self.num_v_heads,
+            bias=True
+        )
+
+        self.in_proj_a = nn.Linear(
+            self.hidden_size,
+            self.num_v_heads,
+            bias=True
+        )
 
         
-
-
-
 
     
 
