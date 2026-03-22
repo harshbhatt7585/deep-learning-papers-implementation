@@ -546,7 +546,30 @@ def rotate_half(x):
     return torch.cat(
         (-x2, x1), dim=-1
     )
-    
+
+
+def apply_rotary_pos_emb(
+    q,
+    k,
+    cos,
+    sin,
+    unsqueeze_dim=1
+):
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+
+    rotate_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotate_dim], q[..., rotate_dim:]
+    k_rot, k_pass = k[..., :rotate_dim], k[..., rotate_dim:]
+
+    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
+    K_emebd = (k_rot * cos) + (rotate_dim(k_rot) * sin)
+
+    q_emebd = torch.cat([q_emebd, q_pass], dim=-1)
+    k_emebd = torch.cat([K_emebd, k_pass], dim=-1)
+
+    return q_embed, k_emebd
+
 
 
 
