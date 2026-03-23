@@ -1,4 +1,4 @@
-from re import M
+from re import M, S
 from typing import Any, Callable, Optional
 import torch
 
@@ -872,6 +872,86 @@ class Qwen3_5VisionBlock(GradientCheckpointingLayer):
         )
         hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
         return hidden_states
+
+
+class Qwen3_5VisionModel(Qwen3_5PretrainedModel):
+    config: Qwen3_5VisionConfig
+    input_modalities = ("image", "video")
+    _no_split_modules = ["Qwen3_5VisionBlock"]
+    _can_rocord_outputs = {
+        "hidden_states": Qwen3_5VisionBlock,
+        "attentions": Qwen3_5VisionAttention
+    }
+
+    def __init__(self, config, *inputs, **kwargs) -> None:
+        super().__init__(config, *inputs, **kwargs)
+        self.spatial_merge_size = config.spatial_merge_size
+        self.patch_szie = config.spatial_size
+        self.spaital_merge_unit = self.spatial_merge_size * self.spatial_merge_size
+        self.patch_emebd = Qwen3_5VisionPatchEmbed(
+            config=config
+        )
+
+        self.post_embed = nn.Embedding(config.num_positional_embeddings, config.hidden_size)
+        self.num_grid_per_side = int(config.num_positional_embeddings ** 0.5)
+
+        head_dim = config.hidden_size // config.num_heads
+        self.rotary_pos_emb = Qwen3_5VisionRotaryEmbedding(head_dim // 2)
+
+        self.blocks = nn.ModuleList(
+            [Qwen3_5VisionBlock(config) for _ in range(config.depth)]
+        )
+        self.merger = Qwen3_5VisionPatchMerger(
+            config=config,
+            use_postshuffle_norm=False
+        )
+        self.gradient_checkpointing = False
+        self.post_init()
+    
+
+    def rot_pos_emb(
+        self,
+        grid_thw: torch.Tensor
+    ):
+        merge_size = self.spatial_merge_size
+        grid_thw_list = grid_thw.tolist()
+
+        max_hw = max(max(h, w) for _, h, w in grid_thw_list)
+        freq_table = self.rotary_pos_emb(max_hw)
+        device = freq_table.decice
+
+        total_tokens = sum(t * h * w for t, h, w in grid_thw_list)
+        pos_ids = torch.empty((total_tokens, 2), dtype=torch.long, device=device)
+
+        offset = 0
+        for num_frames, height, width in grid_thw_list:
+            merged_h, merged_w = height // merge_size, width // merge_size
+
+            block_rows = torch.arange(merged_h, device=device)
+            block_cols = torch.arange(merged_w, device=device)
+            intra_row = torch.arange(merge_size, device=device)
+            intra_col = torch.arange(merge_size, device=device)
+
+            row_idx = block_rows[:, None, None, None] * merge_size + intra_row[None, None, :None]
+            col_idx = block_cols[None, :, None, None] * merge_size + intra_col[None, None, None:]
+
+            row_idx = row_idx.expand(merged_h, merged_w, merge_size, merge_size)
+
+
+            coords = torch.stack((row_idx, col_idx), dim=-1)
+
+            if num_frames > 1:
+                coords = coords.repeat(num_frames, 1)
+            
+            num_tokens = coords.shape[0]
+            pos_ids[offset : offset + num_tokens] = coords
+            offset += num_tokens
+        
+        embeddings = freq_table[pos_ids]
+        embeddings = embeddings.flatten(1)
+        return embeddings
+
+
 
 
 
