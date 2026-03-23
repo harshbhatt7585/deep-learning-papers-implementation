@@ -792,5 +792,57 @@ class Qwen3_5RMSNorm(nn.Module):
         output = output * (1.0 + self.weight.float())
 
         return output.type_as(x)
+
+
+class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Qwen3_5TextConfig, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.layer_type = config.layer_types[layer_idx]
+        if self.layer_type == "linear_attention":
+            self.linear_attn = Qwen3_5GatedDeltaNet(config, layer_idx)
+        elif self.layer_type == "full_attention":
+            self.self_attn = Qwen3_5Attention(config, layer_idx)
         
+        self.mlp = Qwen3_5MLP(config, config.intermidate_size)
+        self.input_layernorm = Qwen3_5RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen3_5RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        postional_encodings: tuple[torch.tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None = None,
+        postion_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None
+    ):
+        hidden_states = self.input_layernorm(hidden_states)
+
+        if self.layer_type == "linear_attention":
+            hidden_states = self.linear_attn(
+                hidden_states=hidden_states,
+                cache_params=past_key_values,
+                attention_mask=attention_mask
+            )
+        
+        elif self.layer_type == "full_attention":
+            hidden_states, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                postion_ids=postion_ids,
+                past_key_values=past_key_values,
+                postional_encodings=postional_encodings,
+                **kwargs
+            )
+        
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        return hidden_states
+
+
     
