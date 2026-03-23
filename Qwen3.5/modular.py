@@ -776,4 +776,21 @@ class Qwen3_5MLP(nn.Module):
             self.gate_proj(x) * self.up_proj(x)
         ))
         return down_proj
+
+
+class Qwen3_5RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.zeros(dim))
+    
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+    
+    def forward(self, x):
+        output = self._norm(x.float())
+        output = output * (1.0 + self.weight.float())
+
+        return output.type_as(x)
+        
     
