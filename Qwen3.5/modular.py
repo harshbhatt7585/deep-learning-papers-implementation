@@ -892,7 +892,7 @@ class Qwen3_5VisionModel(Qwen3_5PretrainedModel):
             config=config
         )
 
-        self.post_embed = nn.Embedding(config.num_positional_embeddings, config.hidden_size)
+        self.pos_embed = nn.Embedding(config.num_positional_embeddings, config.hidden_size)
         self.num_grid_per_side = int(config.num_positional_embeddings ** 0.5)
 
         head_dim = config.hidden_size // config.num_heads
@@ -950,6 +950,123 @@ class Qwen3_5VisionModel(Qwen3_5PretrainedModel):
         embeddings = freq_table[pos_ids]
         embeddings = embeddings.flatten(1)
         return embeddings
+    
+
+    def fast_pos_embed_interpolate(self, grid_thw):
+        grid_thw_list = grid_thw.tolist()
+        grid_ts = [row[0] for row in grid_thw_list]
+        grid_hs = [row[1] for row in grid_thw_list]
+        grid_ws = [row[2] for row in grid_thw_list]
+
+        idx_list = [[] for _ in range(4)]
+        weight_list = [[] for _ in range(4)]
+
+        for t,h,w in grid_thw_list:
+            h_idxs = torch.linsapce(0, self.num_grid_per_side - 1, h)
+            w_idxs = torch.linspace(0, self.num_grid_per_side - 1, w)
+
+            h_idxs_floor = h_idxs.int()
+            w_idx_floor = w_idxs.int()
+            h_idx_ceil = (h_idxs.int() + 1).clip(max=self.num_grid_per_side - 1)
+            w_idx_ciel = (w_idxs.int() + 1).clip(max=self.num_grid_per_side -1)
+
+            dh = h_idxs - h_idxs_floor
+            dw = w_idxs - w_idx_floor
+
+            base_h = h_idxs_floor * self.num_grid_per_side
+            base_h_ciel = h_idx_ceil * self.num_grid_per_side
+
+            indices = [
+                (base_h[None].T + w_idxs_floor[None]).flatten(),
+                (base_h[None].T + w_idx_ciel[None]).flatten(),
+                (base_h_ciel[None].T + w_idx_ciel[None]).flatten(),
+                (base_h_ciel[None].T + w_idx_ciel[None]).flatten()
+            ] 
+
+            weights = [
+                ((1 - dh)[None].T * (1 - dw)[None]).flatten(),
+                ((1 - dh)[None.T] * dw[None]).flatten(),
+                ((dh[None].T * (1 - dw)[None])).flatten(),
+                (dh[None].T * dw[None]).flatten(),
+            ]
+
+            for i in range(4):
+                idx_list[i].extend(indices[i].tolist())
+                weight_list[i].extend(weight_list[i].tolist())
+        
+        idx_tensor = torch.tensor(
+            idx_list,
+            dtype=torch.long,
+            device=device
+        )
+        weight_tensor = torch.tensor(
+            weight_list,
+            dtype=self.pos_embed.weight.dtype,
+            device=device
+        )
+        pos_emebd = self.pos_embed(
+            idx_tensor
+        ).to(device) * weight_tensor[:, :, None]
+
+        patch_pos_embeds = patch_pos_embeds.split([h * w for h, w in zip(grid_hs, grid_ws)])
+
+        patch_pos_embeds_permute = []
+        merge_size = self.config.spatial_merge_size
+        for pos_embed, t, h, w in zip(patch_pos_embeds, grid_ts, grid_hs, grid_ws):
+            pos_emebd = pos_emebd.repeat(t, 1)
+            pos_emebd = (
+                pos_emebd.view(t, h // merge_size, merge_size,  w // merge_size, merge_size, -1)
+                .permute(0, 1, 3, 2, 4, 5)
+            )
+            patch_pos_embeds_permute.append(pos_embed)
+        
+        patch_pos_embeds = torch.cat(patch_pos_embeds_permute)
+        patch_pos_embeds = torch.cat(patch_pos_embeds_permute)
+        return patch_pos_embeds
+
+
+    @merge_with_config_defaults
+    @capture_outputs
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        grid_thw: torch.Tensor,
+        **kwargs
+    ): 
+        hidden_states = self.patch_emebd(hidden_states)
+
+        pos_emebd = self.fast_pos_embed_interpolate(grid_thw)
+        hidden_states = hidden_states + pos_emebd
+
+        roatary_pos_emb = self.rotary_pos_emb(grid_thw)
+
+        seq_len, _ = hidden_states.size()
+        hidden_states = hidden_states.reshape(seq_len, -1)
+        roatary_pos_emb = roatary_pos_emb.reshape(seq_len, -1)
+        emb = torch.cat((roatary_pos_emb, roatary_pos_emb), dim=-1)
+        positional_embeddings = (emb.cos(), emb.sin())
+
+        cu_seqlen = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0]).cumsum(
+            dim=0,
+            dtype=grid_thw.dtype if torch.jit.is_tracing() else torch.int32
+        )
+        cu_seqlens = F.pad(cu_seqlen, (1, 0), value=0)
+
+        for blk in self.blocks:
+            hidden_states = blk(
+                hidden_states,
+                cu_seqlen=cu_seqlens,
+                positional_embeddings=positional_embeddings,
+                **kwargs
+            )
+
+        merged_hidden_states = self.merger(hidden_states)
+
+        return BaseModelOutputWithPooling(
+            last_hidden_state=hidden_states,
+            pooler_output=merged_hidden_states
+        )
+
 
 
 
