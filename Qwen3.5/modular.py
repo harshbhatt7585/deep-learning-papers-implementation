@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from re import M, S
 from typing import Any, Callable, Optional
 import torch
@@ -1066,6 +1067,134 @@ class Qwen3_5VisionModel(Qwen3_5PretrainedModel):
             last_hidden_state=hidden_states,
             pooler_output=merged_hidden_states
         )
+
+@dataclass
+@auto_docstring(
+    custom_intro="""
+    Base Class for LLava outputs, with hidden states and attention
+    """
+)
+
+class Qwen3_5ModelOutputWithPast(ModelOutput):
+
+    last_hidden_state: torch.FloatTensor | None = None
+    past_key_values: Cache | None = None
+    hidden_states: tuple[torch.FloatTensor] | None = None
+    attentions: tuple[torch.FloatTensor] | None = None
+    rope_deltas: torch.LongTensor | None = None
+
+
+class Qwen3_5TextModel(Qwen3_5PretrainedModel):
+    config: Qwen3_5TextConfig
+
+    def __init__(self, config: Qwen3_5TextConfig):
+        super().__init__(config)
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size,
+            config.hidden_size,
+            config.pad_token_id
+        )
+        self.layers = nn.ModuleList(
+            [
+                Qwen3_5DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
+            ]
+        )
+        self.norm = Qwen3_5RMSNorm(
+            config.hidden_size,
+            eps=config.rms_norm_eps
+        )
+        self.rotary_emb = Qwen3_5TextRotaryEmbedding(
+            config=config
+        )
+        self.gradient_checkpointing = True
+        self.post_init()
+
+        @merge_with_congif_defaults
+        @capture_outputs
+        @auto_docstring
+        def forward(
+            self,
+            input_ids: torch.LongTensor,
+            attention_mask: torch.LongTensor,
+            positon_ids: torch.LongTensor,
+            past_key_values: Cache | None = None,
+            inputs_emebds: torch.FloatTensor = None,
+            use_cache: bool | None = None
+        ):
+            if (input_ids is None) ^ (inputs_emebds is not None):
+                raise ValueError(
+                    "You Must specify exactly one of input_ids or input_emebds"
+                )
+            
+            if inputs_emebds is None:
+                inputs_emebds = self.embed_tokens(input_ids)
+            
+            if use_cache and past_key_values is None:
+                past_key_values = Qwen3_5DynamicCache(config=self.config)
+            
+            if positon_ids is None:
+                past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+                position_ids = torch.arrange(inputs_emebds.shape[1], device=inputs_emebds.device) + past_seen_tokens
+                position_ids = positon_ids.view(1, 1, -1).expand(4, inputs_emebds.shape[0], -1)
+            
+            elif positon_ids.ndim == 2:
+                positon_ids = positon_ids[None, ...].expand(4, position_ids.shape[0], 1)
+            
+            if positon_ids.ndim == 3 and positon_ids.shape[0] == 4:
+                text_position_ids = positon_ids[0]
+                positon_ids = positon_ids[1: ]
+            
+            else:
+                text_position_ids = None
+            
+            casual_mask = create_casual_mask(
+                config=self.config,
+                input_emebds=inputs_emebds,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                position_ids=text_position_ids
+            )
+
+            linear_attn_mask = self._update_linear_attn_mask(
+                attention_mask, past_key_values
+            )
+            hidden_states = inputs_emebds
+            positonal_embeddings = self.roatary_emb(hidden_states, position_ids)
+
+            for layer_idx, decoder_layer in enumerate(self.layers[:, self.config.num_hidden_layers]):
+                layer_mask = linear_attn_mask if self.config.layer_types[layer_idx] == "linear_attention" else casual_mask
+
+                hidden_states = decoder_layer(
+                    hidden_states,
+                    positonal_embeddings=positonal_embeddings,
+                    attention_mask=layer_mask,
+                    position_ids=text_position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    **kwargs
+                )
+                hidden_states = self.norm(hidden_states)
+
+                return Qwen3_5ModelOutputWithPast(
+                    last_hidden_state=hidden_states,
+                    past_key_values=past_key_values
+                )
+        
+
+        def _update_linear_attn_mask(
+            self,
+            attention_mask,
+            past_key_values
+        ):
+            linear_attn_mask = attention_mask
+            if (past_key_values is not None) and past_key_values.has_previous_state or (
+                attention_mask is not None and torch.all(attention_mask == 1)
+            ):
+                linear_attn_mask = None
+
+            return linear_attn_mask
+        
+
 
 
 
