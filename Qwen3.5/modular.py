@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from nt import device_encoding
 from re import M, S
 from typing import Any, Callable, Optional
 import torch
@@ -1193,7 +1194,67 @@ class Qwen3_5TextModel(Qwen3_5PretrainedModel):
                 linear_attn_mask = None
 
             return linear_attn_mask
-        
+
+@auto_docstring
+class Qwen3_5Model(
+    Qwen3_5PreTrainedModel
+):
+    base_model_prefix = "model"
+    accept_loss_kwargs = False
+    config: Qwen3_5Config
+    _no_split_modules: ["Qwen3_5DecoderLayer", "Qwen3_5VisionBlock"]
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.visual = Qwen3_5VisonModel._from_config(config.vision_config)
+        self.language_model = Qwen3_5TextModel._from_config(config.text_config)
+        self.rope_deltas = None
+
+        self.post_init()
+    
+    def get_input_embeddings(self):
+        return self.language_model.get_input_embeddings()
+    
+    def set_input_embedding(self):
+        return self.language_model.set_input_embeddings(value)
+    
+    def get_vision_positon_ids(
+        self,
+        start_position: int,
+        grid_thw: list[int, int, int] | torch.Tensor
+        temp_merge_size: int = 1,
+        time_interval: int = 1,
+        device: str | torch.device | None = None
+    ):
+        llm_grid_t, llm_grid_h, llm_grid_w = (
+            grid_thw[0].item() // temp_merge_size,
+            grid_thw[1].item() // spatial_merge_size,
+            grid_thw[2].item() // spatial_merge_size
+        )
+
+        image_seq_len = llm_grid_h * llm_grid_w * llm_grid_t
+        position_width = torch.arange(
+            start_position,
+            start_positon + llm_grid_w,
+            device=device
+        ).repeat(
+            llm_grid_h * llm_grid_t
+        )
+        positon_height = torch.arange(
+            start_positon,
+            start_positon +  llm_grid_h,
+            device=device_encoding
+        ).repeat_interleave(
+            llm_grid_w * llm_grid_t
+        )
+        positon_temporal = torch.full((image_seq_len,), start_positon, device=device, dtype=torch.long)
+        position_temporal = positon_temporal * time_interval
+        vision_positon_ids = torch.stack(
+            [position_temporal,
+            positon_height,
+            position_width]
+        )
+        return vision_positon_ids
 
 
 
