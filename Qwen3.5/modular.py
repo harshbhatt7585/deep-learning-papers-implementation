@@ -1471,3 +1471,79 @@ class Qwen3_5Model(
             postiion_ids = None
         return positon_ids
 
+
+
+    @auto_docstring
+    @can_return_tuple
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        pixel_values_videos: torch.FloatTensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        video_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.IntTensor | None = None,
+        **kwargs: Unpack[TransformersKwargs]
+    ):
+        if (input_ids os None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_emebds")
+    
+        if inputs_embeds is None:
+            input_emebds = self.get_input_embeddings()(input_ids)
+        
+        if pixel_values is not None:
+            image_outputs: BaseModelOutputWithPooling = self.get_image_features(
+                pixel_values, image_grid_thw, return_dict=True
+            )
+            image_embds = image_outputs.pooler_output
+            image_embds = torch.cat(
+                image_embds,
+                dim=0
+            ).to(input_emebds.device, input_emebds.dtype)
+        
+        
+        if pixel_values_videos is not None:
+            video_outputs = self.get_video_features(
+                pixel_values_videos,
+                video_grid_thw,
+                return_dict=True
+            )
+            video_embeds = video_outputs.pooler_output
+            video_embeds = torch.cat(video_embeds, dim=0).to(input_emebds.device, input_emebds.dtype)
+            _, video_mask = self.get_placeholder_mask(
+                input_ids,
+                input_emebds=input_emebds,
+                video_features=video_embeds
+            )
+            input_emebds = input_emebds.masked_scatter(video_mask, video_embeds)
+        
+        if position_ids is None:
+            position_ids = self.compute_3d_position_ids(
+                input_ids=input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                input_emebds=inputs_embeds,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                mm_token_type_ids=mm_token_type_ids
+            )
+        
+        output = self.language_model(
+            input_ids=None,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            **kwargs
+        )
+    
+        return Qwen3_5ModelOutputWithPast(
+            **output,
+            rope_deltas=self.rope_deltas
+        )
+
+    
