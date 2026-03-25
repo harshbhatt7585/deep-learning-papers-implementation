@@ -1219,10 +1219,9 @@ class Qwen3_5Model(
     def set_input_embedding(self):
         return self.language_model.set_input_embeddings(value)
     
-    def get_vision_positon_ids(
-        self,
+    def get_vision_positon_ids(self,
         start_position: int,
-        grid_thw: list[int, int, int] | torch.Tensor
+        grid_thw: list[int, int, int] | torch.Tensor,
         temp_merge_size: int = 1,
         time_interval: int = 1,
         device: str | torch.device | None = None
@@ -1267,75 +1266,87 @@ class Qwen3_5Model(
         attention_mask: torch.Tensor | None = None,
         **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
-    if video_grid_thw is not None:
-        video_grid_thw = torch.repeat_interleave(
-            video_grid_thw,
-            video_grid_thw[:, 0],
-            dim=0
+        if video_grid_thw is not None:
+            video_grid_thw = torch.repeat_interleave(
+                video_grid_thw,
+                video_grid_thw[:, 0],
+                dim=0
+            )
+        spatial_merge_size = self.config.vision_config.spatial_merge_size
+
+        mrope_positon_deltas = []
+        positon_ids = torch.zeros(
+            3,
+            input_ids.shape[0],
+            input_ids.shape[1],
+            dtype=input_ids.dtype,
+            device=input_ids.device
         )
-    spatial_merge_size = self.config.vision_config.spatial_merge_size
+        grid_iters = {
+            1: iter(image_grid_thw) if image_seq_len is not None else None,
+            2: iter(image_grid_thw) if video_grid_thw is not None else None
+        }
 
-    mrope_positon_deltas = []
-    positon_ids = torch.zeros(
-        3,
-        input_ids.shape[0],
-        input_ids.shape[1],
-        dtype=input_ids.dtype,
-        device=input_ids.device
-    )
-    grid_iters = {
-        1: iter(image_grid_thw) if image_seq_len is not None else None,
-        2: iter(image_grid_thw) if video_grid_thw is not None else None
-    }
-
-    for batch_idx, current_input_ids in enumerate(input_ids):
-        input_token_type = mm_token_type_ids[batch_idx]
-        if attention_mask is not None:
-            current_input_ids = current_input_ids[attention_mask[batch_idx].bool()]
-            input_token_type = input_token_type[attention_mask[batch_idx].bool()]
-        
-        input_type_group = []
-        for key, group in itertools.groupby(enumerate(input_token_type.tolist()), lambda x: x[1]):
-            group = list(group)
-            start_index = group[0][0]
-            end_index = group[-1][0] + 1
-            input_type_group.append((key, start_index, end_index))
-        
-        current_pos = 0
-        llm_pos_ids_list = []
-        for modality_type, start_idx, end_idx in input_type_group:
-            if modality_type == 0:
-                text_len = end_idx - start_idx
-                llm_pos_ids_list.append(
-                    torch.arrange(text_len, device=input_ids.device).view(3, -1) + current_pos
-                )
-                current_pos += text_len
-            else:
-                grid_thw = next(grid_iters(modality_type))
-                vision_positon_ids = self.get_vision_positon_ids(
-                    current_pos, grid_thw, 1, spatial_merge_size,
-                    device=input_ids.device
-                )
-                llm_pos_ids_list.append(vision_positon_ids)
-                current_pos += max(grid_thw[1], grid_thw[2]) // spatial_merge_size
+        for batch_idx, current_input_ids in enumerate(input_ids):
+            input_token_type = mm_token_type_ids[batch_idx]
+            if attention_mask is not None:
+                current_input_ids = current_input_ids[attention_mask[batch_idx].bool()]
+                input_token_type = input_token_type[attention_mask[batch_idx].bool()]
             
+            input_type_group = []
+            for key, group in itertools.groupby(enumerate(input_token_type.tolist()), lambda x: x[1]):
+                group = list(group)
+                start_index = group[0][0]
+                end_index = group[-1][0] + 1
+                input_type_group.append((key, start_index, end_index))
+            
+            current_pos = 0
+            llm_pos_ids_list = []
+            for modality_type, start_idx, end_idx in input_type_group:
+                if modality_type == 0:
+                    text_len = end_idx - start_idx
+                    llm_pos_ids_list.append(
+                        torch.arrange(text_len, device=input_ids.device).view(3, -1) + current_pos
+                    )
+                    current_pos += text_len
+                else:
+                    grid_thw = next(grid_iters(modality_type))
+                    vision_positon_ids = self.get_vision_positon_ids(
+                        current_pos, grid_thw, 1, spatial_merge_size,
+                        device=input_ids.device
+                    )
+                    llm_pos_ids_list.append(vision_positon_ids)
+                    current_pos += max(grid_thw[1], grid_thw[2]) // spatial_merge_size
+                
+            
+            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
+            if attention_mask is not None:
+                positon_ids[:, batch_size, attention_mask[batch_size].bool()] = llm_positons.to(positon_ids.device)
+            else:
+                position_ids[:, batch_size] = llm_positions.to(positon_height.device)
+            
+            mrope_position_deltas.append(llm_position.max() + 1 - len(current_input_ids))
         
-        llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
-        if attention_mask is not None:
-            positon_ids[:, batch_size, attention_mask[batch_size].bool()] = llm_positons.to(positon_ids.device)
-        else:
-            position_ids[:, batch_size] = llm_positions.to(positon_height.device)
-        
-        mrope_position_deltas.append(llm_position.max() + 1 - len(current_input_ids))
-    
-    mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
-    return position_ids, mrope_position_deltas
+        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
+        return position_ids, mrope_position_deltas
     
 
 
 
 
 
+    @can_return_tuple
+    @auto_docstring
+    def get_video_features(
+        self,
+        pixel_values_videos: torch.FloatTensor,
+        video_grid_thw: torch.LongTensor | None = None,
+        **kwargs: Unpack[TrasnformersKwargs],
+    ) -> tuple | BaseModelOutputWithPooling:
+        return self.get_image_features(
+            pixel_values_videos,
+            video_grid_thw,
+            **kwargs
+        )
 
 
-    
