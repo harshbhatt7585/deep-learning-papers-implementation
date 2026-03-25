@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import itertools
 from nt import device_encoding
 from re import M, S
+from turtle import position
 from typing import Any, Callable, Optional
 import torch
 
@@ -1415,8 +1416,60 @@ class Qwen3_5Model(
 
             )
             return special_image_mask, special_video_mask
+    
+
         
 
+    def compute_3d_position_ids(
+        self,
+        input_ids: torch.Tensor | None,
+        input_emebds: torch.Tensor | None,
+        image_grid_thw: torch.Tensor | None,
+        video_grid_thw: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
+        past_key_values: torch.Tensor None = None,
+        mm_token_type_ids: torch.IntTensor | None = None
+    ):
+        past_key_values_length = 0 if past_key_values_length is None else past_key_values.get_seq_length()
+        has_multimodal = image_grid_type_ids is not None or video_grid_thw is not None
+        if has_multimodal and mm_token_type_ids is None and input_ids is not None:
+            raise ValueError(
+                "Multimodal data was passed (via `image_grid_thw` or `video_grid_thw`) but `mm_token_type_ids` is "
+                "missing. Please pass `mm_token_type_ids` to the model so that multimodal RoPE (M-RoPE) can be "
+                "computed correctly. `mm_token_type_ids` is returned by the processor alongside `input_ids`."
+            )
+        can_compute_mrope = input_ids is not None and mm_token_type_ids is not None and has_multimodal
 
+        if can_compute_mrope and (self.rope_deltas is None or past_key_values_length == 0):
+            positon_ids, rope_deltas = self.get_rope_index(
+                input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
+                mm_token_type_ids=mm_token_type_ids
+            )
+        
+            self.rope_deltas = rope_deltas
+    
+        elif self.rope_deltas is not None and (past_key_values_length > 0 or input_ids is None):
+            batch_size, seq_length, _ = input_emebds.shape
+            if attention_mask is not None:
+                positon_ids = attention_mask.long().cumsum(-1) - 1
+                position_ids = attention_ids.masked_fill(attention_mask == 0, 0)
+                position_ids = position_ids.view(-1, batch_size, -1).repeat(3, 1, 1).to(input_emebds.device)
+            else:
+                position_ids = torch.arange(
+                    past_key_values_length,
+                    past_key_values_length + seq_length
+                ) 
+                position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1).to(input_embeds.device)
+            delta = self.rope_deltas.repeat_interleave(
+                batch_size // self.rope_deltas.shape[0],
+                dim=0
+            )
+            position_ids = position_ids + deltas.to(device=input_embeds.device)
+        else:
+            postiion_ids = None
+        return positon_ids
 
 
