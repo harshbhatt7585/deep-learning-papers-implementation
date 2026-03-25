@@ -1354,7 +1354,7 @@ class Qwen3_5Model(
     def get_image_features(
         self,
         pixel_values: torch.FloatTensor,
-        image_grid_thw: torch.LongTensor | None = None
+        image_grid_thw: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformerKwargs],
     ) -> tuple | BaseModelOutputWithPooling:
         pixel_values = pixel_values.type(self.visual.dtype)
