@@ -1349,4 +1349,28 @@ class Qwen3_5Model(
             **kwargs
         )
 
+    @can_return_tuple
+    @auto_docstring
+    def get_image_features(
+        self,
+        pixel_values: torch.FloatTensor,
+        image_grid_thw: torch.LongTensor | None = None
+        **kwargs: Unpack[TransformerKwargs],
+    ) -> tuple | BaseModelOutputWithPooling:
+        pixel_values = pixel_values.type(self.visual.dtype)
+        vision_output = self.visual(
+            pixel_values,
+            grid_thw=image_grid_thw,
+            return_dict=True,
+            **kwargs
+        )
+        image_emebds = vision_output.pooler_output
+        split_sizes = (image_grid_thw.prod(-1) // self.visual.spatual_merge_size**2)
+        image_emebds = torch.split(image_emebds, split_sizes)
+        vision_output.pooler_output = image_emebds
+
+        return vision_output
+        
+
+
 
