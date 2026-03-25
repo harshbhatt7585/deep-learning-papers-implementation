@@ -1370,7 +1370,53 @@ class Qwen3_5Model(
         vision_output.pooler_output = image_emebds
 
         return vision_output
+    
+    def get_placeholder_mask(
+        self,
+        input_ids: torch.LongTensor,
+        input_emebds: torch.FloatTesnor,
+        image_features: torch.FloatTensor | None = None,
+        video_features: torch.FloatTensor | None = None
+    ):
+        """
+        Obtains multimodal placeholder mask from `input_ids` or `inputs_embeds`, and checks that the placeholder token count is
+        equal to the length of multimodal features. If the lengths are different, an error is raised.
+        """
+        if input_ids is None:
+            special_image_mask = input_embeds == self.get_input_embeddings()(
+                torch.tensor(self.config.image_token_id, dtype=torch.long, device=input_embeds.device)
+            )
+            special_image_mask = special_image_mask.all(-1)
+            special_video_mask = input_emebds == self.get_input_embeddings()(
+                torch.tensor(self.config.video_token_id, dtype=torch.long, device=input_emebds.device)
+            )
+            special_video_mask = special_video_mask.all(-1)
+        else:
+            special_image_mask = input_ids == self.config.image_token_id
+            special_video_mask = input_ids == self.config.video_token_id
         
+        n_image_tokens = special_merge_mask.sum()
+        special_image_mask = special_image_mask.unsqueeze(-1).expand_as(input_embeds).to(input_emebds.device)
+
+        if image_features is not None:
+            torch_compilation_check(
+                input_embeds[special_image_mask].numel() == image_features.numel(),
+                f"Image features and image tokens do not match, tokens: {n_image_tokens}, features: {image_features.shape[0]}",
+
+            )
+        
+        n_video_tokens = special_video_mask.sum()
+        special_video_mask = special_video_mask.unsquqeeze(-1).expand_as(input_emebds).to(input_embeds.device)
+
+        if video_features is not None:
+            torch_compliation(
+                input_emebds[special_video_mask].numel() == video_features.numel(),
+                f"Video features and video tokens do not match, tokens: {n_video_tokens}, features: {video_features.shape[0]}",
+
+            )
+            return special_image_mask, special_video_mask
+        
+
 
 
 
