@@ -1428,8 +1428,7 @@ class Qwen3_5Model(
         video_grid_thw: torch.Tensor | None,
         attention_mask: torch.Tensor | None,
         past_key_values: torch.Tensor None = None,
-        mm_token_type_ids: torch.IntTensor | None = None
-    ):
+        ):
         past_key_values_length = 0 if past_key_values_length is None else past_key_values.get_seq_length()
         has_multimodal = image_grid_type_ids is not None or video_grid_thw is not None
         if has_multimodal and mm_token_type_ids is None and input_ids is not None:
@@ -1471,5 +1470,4 @@ class Qwen3_5Model(
         else:
             postiion_ids = None
         return positon_ids
-
 
