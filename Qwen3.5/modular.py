@@ -1,3 +1,4 @@
+from cProfile import label
 from dataclasses import dataclass
 import itertools
 from nt import device_encoding
@@ -1546,4 +1547,66 @@ class Qwen3_5Model(
             rope_deltas=self.rope_deltas
         )
 
+@auto_docstring
+class Qwen3_5ForCasualLM(Qwen3_5PreTrainedModel, GenerationMixin):
+    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    _tp_plan = {"lm_head": "colwise_gather_output"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+    _config: Qwen3_5TextConfig
+    _keys_to_ignore_on_load_unexpected = [r"^mtp.*", r"^model.visual.*"]
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = Qwen3_5TextModel(config)
+        self.vocab_size = config.vocab_size
+        self.lm_head = nn.Linear(
+            config.hidden_size, 
+            config.vocab_size,
+            bias=False
+        )
+        self.post_init()
+
     
+    @can_return_tuple
+    @auto_docstring
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        positon_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_emeds: torch.FloatTensor | None = None,
+        use_cache: bool | None = None,
+        logits_to_keep: int | torch.Tensor = 0
+    ):
+        outputs: BaseModelOutputWithPast = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            positon_ids=positon_ids,
+            past_key_values=past_key_values,
+            inputs_emeds=inputs_emeds,
+            use_cache=use_cache,
+            **kwargs
+        )
+        hidden_states = outputs.last_hidden_state
+
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(
+            hidden_states[:, slice_indices, :]
+        )
+        loss = None
+        if labels is not None:
+            loss = self.loss_funcation(
+                logits=logits,
+                labels=labels
+                vocab_size=self.config.vocab_size,
+                **kwargs
+            )
+
+            return CasualLMOutputWithPast(
+                loss=loss,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.atttentions
+            )
