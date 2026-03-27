@@ -36,3 +36,24 @@ class QwenRotaryEmbedding(torch.nn.Module):
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 
 
+def apply_rotary_pos_emd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    unsqueeze_dim: int = 1
+) -> tuple[torch.Tensor, torch.Tensor]:
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+
+    rotary_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+
+    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
+    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
+
+    q_emebd = torch.cat([q_emebd, q_pass], dim=-1)
+    k_emebd = torch.cat([k_emebd, k_pass], dim=-1)
+
+    return q_embed, k_emebd
