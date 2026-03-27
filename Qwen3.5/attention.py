@@ -1,8 +1,8 @@
 import torch
 from torch import nn
-from .norm import Qwen35RMSNorm
-from .rope import apply_rotary_pos_emd
-from .utils import repeat_kv
+from norm import Qwen35RMSNorm
+from rope import apply_rotary_pos_emd
+from utils import repeat_kv
 
 
 
@@ -81,3 +81,8 @@ class Qwen35Attention(nn.Module):
         attn_output = attn_output.reshape(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate)
         return attn_output
+
+if __name__ == "__main__":
+    a = torch.randn(4,5,20)
+    b = Qwen35Attention(a)
+    print(b.shape)
