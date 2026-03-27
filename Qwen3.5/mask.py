@@ -22,3 +22,4 @@ def build_casual_mask(
     
     padding_mask = (1.0 - attenton_mask[:, None, None, :].to(dtype) * min_value)
     return casual + padding_mask
+
