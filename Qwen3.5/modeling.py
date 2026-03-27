@@ -1,4 +1,4 @@
-from cProfile import label
+from Profile import label
 from dataclasses import dataclass
 import itertools
 from nt import device_encoding
