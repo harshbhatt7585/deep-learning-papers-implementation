@@ -12,7 +12,7 @@ class Qwen35DynamicCache:
         self.conv_states = [None for _ in range(config.num_hidden_layers)]
         self.recurrent_states = [None for _ in range(config.num_hidden_layers)]
         self.key_cache = [None for _ in range(config.num_hidden_layers)]
-        self.value_cache = [None for _ in range(config _ in range(config.num_hidden_layers))]
+        self.value_cache = [None for _ in range(config.num_hidden_layers)]
 
     
     def update(self, key_states, value_states, layer_idx):
@@ -50,3 +50,7 @@ class Qwen35DynamicCache:
     def has_previous_state(self) -> bool:
         return self.conv_states[self.last_linear_layer] is not None
 
+
+if __name__ == "__main__":
+    a = torch.randn(2, 4, 5, 32)
+    print(a.shape)
