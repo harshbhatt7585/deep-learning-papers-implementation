@@ -1,8 +1,12 @@
+from timeit import repeat
 import torch
 from torch import nn
 from norm import Qwen35RMSNorm
 from rope import apply_rotary_pos_emd
 from utils import repeat_kv
+
+from types import SimpleNamespace
+import torch
 
 
 
@@ -13,7 +17,7 @@ class Qwen35Attention(nn.Module):
         self.layer_idx = layer_idx
         self.head_dim = config.head_dim
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.attention_dropout = self.attention_dropout
+        self.attention_dropout = config.attention_dropout
 
         self.q_proj = nn.Linear(
             config.hidden_size,
@@ -66,13 +70,20 @@ class Qwen35Attention(nn.Module):
         gate= gate.reshape(*input_shape, -1)
 
         query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).trasnpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = positon_embeddings
         query_states, key_states = apply_rotary_pos_emd(query_states,key_states, cos, sin)
 
         if past_key_values is not None:
+            attn_weights = attn_weights + attention_mask
+        
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
+        if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
         
         attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -84,5 +95,18 @@ class Qwen35Attention(nn.Module):
 
 if __name__ == "__main__":
     a = torch.randn(4,5,20)
-    b = Qwen35Attention(a)
-    print(b.shape)
+    config = SimpleNamespace(
+          hidden_size=20,
+          num_attention_heads=4,
+          num_key_value_heads=2,
+          head_dim=20,
+          attention_dropout=0.0,
+          attention_bias=False,
+          rms_norm_eps=1e-6,
+      )
+    cos = torch.ones(4, 5, 20)
+    sin = torch.zeros(4, 5, 20)
+    mask = None
+    model = Qwen35Attention(config, 1)
+    o = model(a, (cos, sin), mask)
+    print(o)

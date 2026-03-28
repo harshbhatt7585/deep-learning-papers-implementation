@@ -53,7 +53,7 @@ def apply_rotary_pos_emd(
     q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
     k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
 
-    q_emebd = torch.cat([q_emebd, q_pass], dim=-1)
-    k_emebd = torch.cat([k_emebd, k_pass], dim=-1)
+    q_embed = torch.cat([q_embed, q_pass], dim=-1)
+    k_embed = torch.cat([k_embed, k_pass], dim=-1)
 
-    return q_embed, k_emebd
+    return q_embed, k_embed

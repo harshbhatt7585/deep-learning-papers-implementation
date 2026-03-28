@@ -12,7 +12,7 @@ class Qwen35RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.zeros(dim))
 
     def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        return x * rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
