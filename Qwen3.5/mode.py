@@ -1,3 +1,5 @@
+from torch import nn
+
 class Qwen35CasualModel(nn.Module):
     def __init__(self, config):
         super().__init__()
