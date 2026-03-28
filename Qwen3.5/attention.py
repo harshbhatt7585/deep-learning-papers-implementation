@@ -89,7 +89,7 @@ class Qwen35Attention(nn.Module):
         
         attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_output = torch.matmul(attn_weights, value_states)
-        attn_output = attn_output.transpose(1, 2).contagious()
+        attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate)
         return attn_output
