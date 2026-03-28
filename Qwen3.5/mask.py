@@ -24,5 +24,12 @@ def build_causal_mask(
     return causal + padding_mask
 
 
-# if __name__ == "__main__":
-
+if __name__ == "__main__":
+    print(build_causal_mask(
+        torch.randn(4,20),
+        4,
+        20,
+        20,
+        'cpu',
+        torch.float32
+    ))
