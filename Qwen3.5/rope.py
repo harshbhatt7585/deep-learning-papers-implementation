@@ -10,7 +10,7 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 class QwenRotaryEmbedding(torch.nn.Module):
-    def __init__(self, config: device=None):
+    def __init__(self, config, device=None):
         super().__init__()
         base = config.base_parameters["rope_theta"]
         partial_rotary_factor = config.rope_parameters.get("partial_rotary_factor", 1.0)
