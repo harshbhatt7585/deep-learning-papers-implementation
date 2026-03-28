@@ -1,4 +1,5 @@
 import torch
+from types import SimpleNamespace
 
 
 class Qwen35DynamicCache:
@@ -53,4 +54,15 @@ class Qwen35DynamicCache:
 
 if __name__ == "__main__":
     a = torch.randn(2, 4, 5, 32)
+    config = SimpleNamespace(
+        num_hidden_layers=4,
+        layer_types=[
+              "linear_attention",
+              "full_attention",
+              "linear_attention",
+              "full_attention",
+          ],
+        
+    )
+    cache = Qwen35DynamicCache(config)
     print(a.shape)
