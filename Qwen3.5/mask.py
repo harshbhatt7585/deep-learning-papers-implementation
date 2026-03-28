@@ -1,7 +1,7 @@
 import torch
 
-def build_casual_mask(
-    attenton_mask: torch.Tensor | None,
+def build_causal_mask(
+    attention_mask: torch.Tensor | None,
     batch_size: int,
     query_length: int,
     kv_length: int,
@@ -9,17 +9,20 @@ def build_casual_mask(
     dtype: torch.dtype
 )-> torch.Tensor:
     min_value = torch.finfo(dtype).min
-    casual = torch.full((query_length, kv_length), min_value, device=device, dtype=dtype)
-    casual = torch.triu(casual, diagonal= 1 + kv_length - query_length)
-    casual = casual.unsqueeze(0).unsqueeze(0).expand(
+    causal = torch.full((query_length, kv_length), min_value, device=device, dtype=dtype)
+    causal = torch.triu(causal, diagonal= 1 + kv_length - query_length)
+    causal = causal.unsqueeze(0).unsqueeze(0).expand(
         batch_size,
         1,
         query_length,
         kv_length
     )
-    if attenton_mask is None:
-        return casual
+    if attention_mask is None:
+        return causal
     
-    padding_mask = (1.0 - attenton_mask[:, None, None, :].to(dtype) * min_value)
-    return casual + padding_mask
+    padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype) * min_value)
+    return causal + padding_mask
+
+
+# if __name__ == "__main__":
 
