@@ -1,4 +1,5 @@
 from __future__ import annotations
+from math import e
 from multiprocessing import Value
 
 import torch
@@ -37,4 +38,34 @@ class Qwen35TextModel(nn.Module):
 
         batch_size, seq_len, _ = input_emebds.shape
 
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        if positon_ids is None:
+            positon_ids = torch.arange(seq_len, device=input_emebds.shape) + past_seen_tokens
+            positon_ids = positon_ids.view(1, -1).expand(batch_size, -1)
+        
+        rope_positon_ids = positon_ids[None, ...].expand(3, batch_size, -1)
+        positonal_embeddings = self.rotary_emb(input_emebds, rope_positon_ids)
+
+        kv_length = seq_len + past_seen_tokens
+        casual_mask = build_casual_mask(
+            attenton_mask=attention_mask,
+            batch_size=batch_size,
+            query_length=seq_len,
+            kv_length=kv_length,
+            device=input_emebds.device,
+            dtype=input_emebds.dtype
+        )
+
+        hidden_states = input_emebds
+
+        for layer in self.layers:
+            layer_mask = attention_mask if getattr(layer, "layer_type", None) == "linear_attention" else casual_mask
+            hidden_states = layer(
+                hidden_states,
+                positonal_embeddings=positonal_embeddings,
+                attention_mask=layer_mask,
+                past_key_values=past_key_values
+            )
+        hidden_states = self.norm(hidden_states)
+        return hidden_states, past_key_values
         
