@@ -17,6 +17,7 @@ class Qwen35Attention(nn.Module):
         self.layer_idx = layer_idx
         self.head_dim = config.head_dim
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.scaling = self.head_dim ** -0.5
         self.attention_dropout = config.attention_dropout
 
         self.q_proj = nn.Linear(
