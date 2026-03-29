@@ -5,7 +5,7 @@ import torch
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., : x.shape[-1] // 2: ]
+    x2 = x[..., x.shape[-1] // 2: ]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -57,3 +57,6 @@ def apply_rotary_pos_emd(
     k_embed = torch.cat([k_embed, k_pass], dim=-1)
 
     return q_embed, k_embed
+
+
+if __name__ == "__main__":
