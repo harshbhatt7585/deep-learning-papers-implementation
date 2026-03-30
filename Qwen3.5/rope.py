@@ -57,6 +57,3 @@ def apply_rotary_pos_emd(
     k_embed = torch.cat([k_embed, k_pass], dim=-1)
 
     return q_embed, k_embed
-
-
-if __name__ == "__main__":
