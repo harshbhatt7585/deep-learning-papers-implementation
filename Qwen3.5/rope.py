@@ -16,7 +16,7 @@ class QwenRotaryEmbedding(torch.nn.Module):
         partial_rotary_factor = config.rope_parameters.get("partial_rotary_factor", 1.0)
         dim = int(config.head_dim * partial_rotary_factor)
         inv_freq = 1.0 / (
-            base ** (torch.arrange(0, dim, 2, dtype=torch.float(), device=device) / dim)
+            base ** (torch.arrange(0, dim, 2, dtype=torch.float, device=device) / dim)
         )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
     
@@ -57,3 +57,4 @@ def apply_rotary_pos_emd(
     k_embed = torch.cat([k_embed, k_pass], dim=-1)
 
     return q_embed, k_embed
+
