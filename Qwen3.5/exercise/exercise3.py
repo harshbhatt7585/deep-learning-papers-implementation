@@ -21,7 +21,7 @@ class RotaryPosEmbedding(nn.Module):
             1
         )
 
-        freq = inv_feq_expanded @ positon_ids
+        freq = inv_feq_expanded @ positon_ids[:, :, None, :].float()
         emb = torch.cat((freq, freq), dim=-1)
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 
