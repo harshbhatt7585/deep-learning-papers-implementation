@@ -1,4 +1,5 @@
 from __future__ import annotations
+from random import uniform
 
 import torch
 import torch.nn.functional as F
@@ -72,6 +73,115 @@ def torch_recurrent_gated_delta_rule(query, key, value, g, beta, inital_state, o
         last_recurrent_state = None
     
     return core_attn_out.transpose(1, 2).contiguous().to(inital_dtype), last_recurrent_state
-    
+
+
+
+class Qwen35GatedDeltaNet(nn.Module):
+    def __init__(self, config, layer_idx: int):
+        super().__init__()
+        
+        self.hidden_size = config.hidden_size
+        self.num_v_heads = config.linear_num_value_heads
+        self.num_k_heads = config.linear_num_key_heads
+        self.head_k_dim = config.linear_key_head_dim
+        self.head_v_dim = config.linear_value_head_dim
+        self.key_dim = self.head_k_dim * self.num_k_heads
+        self.value_dim = self.head_v_dim * self.num_v_heads
+        self.conv_kernel_size = config.linear_conv_kernel_dim
+        self.layer_idx = layer_idx
+
+        self.conv_dim = self.key_dim * 2 + self.value_dim
+        self.conv1d = nn.Conv1d(
+            in_channels=self.conv_dim,
+            out_channels=self.conv_dim,
+            bias=True,
+            kernel_size=self.conv_kernel_size,
+            groups=self.conv_dim,
+            padding=self.conv_kernel_size - 1,
+        )
+
+        self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
+        self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads),uniform_(0, 16)))
+        self.norm = Qwen35RMSNormGated(self.head_v_dim, eps=config.rms_norm_eps)
+        self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=True)
+
+        self.in_proj_qkv = nn.Linear(self.hidden_size, self.key_dim * 2 + self.value_dim, bias=True) # how to read and write memory
+        self.in_proj_z = nn.Linear(self.hidden_size, self.value_dim, bias=True) # a gating signal for the output norm
+        self.in_proj_b = nn.Linear(self.hidden_size, self.num_v_heads, bias=True) # how strongly to write 
+        self.in_proj_a = nn.Linear(self.hidden_size, self.num_v_heads, bias=True) # how strongly to forget
+
 
     
+    def forward(self, hidden_states, cache_params=None, attention_mask=None):
+        hidden_states = apply_mask_to_padding_states(hidden_states)
+        batch_size, seq_len, _ = hidden_states.shape
+        
+        use_precomputed_states = cache_params is not None and cache_params.has_previous_state and seq_len == 1
+        conv_state = cache_params.conv_states[self.layer_idx] if cache_params is not None else None
+        recurrent_state = cache_params.recurrent_states[self.layer_idx] if cache_params is not None else None
+
+        mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
+        z = self.in_proj_z(hidden_states).reshape(batch_size, seq_len, -1, self.head_v_dim)
+        b = self.in_proj_b(hidden_states)
+        a = self.in_proj_a(hidden_states)
+
+        if use_precomputed_states:
+            mixed_qkv = torch_casual_conv1d_update(
+                mixed_qkv,
+                conv_state,
+                self.conv1d.weight.squeeze(1),
+                self.conv1d.bias
+            )
+        
+        else:
+            if cache_params is not None:
+                conv_state = F.pad(mixed_qkv, (self.conv_kernel_size - mixed_qkv.shape[-1], 0))
+                cache_params.conv_states[self.layer_idx] = conv_state
+
+            mixed_qkv = F.silu(self.conv1d(mixed_qkv))[:, :, :seq_len]
+        
+        mixed_qkv = mixed_qkv.transpose(1, 2)
+        query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
+        query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
+        key = key.reshape(batch_size, seq_len - 1, self.head_k_dim)
+        value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
+
+        beta = b.sigmoid()
+        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+
+        if self.num_v_heads // self.num_k_heads > 1:
+            rep = self.num_v_heads // self.num_k_heads
+            query = query.repeat_interleave(rep, dim=2)
+            key = key.repeat_interleave(rep, dim=2)
+        
+        if use_precomputed_states:
+            core_attn_out, last_recurrent_state = torch_recurrent_gated_delta_rule(
+                query,
+                key,
+                value,
+                g,
+                beta,
+                recurrent_state,
+                cache_params is not None
+            )
+        
+        else:
+            core_attn_out, last_recurrent_state = torch_chunk_gated_delta_rule(
+                query,
+                key,
+                value, 
+                g,
+                beta,
+                inital_state=None,
+                output_final_state=cache_params is not None
+            )
+        
+        if cache_params is not None:
+            cache_params.recurrent_states[self.layer_idx] = last_recurrent_state
+        
+        core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
+        z = z.reshape(-1, self.head_v_dim)
+        core_attn_out = self.norm(core_attn_out, z)
+        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+        return self.out_proj(core_attn_out)
+        
