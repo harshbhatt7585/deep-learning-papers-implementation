@@ -21,17 +21,9 @@ class RotaryEmbedding(nn.Module):
         # x: [batch, heads, seq_len, dim]
         # position_ids: [batch, ids]
         # inv_freq: [freq]
-
-        if postion_ids.dim() == 2:
-            postion_ids = postion_ids[None, :, :].expand(3, x.shape[0], -1)
-        
-        
-        inv_freq = self.inv_freq[None, None, :, None].float().expand(postion_ids.shape[0], postion_ids.shape[1], -1, 1)
-        
-        freq = (inv_freq @ postion_ids[:, :, None, :].float()).transpose(2, 3)
-        # create pairs
+        freq = postion_ids[:, :, None].float() * self.inv_freq[None, None, :]
         emb = torch.cat((freq, freq), dim=-1)
-        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
+        return emb.cos()[:, None, :, :].to(dtype=x.dtype), emb.sin()[:, None, :, :].to(dtype=x.dtype)
 
 
 def rotate_half(x: torch.Tensor):
@@ -79,5 +71,7 @@ if __name__ == "__main__":
     position_ids = torch.arange(20).unsqueeze(0).expand(4, -1)
     cos, sin = rope(q, position_ids)
 
-    print(apply_rope(q, k, cos, sin))
+    print(cos.shape)
+    print(q.shape)
 
+    print(apply_rope(q, k, cos, sin))
