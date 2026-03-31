@@ -36,9 +36,9 @@ if __name__ == "__main__":
         dim=20
     )
     model = RotaryPosEmbedding(config)
-    print(model(
+    model(
         torch.randn(4, 4, 20, 20),
         torch.arange(0, 20).unsqueeze(0).expand(4, -1)
-    ))
+    )
 
         
