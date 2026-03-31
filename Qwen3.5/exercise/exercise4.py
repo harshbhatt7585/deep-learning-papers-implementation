@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 
 class RotaryEmbedding(nn.Module):
     def __init__(
@@ -6,6 +7,7 @@ class RotaryEmbedding(nn.Module):
         config,
         device,
     ):
+        super().__init__()
         self.dim = config.dim
         self.factor = config.factor
         self.theta = config.theta
@@ -20,16 +22,16 @@ class RotaryEmbedding(nn.Module):
         # position_ids: [batch, ids]
         # inv_freq: [freq]
 
-        if postion_ids.dim == 2:
+        if postion_ids.dim() == 2:
             postion_ids = postion_ids[None, :, :].expand(3, x.shape[0], -1)
         
         
-        inv_freq = self.inv_freq[None, None, None,  -1].expand(postion_ids.shape[0], postion_ids[1], 1, -1)
+        inv_freq = self.inv_freq[None, None, :, None].float().expand(postion_ids.shape[0], postion_ids.shape[1], -1, 1)
         
         freq = inv_freq @ postion_ids[:, :, None, :].float()
         # create pairs
         emb = torch.cat((freq, freq), dim=-1)
-        return emb.cos(dtype=x.dtype), emb.sin(dtype=x.dtype)
+        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 
 
 def rotate_half(x: torch.Tensor):
@@ -62,3 +64,18 @@ def apply_rope(
 
     return q_emebd, k_emebd
 
+
+
+if __name__ == "__main__":
+    from types import SimpleNamespace
+    config = SimpleNamespace(
+        dim=20,
+        factor=1.0,
+        theta=10000
+    )
+    rope = RotaryEmbedding(config, 'cpu')
+    
+    q = torch.randn(4, 8, 20, 20)
+    k = torch.randn(4, 8, 20, 20)
+    position_ids = torch.arange(20).unsqueeze(0).expand(4, -1)
+    print(rope(q, position_ids))
