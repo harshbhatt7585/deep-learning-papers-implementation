@@ -30,4 +30,35 @@ class RotaryEmbedding(nn.Module):
         # create pairs
         emb = torch.cat((freq, freq), dim=-1)
         return emb.cos(dtype=x.dtype), emb.sin(dtype=x.dtype)
-        
+
+
+def rotate_half(x: torch.Tensor):
+    # x: [batch, heads, seq_len, dim]
+
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2: ]
+    return torch.cat((-x1, x2), dim=-1)
+
+
+
+def apply_rope(
+    self, 
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor
+):
+    rot_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rot_dim], q[..., rot_dim:]
+    k_rot, k_paas = k[..., :rot_dim], k[..., rot_dim:]
+
+    # q_rot: [batch, heads, seq_len, rot_dim]
+
+    q_emebd = (q_rot * cos) + (rotate_half(q_rot) * sin)
+    k_emebd = (k_rot * cos) + (rotate_half(k_rot) * sin)
+
+    q_emebd = torch.cat((q_emebd, q_pass), dim=-1)
+    k_emebd = torch.cat((k_emebd, k_paas), dim=-1)
+
+    return q_emebd, k_emebd
+
