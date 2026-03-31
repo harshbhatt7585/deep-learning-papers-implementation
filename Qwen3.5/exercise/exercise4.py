@@ -11,7 +11,7 @@ class RotaryEmbedding(nn.Module):
         self.dim = config.dim
         self.factor = config.factor
         self.theta = config.theta
-        self.inv_freq = 1.0 /  ( self.theta ** (torch.arange(0, config.dim, 2, dtype=torch.float, device=device) / 2) )
+        self.inv_freq = 1.0 /  ( self.theta ** (torch.arange(0, config.dim, 2, dtype=torch.float, device=device) / self.dim) )
     
     def forward(
         self,
@@ -28,7 +28,7 @@ class RotaryEmbedding(nn.Module):
         
         inv_freq = self.inv_freq[None, None, :, None].float().expand(postion_ids.shape[0], postion_ids.shape[1], -1, 1)
         
-        freq = inv_freq @ postion_ids[:, :, None, :].float()
+        freq = (inv_freq @ postion_ids[:, :, None, :].float()).transpose(2, 3)
         # create pairs
         emb = torch.cat((freq, freq), dim=-1)
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
@@ -44,7 +44,6 @@ def rotate_half(x: torch.Tensor):
 
 
 def apply_rope(
-    self, 
     q: torch.Tensor,
     k: torch.Tensor,
     cos: torch.Tensor,
@@ -78,4 +77,7 @@ if __name__ == "__main__":
     q = torch.randn(4, 8, 20, 20)
     k = torch.randn(4, 8, 20, 20)
     position_ids = torch.arange(20).unsqueeze(0).expand(4, -1)
-    print(rope(q, position_ids))
+    cos, sin = rope(q, position_ids)
+
+    print(apply_rope(q, k, cos, sin))
+
