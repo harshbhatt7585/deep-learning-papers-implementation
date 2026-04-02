@@ -24,6 +24,8 @@ class Qwen35TextModel(nn.Module):
         )
         self.norm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen35RotaryEmbedding(config)
+        self.layers = nn.ModuleList([Qwen35DecoderLayer(config, i) for i in range(config.num_hidden_layers)])
+
     
 
     def forward(self, input_ids=None, attention_mask=None, positon_ids=None, past_key_values=None, input_emebds=None, use_cache=True):
