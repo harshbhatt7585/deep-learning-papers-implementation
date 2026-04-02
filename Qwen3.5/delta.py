@@ -1,34 +1,47 @@
-from sys import last_exc
-import config
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .norm import Qwen35RMSNormGated
+from norm import Qwen35RMSNormGated
 
-def apply_mask_to_padding_states(hidden_states, attention_mask):
+
+def apply_mask_to_padding_states(hidden_states: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
     if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
-        dtype = hidden_states.dtype
-        hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
-    
+        hidden_states = hidden_states * attention_mask[:, :, None].to(hidden_states.dtype)
     return hidden_states
 
 
-def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6):
-    inv_norm = torch.sqrt((x * x).sum(dim=dim, keepdim=True))
+def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
+    inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)
     return x * inv_norm
 
 
-def torch_causal_conv1d_update(hidden_states, conv_state, weight, bias=None):
+def torch_causal_conv1d_update(
+    hidden_states: torch.Tensor,
+    conv_state: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
     _, hidden_size, seq_len = hidden_states.shape
     state_len = conv_state.shape[-1]
     hidden_states_new = torch.cat([conv_state, hidden_states], dim=-1).to(weight.dtype)
     conv_state.copy_(hidden_states_new[:, :, -state_len:])
     out = F.conv1d(hidden_states_new, weight.unsqueeze(1), bias, padding=0, groups=hidden_size)
-    out = F.silu(out[:, :, -seq_len])
+    out = F.silu(out[:, :, -seq_len:])
     return out.to(hidden_states.dtype)
 
-def torch_recurrent_gated_delta_rule(query, key, value, g, beta, initial_state, output_final_state):
+
+def torch_recurrent_gated_delta_rule(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    initial_state: torch.Tensor | None,
+    output_final_state: bool,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     initial_dtype = query.dtype
     query = l2norm(query, dim=-1)
     key = l2norm(key, dim=-1)
@@ -39,12 +52,25 @@ def torch_recurrent_gated_delta_rule(query, key, value, g, beta, initial_state, 
 
     batch_size, num_heads, sequence_length, k_head_dim = key.shape
     v_head_dim = value.shape[-1]
-    scale = 1 / (query.shape[-1] ** 0.5)
-    query = query * scale
+    query = query * (1 / (query.shape[-1] ** 0.5))
 
-    core_attn_out = torch.zeros(batch_size, num_heads, sequence_length, v_head_dim, device=value.device, dtype=value.dtype)
+    core_attn_out = torch.zeros(
+        batch_size,
+        num_heads,
+        sequence_length,
+        v_head_dim,
+        device=value.device,
+        dtype=value.dtype,
+    )
     last_recurrent_state = (
-        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim, device=value.device, dtype=value.dtype)
+        torch.zeros(
+            batch_size,
+            num_heads,
+            k_head_dim,
+            v_head_dim,
+            device=value.device,
+            dtype=value.dtype,
+        )
         if initial_state is None
         else initial_state.to(value)
     )
@@ -67,7 +93,20 @@ def torch_recurrent_gated_delta_rule(query, key, value, g, beta, initial_state, 
 
     return core_attn_out.transpose(1, 2).contiguous().to(initial_dtype), last_recurrent_state
 
-    
+
+def torch_chunk_gated_delta_rule(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    initial_state: torch.Tensor | None,
+    output_final_state: bool,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    # The chunked implementation is an optimization. The recurrent path is easier
+    # to validate and produces the same sequence outputs for inference.
+    return torch_recurrent_gated_delta_rule(query, key, value, g, beta, initial_state, output_final_state)
+
 
 class Qwen35GatedDeltaNet(nn.Module):
     def __init__(self, config, layer_idx: int):
@@ -102,7 +141,12 @@ class Qwen35GatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
         self.in_proj_a = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
 
-    def forward(self, hidden_states, cache_params=None, attention_mask=None):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cache_params=None,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -144,11 +188,23 @@ class Qwen35GatedDeltaNet(nn.Module):
 
         if use_precomputed_states:
             core_attn_out, last_recurrent_state = torch_recurrent_gated_delta_rule(
-                query, key, value, g, beta, recurrent_state, cache_params is not None
+                query,
+                key,
+                value,
+                g,
+                beta,
+                recurrent_state,
+                cache_params is not None,
             )
         else:
             core_attn_out, last_recurrent_state = torch_chunk_gated_delta_rule(
-                query, key, value, g, beta, initial_state=None, output_final_state=cache_params is not None
+                query,
+                key,
+                value,
+                g,
+                beta,
+                initial_state=recurrent_state,
+                output_final_state=cache_params is not None,
             )
 
         if cache_params is not None:

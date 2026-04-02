@@ -1,73 +1,104 @@
 from __future__ import annotations
-from math import e
-from multiprocessing import Value
 
 import torch
 from torch import nn
 
-
-from .cache import Qwen35DynamicCache
-from .decoder import Qwen35DecoderLayer
-from .mask import build_casual_mask
-from .norm import Qwen35RMSNorm
-from .rope import Qwen35RotaryEmbedding
+from cache import Qwen35DynamicCache
+from decoder import Qwen35DecoderLayer
+from mask import build_causal_mask
+from norm import Qwen35RMSNorm
+from rope import Qwen35RotaryEmbedding
 
 
 class Qwen35TextModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.embed_tokens = nn.Embedding(
-            config.vocab_size,
-            config.hidden_size,
-            config.pad_token_id
-        )
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.layers = nn.ModuleList([Qwen35DecoderLayer(config, i) for i in range(config.num_hidden_layers)])
         self.norm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen35RotaryEmbedding(config)
-        self.layers = nn.ModuleList([Qwen35DecoderLayer(config, i) for i in range(config.num_hidden_layers)])
 
-    
+    def forward(
+        self,
+        input_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: Qwen35DynamicCache | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        use_cache: bool = True,
+    ) -> tuple[torch.Tensor, Qwen35DynamicCache | None]:
+        if (input_ids is None) == (inputs_embeds is None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-    def forward(self, input_ids=None, attention_mask=None, positon_ids=None, past_key_values=None, input_emebds=None, use_cache=True):
-        if (input_ids is None) == (input_emebds is None):
-            raise ValueError("You must specify exactly one of input_ids or input_emebds")
-        
-        if input_emebds is None:
-            input_emebds = self.embed_tokens(input_ids)
-        
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
         if use_cache and past_key_values is None:
             past_key_values = Qwen35DynamicCache(self.config)
 
-        batch_size, seq_len, _ = input_emebds.shape
+        batch_size, seq_len, _ = inputs_embeds.shape
 
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-        if positon_ids is None:
-            positon_ids = torch.arange(seq_len, device=input_emebds.shape) + past_seen_tokens
-            positon_ids = positon_ids.view(1, -1).expand(batch_size, -1)
-        
-        rope_positon_ids = positon_ids[None, ...].expand(3, batch_size, -1)
-        positonal_embeddings = self.rotary_emb(input_emebds, rope_positon_ids)
+        if position_ids is None:
+            position_ids = torch.arange(seq_len, device=inputs_embeds.device) + past_seen_tokens
+            position_ids = position_ids.view(1, -1).expand(batch_size, -1)
+
+        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_len + past_seen_tokens),
+                device=inputs_embeds.device,
+                dtype=inputs_embeds.dtype,
+            )
 
         kv_length = seq_len + past_seen_tokens
-        casual_mask = build_casual_mask(
-            attenton_mask=attention_mask,
+        causal_mask = build_causal_mask(
+            attention_mask=attention_mask,
             batch_size=batch_size,
             query_length=seq_len,
             kv_length=kv_length,
-            device=input_emebds.device,
-            dtype=input_emebds.dtype
+            device=inputs_embeds.device,
+            dtype=inputs_embeds.dtype,
         )
 
-        hidden_states = input_emebds
-
+        hidden_states = inputs_embeds
         for layer in self.layers:
-            layer_mask = attention_mask if getattr(layer, "layer_type", None) == "linear_attention" else casual_mask
+            layer_mask = attention_mask if layer.layer_type == "linear_attention" else causal_mask
             hidden_states = layer(
                 hidden_states,
-                positonal_embeddings=positonal_embeddings,
+                position_embeddings=position_embeddings,
                 attention_mask=layer_mask,
-                past_key_values=past_key_values
+                past_key_values=past_key_values,
             )
+
         hidden_states = self.norm(hidden_states)
         return hidden_states, past_key_values
-        
+
+
+class Qwen35ForCausalLM(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.model = Qwen35TextModel(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: Qwen35DynamicCache | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        use_cache: bool = True,
+    ) -> tuple[torch.Tensor, Qwen35DynamicCache | None]:
+        hidden_states, past_key_values = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+        )
+        logits = self.lm_head(hidden_states)
+        return logits, past_key_values

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
 @dataclass
 class Qwen35Config:
     vocab_size: int
@@ -30,8 +31,10 @@ class Qwen35Config:
     linear_conv_kernel_dim: int
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "Qwen35Config":
-        data = json.loads(Path(path).read_text())
+    def from_dict(cls, data: dict[str, Any]) -> "Qwen35Config":
+        if "text_config" in data:
+            data = data["text_config"]
+
         return cls(
             vocab_size=data["vocab_size"],
             hidden_size=data["hidden_size"],
@@ -55,3 +58,8 @@ class Qwen35Config:
             linear_value_head_dim=data["linear_value_head_dim"],
             linear_conv_kernel_dim=data["linear_conv_kernel_dim"],
         )
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "Qwen35Config":
+        data = json.loads(Path(path).read_text())
+        return cls.from_dict(data)

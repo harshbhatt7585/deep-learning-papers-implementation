@@ -21,14 +21,16 @@ class Qwen35RotaryEmbedding(torch.nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if position_ids.ndim == 2:
-            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+        if position_ids.ndim == 3:
+            position_ids = position_ids[0]
+        elif position_ids.ndim != 2:
+            raise ValueError(f"Expected 2D or 3D position ids, got shape {tuple(position_ids.shape)}")
 
-        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(
-            position_ids.shape[0], position_ids.shape[1], -1, 1
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(
+            position_ids.shape[0], -1, 1
         )
-        position_ids_expanded = position_ids[:, :, None, :].float()
-        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
+        position_ids_expanded = position_ids[:, None, :].float()
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 
