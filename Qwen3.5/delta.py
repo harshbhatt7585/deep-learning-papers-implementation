@@ -150,7 +150,7 @@ class Qwen35GatedDeltaNet(nn.Module):
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
 
-        use_precomputed_states = cache_params is not None and cache_params.has_previous_state and seq_len == 1
+        use_precomputed_states = cache_params is not None and cache_params.has_previous_state(self.layer_idx) and seq_len == 1
         conv_state = cache_params.conv_states[self.layer_idx] if cache_params is not None else None
         recurrent_state = cache_params.recurrent_states[self.layer_idx] if cache_params is not None else None
 
@@ -169,7 +169,7 @@ class Qwen35GatedDeltaNet(nn.Module):
         else:
             if cache_params is not None:
                 conv_state = F.pad(mixed_qkv, (self.conv_kernel_size - mixed_qkv.shape[-1], 0))
-                cache_params.conv_states[self.layer_idx] = conv_state
+                cache_params.update_conv_state(conv_state, self.layer_idx)
             mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
 
         mixed_qkv = mixed_qkv.transpose(1, 2)
@@ -208,7 +208,7 @@ class Qwen35GatedDeltaNet(nn.Module):
             )
 
         if cache_params is not None:
-            cache_params.recurrent_states[self.layer_idx] = last_recurrent_state
+            cache_params.update_recurrent_state(last_recurrent_state, self.layer_idx)
 
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)

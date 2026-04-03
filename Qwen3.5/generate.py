@@ -3,10 +3,18 @@ from __future__ import annotations
 import torch
 
 
+def _unpack_model_output(output):
+    if isinstance(output, tuple):
+        return output[0], output[1]
+    if hasattr(output, "logits"):
+        return output.logits, getattr(output, "past_key_values", None)
+    raise TypeError(f"Unsupported model output type: {type(output)!r}")
+
+
 @torch.no_grad()
 def greedy_generate(model, input_ids, attention_mask=None, max_new_tokens: int = 32):
     model.eval()
-    logits, cache = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
+    logits, cache = _unpack_model_output(model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
     generated = input_ids
 
     for _ in range(max_new_tokens):
@@ -26,11 +34,13 @@ def greedy_generate(model, input_ids, attention_mask=None, max_new_tokens: int =
                 dim=1,
             )
 
-        logits, cache = model(
-            input_ids=next_token,
-            attention_mask=attention_mask,
-            past_key_values=cache,
-            use_cache=True,
+        logits, cache = _unpack_model_output(
+            model(
+                input_ids=next_token,
+                attention_mask=attention_mask,
+                past_key_values=cache,
+                use_cache=True,
+            )
         )
 
     return generated

@@ -44,7 +44,8 @@ class Qwen35TextModel(nn.Module):
             position_ids = torch.arange(seq_len, device=inputs_embeds.device) + past_seen_tokens
             position_ids = position_ids.view(1, -1).expand(batch_size, -1)
 
-        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        rope_position_ids = position_ids[None, ...].expand(3, batch_size, -1)
+        position_embeddings = self.rotary_emb(inputs_embeds, rope_position_ids)
 
         if attention_mask is None:
             attention_mask = torch.ones(

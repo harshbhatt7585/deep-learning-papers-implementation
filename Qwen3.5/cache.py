@@ -46,9 +46,20 @@ class Qwen35DynamicCache:
             return 0
         return self.key_cache[layer_idx].shape[-2]
 
+    def has_previous_state(self, layer_idx: int) -> bool:
+        return self.conv_states[layer_idx] is not None
+
+    def update_conv_state(self, conv_state: torch.Tensor, layer_idx: int) -> torch.Tensor:
+        self.conv_states[layer_idx] = conv_state
+        return conv_state
+
+    def update_recurrent_state(self, recurrent_state: torch.Tensor | None, layer_idx: int) -> torch.Tensor | None:
+        self.recurrent_states[layer_idx] = recurrent_state
+        return recurrent_state
+
 
     @property
-    def has_previous_state(self) -> bool:
+    def has_any_previous_state(self) -> bool:
         return self.conv_states[self.last_linear_layer] is not None
 
 
