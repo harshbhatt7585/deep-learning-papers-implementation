@@ -86,4 +86,8 @@ def load_weights(model, model_dir: str | Path):
     model_dir = Path(model_dir)
     state_dict = remap_state_dict_keys(_load_sharded_state_dict(model_dir))
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if hasattr(model, "tie_weights"):
+        model.tie_weights()
+        if getattr(getattr(model, "config", None), "tie_word_embeddings", False):
+            missing = [key for key in missing if key != "lm_head.weight"]
     return missing, unexpected

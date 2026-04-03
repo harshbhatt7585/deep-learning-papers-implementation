@@ -29,6 +29,7 @@ class Qwen35Config:
     linear_key_head_dim: int
     linear_value_head_dim: int
     linear_conv_kernel_dim: int
+    tie_word_embeddings: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Qwen35Config":
@@ -57,6 +58,7 @@ class Qwen35Config:
             linear_key_head_dim=data["linear_key_head_dim"],
             linear_value_head_dim=data["linear_value_head_dim"],
             linear_conv_kernel_dim=data["linear_conv_kernel_dim"],
+            tie_word_embeddings=data.get("tie_word_embeddings", False),
         )
 
     @classmethod

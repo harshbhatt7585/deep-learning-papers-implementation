@@ -37,7 +37,7 @@ def load_tokenizer(model_dir):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-id", default="tiny-random/qwen3.5")
+    parser.add_argument("--model-id", default="Qwen/Qwen3.5-2B")
     parser.add_argument("--prompt", default="Hello from Qwen3.5")
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--device", default="cpu")

@@ -81,8 +81,14 @@ class Qwen35TextModel(nn.Module):
 class Qwen35ForCausalLM(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.model = Qwen35TextModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.tie_weights()
+
+    def tie_weights(self):
+        if getattr(self.config, "tie_word_embeddings", False):
+            self.lm_head.weight = self.model.embed_tokens.weight
 
     def forward(
         self,
