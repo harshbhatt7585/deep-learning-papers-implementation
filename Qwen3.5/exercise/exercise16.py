@@ -119,3 +119,43 @@ class GatedDeltaNet(nn.Module):
     
 
 
+class RoPE(nn.Module):
+    def __init__(
+        self,
+        config
+    ):
+        self.rotary_factor = config.rotaty_factor
+        self.theta = config.theta
+        self.dim = config.dim
+
+        self.inv_feq = 1.0 / (
+            torch.arange(0, self.dim, 2) / self.dim
+        )
+
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        position_ids: torch.Tensor
+    ):
+        # x: [batch, seq_len, dim]
+        # pos: [batch, seq_len]
+
+        # we need to convert pos into 3 times
+        position_ids = position_ids[None, ...].expand(3, position_ids.shape[-1], -1)
+
+        # pos: [3, batch, seq_len]
+
+        # inv_freq: [dim]
+        
+        inv_frq_expaded = self.inv_feq[None, None, :, None].float().expand(
+            position_ids.shape[0], position_ids[1], -1, 1 
+        )
+        # inv_frq_expended: [3, batch, dim, 1]
+        position_ids_expanded = position_ids[:, :, None, :].float() # [3, batch, 1, seq_len]
+        freqs = (inv_frq_expaded @ position_ids_expanded) # [3, batch, dim, seq_len]
+        freqs = freqs.transpose(2, 3) # [3, batch, seq_len, dim]
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
+        
+        
