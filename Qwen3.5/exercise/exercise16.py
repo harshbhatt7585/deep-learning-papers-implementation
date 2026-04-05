@@ -2,9 +2,12 @@
 
 from re import S
 from tokenize import group
+from attention import Qwen35Attention
 from delta import apply_mask_to_padding_states
-from exercise.exercise10 import batch_size, seq_len
+from exercise.exercise10 import batch_size, position_embeddings, seq_len
 from exercise.exercise5 import torch_casual_conv1d_update
+from mlp import Qwen35MLP
+from norm import Qwen35RMSNorm
 from torch import nn
 import torch
 
@@ -157,5 +160,56 @@ class RoPE(nn.Module):
         freqs = freqs.transpose(2, 3) # [3, batch, seq_len, dim]
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
+
+    
         
+
+class Decoder(nn.Module):
+    def __init__(self, config, layer_idx: int) -> None:
+        super().__init__()
         
+        self.layer_type = config.layer_types[layer_idx]
+        
+        if self.layer_type == "linear_attention":
+            self.linear_attn = GatedDeltaNet(config=config, layer_idx=layer_idx)
+        
+        elif self.layer_type == "full_attention":
+            self.self_attn = Qwen35Attention(config, layer_idx)
+        
+        else:
+            raise ValueError("Not suported!")
+        
+        self.mlp = Qwen35MLP(config)
+        self.input_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        postion_embeddings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None = None,
+        past_key_value=None
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+
+        if self.layer_type == "linear_attention":
+            hidden_states = self.linear_attn(
+                hidden_states=hidden_states,
+                cache_params=past_key_value,
+                attention_mask=attention_mask
+            )
+        
+        else:
+            hidden_states = self.self_attn(
+                hidden_states=hidden_states,
+                position_embeddings=postion_embeddings,
+                attention_mask=attention_mask,
+                past_key_value=past_key_value
+            )
+        hidden_states = residual + hidden_states
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return residual + hidden_states
