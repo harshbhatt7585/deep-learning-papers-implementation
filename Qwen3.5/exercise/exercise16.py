@@ -24,7 +24,7 @@ class RMSNorm(nn.Module):
     
     def forward(self, x: torch.Tensor):
         out = self._norm(x)
-        out = out * (1 + self.weight)
+        out = out * (1.0 + self.weight)
         return out.to(dtype=x.dtype)
 
 
