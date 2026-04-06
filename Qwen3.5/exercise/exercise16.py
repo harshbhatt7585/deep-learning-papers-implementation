@@ -53,9 +53,8 @@ class Attention(nn.Module):
     ):
         self.hidden_size = config.hidden_size
         self.num_attention_heads = config.num_attention_heads
-        self.num_k_heads = config.num_k_heads
-        self.num_v_heads = config.num_v_heads
-        self.num_kv_group = self.num_k_heads // self.num_v_heads
+        self.num_kv_heads = config.num_kv_heads
+        self.num_kv_group = self.num_k_heads // self.num_kv_heads
         self.head_dim = config.head_dim
         self.scaling = self.head_dim ** 0.5
 
