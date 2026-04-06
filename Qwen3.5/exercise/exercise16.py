@@ -5,7 +5,7 @@ from tokenize import group
 from attention import Qwen35Attention
 import attention
 from delta import apply_mask_to_padding_states
-from exercise.exercise10 import batch_size, position_embeddings, seq_len
+from exercise.exercise10 import batch_size, hidden_states, position_embeddings, seq_len
 from exercise.exercise5 import torch_casual_conv1d_update
 from mlp import Qwen35MLP
 from norm import Qwen35RMSNorm
@@ -86,7 +86,38 @@ class Attention(nn.Module):
             self.hidden_size,
             bias=config.attention_bias
         )
+    
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        positon_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ):
+        # hidden_states: [batch, seq_len, hidden_size]
+        # position_ids: [batch, seq_len]
+        # attention_mask: [batch, seq_len]
+        batch_size, seq_len, hidden_size = hidden_states.shape
+
+        query_proj = self.query(hidden_states) #  [batch, seq_len, self.num_attention_heads * self.head_dim * 2]
+        query_states, gate = torch.chunk(query_proj, dim=-1)
         
+        query_states = query_states.reshape(batch_size, self.num_attention_heads, seq_len, self.head_dim) # [batch, seq_len, num_attention_heads, head_dim]
+        gate = gate.reshape(batch_size, self.num_attention_heads, seq_len, self.head_dim)  # [batch, seq_len, num_attention_heads, head_dim]
+
+        query_states = query_states.transpose(1, 2) # [batch, attention_heads, seq_len, head_dim]
+
+        key_states = self.key(hidden_size) # [batch, seq_len, num_kv_heads * head_dim]
+        key_states = key_states.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        key_states = key_states.transpose(1, 2) # [batch,  kv_heads, seq_len, head_dim]
+
+        value_states = self.value(hidden_size)
+        value_states = value_states.resahpe(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        value_states = value_states.transpose(1, 2) # [batch, kv_heads, seq_len, head_dim]
+
+        
+
+
 
 
 
