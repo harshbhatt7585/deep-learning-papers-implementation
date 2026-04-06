@@ -12,6 +12,25 @@ from norm import Qwen35RMSNorm
 from torch import nn
 import torch
 
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.zeros(dim))
+    
+    def _norm(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+    
+    def forward(self, x: torch.Tensor):
+        out = self._norm(x)
+        out = out * (1 + self.weight)
+        return out.to(dtype=x.dtype)
+
+
+
+
+
 class GatedDeltaNet(nn.Module):
     def __init__(
         self,
