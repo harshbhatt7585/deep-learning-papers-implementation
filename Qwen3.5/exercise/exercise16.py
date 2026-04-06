@@ -93,7 +93,7 @@ class Attention(nn.Module):
         hidden_states: torch.Tensor,
         positon_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        past_key_values = None
+        cache_param = None
     ):
         # hidden_states: [batch, seq_len, hidden_size]
         # position_ids: [batch, seq_len]
@@ -116,8 +116,9 @@ class Attention(nn.Module):
         value_states = value_states.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         value_states = value_states.transpose(1, 2) # [batch, kv_heads, seq_len, head_dim]
 
-
-
+        if cache_param is not None:
+            key_states, value_states = cache_param.update(key_states, value_states)
+            
 
 
 class GatedDeltaNet(nn.Module):
