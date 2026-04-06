@@ -161,6 +161,57 @@ class RoPE(nn.Module):
         freqs = freqs.transpose(2, 3) # [3, batch, seq_len, dim]
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
+    
+
+
+class DynamicCache:
+    def __init__(
+        self,
+        config
+    ):
+        self.layer_types = config.layer_types
+        self.transformer_layers = [
+            i for i in range(config.num_hidden_layers)
+            if self.layer_types[i] == "fulL_attention"
+        ]
+        
+        self.last_linear_layer = len(self.layer_types) - 1 - self.layer_types[::-1].index("linear_attention")
+
+        self.conv_states = [None for _ in range(config.num_hidden_layers)]
+        self.recurrent_sates = [None for _ in range(config.num_hidden_layers)]
+        self.key_cache = [None for _ in range(config.num_hidden_layers)]
+        self.value_cache = [None for  _ in range(config.num_hidden_layers)]
+
+    
+    def update(
+        self,
+        key_states,
+        value_states,
+        layer_idx
+    ):
+        if self.key_cache[layer_idx] is None:
+            self.key_cache[layer_idx] = key_states
+            self.value_cache[layer_idx] = value_states
+
+        else:
+            self.key_cache[layer_idx] = torch.cat(self.key_cache[layer_idx], key_states)
+            self.value_cache[layer_idx] = torch.cat(self.value_cache[layer_idx], value_states)
+        
+        return self.key_cache[layer_idx], self.value_cache[layer_idx]
+    
+    
+    @property
+    def has_previous_state(self) -> bool:
+        return self.conv_states[self.last_linear_layer] is not None
+
+    
+    def get_seq_len(self, layer_idx: int | None = 0) -> int:
+        if not self.transformer_layers:
+            return 0
+        
+        layer_idx = self.transformer_layers[0] if layer_idx not in self.transformer_layers else layer_idx
+        return self.key_cache[layer_idx].shape[-2]
+
 
     
         
@@ -340,7 +391,7 @@ if __name__ == "__main__":
 
     input_ids = torch.randint((1, 32))
     input_embds = torch.randn((1, 128))
-    
+
     
 
 
