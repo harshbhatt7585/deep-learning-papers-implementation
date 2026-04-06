@@ -45,6 +45,27 @@ class RMSNormGated(nn.Module):
         return hidden_states.to(input_dtype)
 
 
+class Attention(nn.Module):
+    def __init__(
+        self,
+        config,
+        layer_idx: int 
+    ):
+        self.hidden_size = config.hidden_size
+        self.num_attention_heads = config.num_attention_heads
+        self.num_k_heads = config.num_k_heads
+        self.num_v_heads = config.num_v_heads
+        self.num_kv_group = self.num_k_heads // self.num_v_heads
+        self.head_dim = config.head_dim
+        self.scaling = self.head_dim ** 0.5
+
+
+        self.in_proj = nn.Linear(
+            self.hidden_size,
+            
+        )
+        
+
 
 class GatedDeltaNet(nn.Module):
     def __init__(
