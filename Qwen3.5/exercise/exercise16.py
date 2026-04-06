@@ -118,7 +118,15 @@ class Attention(nn.Module):
 
         if cache_param is not None:
             key_states, value_states = cache_param.update(key_states, value_states)
-            
+        
+        attn_weight = query_states @ key_states.transpose(1, 2)
+        attn_weight = attn_weight * self.scaling
+        attn_weight = torch.softmax(attn_weight, dim=-1)
+
+
+
+
+
 
 
 class GatedDeltaNet(nn.Module):
