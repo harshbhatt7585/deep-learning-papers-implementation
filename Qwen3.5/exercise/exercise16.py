@@ -27,7 +27,22 @@ class RMSNorm(nn.Module):
         out = out * (1.0 + self.weight)
         return out.to(dtype=x.dtype)
 
+    
 
+class RMSNormGated(nn.Module):
+    def __init__(self, hidden_size: int, eps: float= 1e-6) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.eps = eps 
+    
+    def forward(self, hidden_states: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.float()
+        var = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(var + self.eps)
+        hidden_states = self.weight * hidden_states.to(input_dtype)
+        hidden_states = hidden_states * F.silu(gate.float())
+        return hidden_states.to(input_dtype)
 
 
 
