@@ -60,10 +60,12 @@ class Attention(nn.Module):
         self.scaling = self.head_dim ** 0.5
 
 
-        self.in_proj = nn.Linear(
-            self.hidden_size,
-            
+        self.query = nn.Linear(
+            self.hidden_size, 
+            self.num_attention_heads * self.head_dim * 2,
+            bias=config.attention_bias
         )
+
         
 
 
