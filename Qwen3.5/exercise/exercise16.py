@@ -213,3 +213,93 @@ class Decoder(nn.Module):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         return residual + hidden_states
+
+
+
+def build_causal_mask(
+    attention_mask: torch.Tensor | None,
+    batch_size, 
+    query_length,
+    kv_length,
+    device,
+    dtype
+) -> torch.Tensor:
+    min_value = torch.finfo(dtype).min
+
+    causal = torch.full((query_length. kv_length), min_value, device=device, dtype=dtype)
+    causal = torch.triu(causal, diagonal=1 + kv_length - query_length) # causal: [query_lrngth, kv_length]
+    
+    
+    
+    causal = causal[None, None, ...].expand(batch_size, 1, query_length, kv_length)
+    if attention_mask is None:
+        return causal
+    
+    padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype)) * min_value
+    return causal + padding_mask
+
+
+
+
+class Qwen35TextModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        self.config = config
+        self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
+        self.norm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = Qwen35RotaryEmbedding(config)
+    
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_key_values = None,
+        use_cache: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        device: str = 'cpu'
+    ) -> tuple[torch.Tensor, DynamucCache | None]:
+        
+        batch_size, seq_len, _ = input_ids.shape
+
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+
+        position_ids = torch.arange(seq_len, device=device) + past_seen_tokens        
+        position_ids = position_ids.view(1, -1).expand(batch_size, -1)
+
+        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_len + past_key_values),
+                device=device,
+                dtype=inputs_embeds.dtype
+            )
+        
+        kv_length = seq_len + past_seen_tokens
+        causal_mask = build_causal_mask(
+            attention_mask=attention_mask,
+            batch_size=batch_size,
+            query_length=seq_len,
+            kv_length=kv_length,
+            device=device,
+            dtype=inputs_embeds.dtype
+        )
+
+        hidden_states = inputs_embeds
+        for layer in self.layers:
+            layer_mask = attention_mask if layer.layer_type == "linear_attention" else causal_mask
+            hidden_states = layer(
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values
+            )
+    
+        hidden_states = self.norm(hidden_states)
+        return hidden_states, past_key_values
+
+
+
+
+    

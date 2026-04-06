@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from exercise.exercise16 import Decoder
+from norm import Qwen35RMSNorm
+from rope import Qwen35RotaryEmbedding
 import torch
 
 
@@ -34,25 +37,3 @@ if __name__ == "__main__":
         torch.float32
     ))
 
-
-def build_causal_mask(
-    attention_mask: torch.Tensor | None,
-    batch_size, 
-    query_length,
-    kv_length,
-    device,
-    dtype
-) -> torch.Tensor:
-    min_value = torch.finfo(dtype).min
-
-    causal = torch.full((query_length. kv_length), min_value, device=device, dtype=dtype)
-    causal = torch.triu(causal, diagonal=1 + kv_length - query_length) # causal: [query_lrngth, kv_length]
-    
-    
-    
-    causal = causal[None, None, ...].expand(batch_size, 1, query_length, kv_length)
-    if attention_mask is None:
-        return causal
-    
-    padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype)) * min_value
-    return causal + padding_mask
