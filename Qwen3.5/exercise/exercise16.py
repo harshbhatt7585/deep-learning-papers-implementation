@@ -92,7 +92,8 @@ class Attention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         positon_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        past_key_values = None
     ):
         # hidden_states: [batch, seq_len, hidden_size]
         # position_ids: [batch, seq_len]
@@ -112,10 +113,8 @@ class Attention(nn.Module):
         key_states = key_states.transpose(1, 2) # [batch,  kv_heads, seq_len, head_dim]
 
         value_states = self.value(hidden_size)
-        value_states = value_states.resahpe(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        value_states = value_states.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         value_states = value_states.transpose(1, 2) # [batch, kv_heads, seq_len, head_dim]
-
-        
 
 
 
