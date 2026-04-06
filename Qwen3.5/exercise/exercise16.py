@@ -71,6 +71,13 @@ class Attention(nn.Module):
             bias=config.attention_bias
         )
         
+        self.value = nn.Linear(
+            self.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=config.attention_bias
+        )
+        
+
         
 
 
