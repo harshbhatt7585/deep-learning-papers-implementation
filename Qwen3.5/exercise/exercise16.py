@@ -3,6 +3,7 @@
 from re import S
 from tokenize import group
 from attention import Qwen35Attention
+import attention
 from delta import apply_mask_to_padding_states
 from exercise.exercise10 import batch_size, position_embeddings, seq_len
 from exercise.exercise5 import torch_casual_conv1d_update
@@ -258,7 +259,7 @@ class Qwen35TextModel(nn.Module):
         use_cache: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         device: str = 'cpu'
-    ) -> tuple[torch.Tensor, DynamucCache | None]:
+    ) -> tuple[torch.Tensor, DynamicCache | None]:
         
         batch_size, seq_len, _ = input_ids.shape
 
@@ -300,6 +301,47 @@ class Qwen35TextModel(nn.Module):
         return hidden_states, past_key_values
 
 
+if __name__ == "__main__":
+    from types import SimpleNamespace
+    config = SimpleNamespace(
+      hidden_size=128,
+
+      num_hidden_layers=4,
+      layer_types=[
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "full_attention",
+      ],
+
+      num_attention_heads=4,
+      num_key_value_heads=2,
+      head_dim=32,
+
+      attention_dropout=0.0,
+      attention_bias=False,
+      rms_norm_eps=1e-6,
+
+      hidden_act="silu",
+      intermediate_size=256,
+
+      num_v_heads=4,
+      num_k_heads=2,
+      head_k_dim=32,
+      head_v_dim=32,
+      linear_conv_kernel_size=4,
+
+      rotaty_factor=1.0,
+      theta=10000.0,
+      dim=32,
+    )
+
+    model = Qwen35TextModel(config)
+
+    input_ids = torch.randint((1, 32))
+    input_embds = torch.randn((1, 128))
+    
+    
 
 
     
