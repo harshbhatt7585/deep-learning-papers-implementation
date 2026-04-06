@@ -75,4 +75,3 @@ class Qwen35TextModel(nn.Module):
         
         hidden_states = self.norm(hidden_states)
         return hidden_states, past_key_values
-

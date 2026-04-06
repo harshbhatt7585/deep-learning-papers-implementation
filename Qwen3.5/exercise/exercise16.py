@@ -76,9 +76,18 @@ class Attention(nn.Module):
             self.num_kv_heads * self.head_dim,
             bias=config.attention_bias
         )
+
+
+    
+        self.norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
+
+        self.out_proj = nn.Linear(
+            self.num_attention_heads * self.head_dim,
+            self.hidden_size,
+            bias=config.attention_bias
+        )
         
 
-        
 
 
 class GatedDeltaNet(nn.Module):

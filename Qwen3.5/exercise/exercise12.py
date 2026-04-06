@@ -15,7 +15,6 @@ import torch
 from torch import nn
 from utils import repeat_kv
 
-
 class Attention(nn.Module):
     def __init__(
         self,
