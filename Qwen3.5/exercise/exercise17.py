@@ -111,8 +111,24 @@ class GatedDeltaNet(nn.Module):
         g = -torch.exp(self.A_log) * torch.softplus(a + self.dt_bias)
 
 
+        if use_precomputed_cache:
+            attn_core_out, recurrent_state = delta_rule(
+                recurrent_state,
+                query,
+                key,
+                value,
+                beta,
+                g,
+                cache_param
+            ) 
 
+        
+        attn_core_out = self.norm(attn_core_out, z)
+        attn_core_out = attn_core_out.transpose(1, 2).contigious()
+        attn_core_out = attn_core_out.reshape(batch_size, seq_len, self.hidden_size)
 
+        out = self.out_proj(attn_core_out)
+        return out
         
         
 
