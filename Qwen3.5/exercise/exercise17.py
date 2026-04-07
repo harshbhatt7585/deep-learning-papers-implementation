@@ -28,7 +28,7 @@ class GatedDeltaNet(nn.Module):
             in_channels=self.conv_dim,
             out_channels=self.conv_dim,
             bias=False,
-            kernle_size=self.conv_kernel_size,
+            kernel_size=self.conv_kernel_size,
             groups=self.conv_dim,
             padding=self.conv_kernel_size - 1
         )
