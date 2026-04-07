@@ -94,7 +94,7 @@ class GatedDeltaNet(nn.Module):
         z = z.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
         z = z.transpose(1, 2)
 
-        b = self.b(hidden_states).r # [batch, seq_len, n_v_heads]
+        b = self.b(hidden_states) # [batch, seq_len, n_v_heads]
         b = b.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
         b = b.transpose(1, 2)
 
