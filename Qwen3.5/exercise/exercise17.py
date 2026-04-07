@@ -77,3 +77,8 @@ class GatedDeltaNet(nn.Module):
         use_precomputed_cache = cache_param is not None and cache_param.has_previous_state() and seq_len == 1
         conv_state = cache_param.conv_state[self.layer_idx] if cache_param is not None else None
         recurrent_state = cache_param.recurrent_state[self.layer_idx] if cache_param is not None else None
+
+
+        mixed_qkv = self.qkv(hidden_states) # [batch, seq_len, conv_dim]
+        mixed_qkv = mixed_qkv.transpose(1, 2) # [batch, conv_dim, seq_din]
+
