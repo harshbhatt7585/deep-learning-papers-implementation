@@ -89,18 +89,14 @@ class GatedDeltaNet(nn.Module):
         else:
             pass
             # implement it for training
-
+        
+        mixed_qkv = mixed_qkv.transpose(1, 2)
         z = self.z(hidden_states) # [batch, seq_len, value_din]
         z = z.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
         z = z.transpose(1, 2)
 
         b = self.b(hidden_states) # [batch, seq_len, n_v_heads]
-        b = b.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
-        b = b.transpose(1, 2)
-
         a = self.a(hidden_states) # [batch, seq_len, n_v_heads]
-        a = a.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
-        a = a.transpose(1, 2)
 
 
         query, key, value = torch.chunk(mixed_qkv, 3, dim=-1)
@@ -108,7 +104,7 @@ class GatedDeltaNet(nn.Module):
         key = key.reshape(batch_size, seq_len, self.num_k_heads, -1)
         value = value.reshape(batch_size, seq_len, self.num_v_heads, -1)
 
-        beta = torch.sigmoid(b, dim=-1)
+        beta = torch.sigmoid(b)
         g = -torch.exp(self.A_log) * torch.softplus(a + self.dt_bias)
 
 
@@ -174,7 +170,7 @@ if __name__ == "__main__":
     )
 
     model(
-        torch.randn(4, 20, 128)
+        torch.randn((4, 20, 128))
     )
         
 
