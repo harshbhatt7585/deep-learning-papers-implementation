@@ -1,3 +1,5 @@
+from delta import apply_mask_to_padding_states
+from exercise.exercise10 import seq_len
 from exercise.exercise16 import RMSNormGated
 from torch import nn
 import torch
@@ -56,9 +58,22 @@ class GatedDeltaNet(nn.Module):
             self.num_v_heads,
             bias=False
         )
-        
+
         self.a = nn.Linear(
             self.hidden_size,
             self.num_v_heads,
             bias=False
         )
+
+        
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cache_param = None,
+        attention_mask = None
+    ):
+        hidden_states = apply_mask_to_padding_states(hidden_states=hidden_states, attention_mask=attention_mask)
+        
+        use_precomputed_cache = cache_param is not None and cache_param.has_previous_state() and seq_len == 1
+        conv_state = cache_param.conv_state[self.layer_idx] if cache_param is not None else None
+        recurrent_state = cache_param.recurrent_state[self.layer_idx] if cache_param is not None else None
