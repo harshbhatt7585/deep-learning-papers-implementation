@@ -20,7 +20,7 @@ def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6):
     return x * inv_norm
 
 
-def torch_casual_conv1d_update(hidden_states, conv_state, weight, bias=None):
+def torch_causal_conv1d_update(hidden_states, conv_state, weight, bias=None):
     _, hidden_size, seq_len = hidden_states.shape
     state_len = conv_state.shape[-1]
     hidden_states_new = torch.cat([conv_state, hidden_states], dim=-1).to(weight.dtype)
@@ -126,7 +126,7 @@ class Qwen35GatedDeltaNet(nn.Module):
         a = self.in_proj_a(hidden_states)
 
         if use_precomputed_states:
-            mixed_qkv = torch_casual_conv1d_update(
+            mixed_qkv = torch_causal_conv1d_update(
                 mixed_qkv,
                 conv_state,
                 self.conv1d.weight.squeeze(1),
@@ -184,4 +184,3 @@ class Qwen35GatedDeltaNet(nn.Module):
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
         return self.out_proj(core_attn_out)
-
