@@ -100,8 +100,16 @@ class GatedDeltaNet(nn.Module):
         a = self.a(hidden_states) # [batch, seq_len, n_v_heads]
         a = a.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
         a = a.transpose(1, 2)
+
+
+        query, key, value = torch.chunk(mixed_qkv, 3, dim=-1)
+        query = query.reshape(batch_size, seq_len, self.num_k_heads, -1)
+        key = key.reshape(batch_size, seq_len, self.num_k_heads, -1)
+        value = value.reshape(batch_size, seq_len, self.num_v_heads, -1)
+
+
         
-        
+
         
         
 
