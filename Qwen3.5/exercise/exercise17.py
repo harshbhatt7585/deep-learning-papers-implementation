@@ -107,7 +107,7 @@ class GatedDeltaNet(nn.Module):
         key = key.reshape(batch_size, seq_len, self.num_k_heads, -1)
         value = value.reshape(batch_size, seq_len, self.num_v_heads, -1)
 
-        beta = torch.sigmoid(beta, dim=-1)
+        beta = torch.sigmoid(b, dim=-1)
         g = -torch.exp(self.A_log) * torch.softplus(a + self.dt_bias)
 
 
