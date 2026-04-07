@@ -82,3 +82,15 @@ class GatedDeltaNet(nn.Module):
         mixed_qkv = self.qkv(hidden_states) # [batch, seq_len, conv_dim]
         mixed_qkv = mixed_qkv.transpose(1, 2) # [batch, conv_dim, seq_din]
 
+        if use_precomputed_cache:
+            mixed_qkv = self.conv1d(mixed_qkv)
+        
+        else:
+            pass
+            # implement it for training
+
+            
+
+
+
+
