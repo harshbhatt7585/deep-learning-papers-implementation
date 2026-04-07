@@ -123,6 +123,14 @@ class Attention(nn.Module):
         attn_weight = attn_weight * self.scaling
         attn_weight = torch.softmax(attn_weight, dim=-1)
 
+        attn_out = torch.matmul(attn_weight, value_states)
+        attn_out = attn_out.transpose(1, 2).contigious().reshape(batch_size, seq_len, hidden_size)
+        attn_out = attn_out * torch.sigmoid(gate)
+        return self.out_proj(attn_out)
+
+
+
+
 
 
 
