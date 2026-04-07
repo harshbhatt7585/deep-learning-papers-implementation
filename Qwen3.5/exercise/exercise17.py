@@ -1,6 +1,7 @@
 from delta import apply_mask_to_padding_states
 from exercise.exercise16 import RMSNormGated
 from torch import nn
+import torch.nn.functional as F
 import torch
 
 
@@ -105,7 +106,7 @@ class GatedDeltaNet(nn.Module):
         value = value.reshape(batch_size, seq_len, self.num_v_heads, -1)
 
         beta = torch.sigmoid(b)
-        g = -torch.exp(self.A_log) * torch.softplus(a + self.dt_bias)
+        g = -torch.exp(self.A_log) * F.softplus(a + self.dt_bias)
 
 
         if use_precomputed_cache:
