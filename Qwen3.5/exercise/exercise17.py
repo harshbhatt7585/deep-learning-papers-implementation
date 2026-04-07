@@ -1,5 +1,5 @@
 from delta import apply_mask_to_padding_states
-from exercise.exercise10 import seq_len
+from exercise.exercise10 import batch_size, seq_len
 from exercise.exercise16 import RMSNormGated
 from torch import nn
 import torch
@@ -89,7 +89,25 @@ class GatedDeltaNet(nn.Module):
             pass
             # implement it for training
 
-            
+        z = self.z(hidden_states) # [batch, seq_len, value_din]
+        z = z.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
+        z = z.transpose(1, 2)
+
+        b = self.b(hidden_states).r # [batch, seq_len, n_v_heads]
+        b = b.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
+        b = b.transpose(1, 2)
+
+        a = self.a(hidden_states) # [batch, seq_len, n_v_heads]
+        a = a.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
+        a = a.transpose(1, 2)
+        
+        
+        
+        
+
+        
+
+        
 
 
 
