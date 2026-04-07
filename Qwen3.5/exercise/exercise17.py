@@ -10,6 +10,7 @@ class GatedDeltaNet(nn.Module):
         config,
         layer_idx: int
     ):
+        super().__init__()
         self.hidden_size = config.hidden_size
         self.num_k_heads = config.num_k_heads
         self.num_v_heads = config.num_v_heads
