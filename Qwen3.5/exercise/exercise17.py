@@ -1,4 +1,8 @@
-from delta import apply_mask_to_padding_states
+from delta import (
+    apply_mask_to_padding_states,
+    torch_causal_conv1d_update,
+    torch_recurrent_gated_delta_rule,
+)
 from exercise.exercise16 import RMSNormGated
 from torch import nn
 import torch.nn.functional as F
@@ -38,7 +42,7 @@ class GatedDeltaNet(nn.Module):
         
         self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
         self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads).uniform_(0, 16)))
-        self.norm = RMSNormGated(self.head_k_dim, eps=config.rms_norm_eps)
+        self.norm = RMSNormGated(self.head_v_dim, eps=config.rms_norm_eps)
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         self.qkv = nn.Linear(
@@ -70,63 +74,98 @@ class GatedDeltaNet(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cache_param = None,
-        attention_mask = None
-    ):
+        cache_param=None,
+        attention_mask=None,
+    ) -> torch.Tensor:
         hidden_states = apply_mask_to_padding_states(hidden_states=hidden_states, attention_mask=attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
         
         use_precomputed_cache = cache_param is not None and cache_param.has_previous_state() and seq_len == 1
-        conv_state = cache_param.conv_state[self.layer_idx] if cache_param is not None else None
-        recurrent_state = cache_param.recurrent_state[self.layer_idx] if cache_param is not None else None
+        conv_state = cache_param.conv_states[self.layer_idx] if cache_param is not None else None
+        recurrent_state = cache_param.recurrent_states[self.layer_idx] if cache_param is not None else None
 
-
-        mixed_qkv = self.qkv(hidden_states) # [batch, seq_len, conv_dim]
-        mixed_qkv = mixed_qkv.transpose(1, 2) # [batch, conv_dim, seq_din]
+        mixed_qkv = self.qkv(hidden_states)
+        mixed_qkv = mixed_qkv.transpose(1, 2)
 
         if use_precomputed_cache:
-            mixed_qkv = self.conv1d(mixed_qkv)
-        
+            mixed_qkv = torch_causal_conv1d_update(
+                mixed_qkv,
+                conv_state,
+                self.conv1d.weight.squeeze(1),
+                self.conv1d.bias,
+            )
         else:
-            pass
-            # implement it for training
+            if cache_param is not None:
+                pad_len = max(self.conv_kernel_size - mixed_qkv.shape[-1], 0)
+                conv_state = F.pad(mixed_qkv, (pad_len, 0))
+                cache_param.conv_states[self.layer_idx] = conv_state
+            mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
         
         mixed_qkv = mixed_qkv.transpose(1, 2)
-        z = self.z(hidden_states) # [batch, seq_len, value_din]
+        z = self.z(hidden_states)
         z = z.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
-        z = z.transpose(1, 2)
 
-        b = self.b(hidden_states) # [batch, seq_len, n_v_heads]
-        a = self.a(hidden_states) # [batch, seq_len, n_v_heads]
+        b = self.b(hidden_states)
+        a = self.a(hidden_states)
 
 
-        query, key, value = torch.chunk(mixed_qkv, 3, dim=-1)
-        query = query.reshape(batch_size, seq_len, self.num_k_heads, -1)
-        key = key.reshape(batch_size, seq_len, self.num_k_heads, -1)
-        value = value.reshape(batch_size, seq_len, self.num_v_heads, -1)
+        query, key, value = torch.split(
+            mixed_qkv,
+            [self.key_dim, self.key_dim, self.value_dim],
+            dim=-1,
+        )
+        query = query.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
+        key = key.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
+        value = value.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
 
         beta = torch.sigmoid(b)
         g = -torch.exp(self.A_log) * F.softplus(a + self.dt_bias)
 
+        if self.num_v_heads // self.num_k_heads > 1:
+            rep = self.num_v_heads // self.num_k_heads
+            query = query.repeat_interleave(rep, dim=2)
+            key = key.repeat_interleave(rep, dim=2)
 
-        if use_precomputed_cache:
-            attn_core_out, recurrent_state = delta_rule(
-                recurrent_state,
-                query,
-                key,
-                value,
-                beta,
-                g,
-                cache_param
-            ) 
+        attn_core_out, recurrent_state = torch_recurrent_gated_delta_rule(
+            query,
+            key,
+            value,
+            g,
+            beta,
+            recurrent_state,
+            cache_param is not None,
+        )
 
-        
+        if cache_param is not None:
+            cache_param.recurrent_states[self.layer_idx] = recurrent_state
+
+        attn_core_out = attn_core_out.reshape(-1, self.head_v_dim)
+        z = z.reshape(-1, self.head_v_dim)
         attn_core_out = self.norm(attn_core_out, z)
-        attn_core_out = attn_core_out.transpose(1, 2).contigious()
-        attn_core_out = attn_core_out.reshape(batch_size, seq_len, self.hidden_size)
+        attn_core_out = attn_core_out.reshape(batch_size, seq_len, -1)
 
         out = self.out_proj(attn_core_out)
         return out
+
+
+class FakeCache:
+    def __init__(self, config, batch_size: int, layer_idx: int) -> None:
+        state_len = max(config.linear_conv_kernel_size - 1, 1)
+        key_dim = config.num_k_heads * config.head_k_dim
+        value_dim = config.num_v_heads * config.head_v_dim
+
+        self.conv_states = [None for _ in range(config.num_hidden_layers)]
+        self.recurrent_states = [None for _ in range(config.num_hidden_layers)]
+        self.conv_states[layer_idx] = torch.zeros(batch_size, key_dim * 2 + value_dim, state_len)
+        self.recurrent_states[layer_idx] = torch.zeros(
+            batch_size,
+            config.num_v_heads,
+            config.head_k_dim,
+            config.head_v_dim,
+        )
+
+    def has_previous_state(self) -> bool:
+        return any(state is not None for state in self.conv_states)
 
 
 if __name__ == "__main__":
@@ -170,15 +209,15 @@ if __name__ == "__main__":
         layer_idx=1
     )
 
-    model(
-        torch.randn((4, 20, 128))
-    )
+    batch_size = 4
+    hidden_states = torch.randn(batch_size, 1, config.hidden_size)
+    fake_cache = FakeCache(config, batch_size=batch_size, layer_idx=1)
+    out = model(hidden_states, cache_param=fake_cache)
+    print(out.shape)
         
 
         
 
         
-
-
 
 
