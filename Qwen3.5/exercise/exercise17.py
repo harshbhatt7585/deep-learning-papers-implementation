@@ -90,7 +90,7 @@ class GatedDeltaNet(nn.Module):
             pad_len = max(self.conv_kernel_size - mixed_qkv.shape[-1], 0)
             conv_state = F.pad(mixed_qkv, (pad_len, 0))
             cache_param.conv_states[self.layer_idx] = conv_state
-            
+
         mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
         
         mixed_qkv = mixed_qkv.transpose(1, 2)
@@ -139,25 +139,6 @@ class GatedDeltaNet(nn.Module):
         out = self.out_proj(attn_core_out)
         return out
 
-
-class FakeCache:
-    def __init__(self, config, batch_size: int, layer_idx: int) -> None:
-        state_len = max(config.linear_conv_kernel_size - 1, 1)
-        key_dim = config.num_k_heads * config.head_k_dim
-        value_dim = config.num_v_heads * config.head_v_dim
-
-        self.conv_states = [None for _ in range(config.num_hidden_layers)]
-        self.recurrent_states = [None for _ in range(config.num_hidden_layers)]
-        self.conv_states[layer_idx] = torch.zeros(batch_size, key_dim * 2 + value_dim, state_len)
-        self.recurrent_states[layer_idx] = torch.zeros(
-            batch_size,
-            config.num_v_heads,
-            config.head_k_dim,
-            config.head_v_dim,
-        )
-
-    def has_previous_state(self) -> bool:
-        return any(state is not None for state in self.conv_states)
 
 
 if __name__ == "__main__":
