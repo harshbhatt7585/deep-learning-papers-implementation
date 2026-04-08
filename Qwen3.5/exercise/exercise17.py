@@ -1,4 +1,3 @@
-import attention
 from delta import (
     apply_mask_to_padding_states,
     torch_causal_conv1d_update,
@@ -150,10 +149,11 @@ class Attention(nn.Module):
         config,
         layer_idx: int
     ):
+        super().__init__()
 
         self.hidden_size = config.hidden_size
         self.num_attention_heads = config.num_attention_heads
-        self.num_kv_heads = config.num_kv_heads
+        self.num_kv_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
         self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
         self.scaling = self.head_dim ** 0.5
@@ -237,6 +237,7 @@ class Attention(nn.Module):
 
         out = self.out_proj(attn_out)
         return out
+
         
 
         
@@ -302,6 +303,10 @@ if __name__ == "__main__":
     batch_size = 4
     hidden_states = torch.randn(batch_size, 1, config.hidden_size)
     out = model(hidden_states)
+    print(out.shape)
+
+    attn = Attention(config, 1)
+    out = attn(hidden_states)
     print(out.shape)
         
 
