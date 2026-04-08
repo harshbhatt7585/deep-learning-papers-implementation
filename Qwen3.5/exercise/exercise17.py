@@ -182,7 +182,33 @@ class Attention(nn.Module):
             bias=config.attention_bias
         )
 
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        positon_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        past_key_value: tuple | None = None
+    ):
+        batch_size, seq_len, hidden_size = hidden_states.shape
+ 
+        q = self.q(hidden_states) # [batch, seq, num_attn_heads * head_dim]
+        q = q.reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim)
+        q = q.tranpose(1, 2) # [batch, num_attn_head, seq, head_dim]
+
+        k = self.k(hidden_states)
+        k = k.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        k = k.transpose(1, 2)
+
+        v = self.v(hidden_states)
+        v = v.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        v = v.transpose(1, 2)
+
         
+
+
+        
+
 
 
 
