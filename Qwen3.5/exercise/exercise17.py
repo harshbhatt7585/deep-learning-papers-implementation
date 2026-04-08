@@ -157,7 +157,7 @@ class Attention(nn.Module):
 
         self.q = nn.Linear(
             self.hidden_size,
-            self.num_attention_heads * self.head_dim,
+            self.num_attention_heads * self.head_dim * 2,
             bias=config.attention_bias
         )
 
@@ -183,6 +183,7 @@ class Attention(nn.Module):
         )
 
 
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -192,9 +193,11 @@ class Attention(nn.Module):
     ):
         batch_size, seq_len, hidden_size = hidden_states.shape
  
-        q = self.q(hidden_states) # [batch, seq, num_attn_heads * head_dim]
+        q_proj = self.q(hidden_states) # [batch, seq, num_attn_heads * head_dim * 2]
+        q, gate = torch.chunk(q_proj, 2, dim=-1)
         q = q.reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim)
         q = q.tranpose(1, 2) # [batch, num_attn_head, seq, head_dim]
+        gate = gate.reshape(batch_size, seq_len, -1) # [batch, seq, num_attn_heads * 2]
 
         k = self.k(hidden_states)
         k = k.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
@@ -208,7 +211,7 @@ class Attention(nn.Module):
         if past_key_value:
             k, v = past_key_value.update(q, v)
         
-        
+
 
         
 
