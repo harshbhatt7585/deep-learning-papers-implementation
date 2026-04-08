@@ -139,6 +139,20 @@ class GatedDeltaNet(nn.Module):
         out = self.out_proj(attn_core_out)
         return out
 
+    
+class Attention(nn.Module):
+    def __init__(
+        self,
+        config,
+        layer_idx: int
+    ):
+
+        self.hidden_size = config.hidden_size
+        self.num_attention_heads = config.num_attention_heads
+        self.num_kv_heads = config.num_kv_heads
+        self.head_dim = config.head_dim
+        self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
+        
 
 
 if __name__ == "__main__":
