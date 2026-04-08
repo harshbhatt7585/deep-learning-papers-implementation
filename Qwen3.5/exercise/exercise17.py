@@ -223,7 +223,7 @@ class Attention(nn.Module):
 
         # attention computation
         attn_weight = torch.matmul(k, v.transpose(2, 3))
-        attn_weight = attn_weight * self.head_dim
+        attn_weight = attn_weight * self.scaling
         attn_weight = torch.softmax(attn_weight)
 
         attn_out = torch.matmul(attn_weight, v)
