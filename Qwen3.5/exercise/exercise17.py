@@ -204,6 +204,12 @@ class Attention(nn.Module):
         v = v.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         v = v.transpose(1, 2)
 
+
+        if past_key_value:
+            k, v = past_key_value.update(q, v)
+        
+        
+
         
 
 
