@@ -305,8 +305,11 @@ if __name__ == "__main__":
     out = model(hidden_states)
     print(out.shape)
 
+    cos = torch.ones(batch_size, 1, config.head_dim)
+    sin = torch.zeros(batch_size, 1, config.head_dim)
+
     attn = Attention(config, 1)
-    out = attn(hidden_states)
+    out = attn(hidden_states, (cos, sin))
     print(out.shape)
         
 
