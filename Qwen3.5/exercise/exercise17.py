@@ -6,6 +6,7 @@ from delta import (
 )
 from exercise.exercise16 import RMSNormGated
 from norm import Qwen35RMSNorm
+from rope import apply_rotary_pos_emb
 from torch import nn
 import torch.nn.functional as F
 import torch
@@ -187,7 +188,7 @@ class Attention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        positon_ids: torch.Tensor,
+        position_embeddings: tuple,
         attention_mask: torch.Tensor | None = None,
         past_key_value: tuple | None = None
     ):
@@ -207,9 +208,18 @@ class Attention(nn.Module):
         v = v.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         v = v.transpose(1, 2)
 
+        cos, sin = position_embeddings
+        k, v = apply_rotary_pos_emb(cos, sin)
+
 
         if past_key_value:
             k, v = past_key_value.update(q, v)
+
+        
+        
+
+        
+
         
 
 
