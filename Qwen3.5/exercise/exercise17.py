@@ -199,7 +199,7 @@ class Attention(nn.Module):
         q_proj = self.q(hidden_states) # [batch, seq, num_attn_heads * head_dim * 2]
         q, gate = torch.chunk(q_proj, 2, dim=-1)
         q = q.reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim)
-        q = q.tranpose(1, 2) # [batch, num_attn_head, seq, head_dim]
+        q = q.transpose(1, 2) # [batch, num_attn_head, seq, head_dim]
         gate = gate.reshape(batch_size, seq_len, -1) # [batch, seq, num_attn_heads * 2]
 
         k = self.k(hidden_states)
