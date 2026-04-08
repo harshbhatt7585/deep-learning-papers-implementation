@@ -211,7 +211,7 @@ class Attention(nn.Module):
         v = v.transpose(1, 2)
 
         cos, sin = position_embeddings
-        k, v = apply_rotary_pos_emb(cos, sin)
+        q, v = apply_rotary_pos_emb(q, v, cos, sin)
 
 
         if past_key_value:
