@@ -1,3 +1,4 @@
+import attention
 from delta import (
     apply_mask_to_padding_states,
     torch_causal_conv1d_update,
@@ -152,7 +153,27 @@ class Attention(nn.Module):
         self.num_kv_heads = config.num_kv_heads
         self.head_dim = config.head_dim
         self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
+
+        self.q = nn.Linear(
+            self.hidden_size,
+            self.num_attention_heads * self.head_dim,
+            bias=config.attention_bias
+        )
+
+        self.k = nn.Linear(
+            self.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=config.attention_bias
+        )
+
+        self.v = nn.Linear(
+            self.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=config.attention_bias
+        )
+
         
+
 
 
 if __name__ == "__main__":
