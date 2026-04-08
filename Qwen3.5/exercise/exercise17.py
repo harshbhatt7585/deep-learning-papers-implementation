@@ -176,6 +176,16 @@ class Attention(nn.Module):
         self.norm = Qwen35RMSNorm(self.hidden_size, config.rms_norm_eps)
 
 
+        self.out_proj = nn.Linear(
+            self.num_attention_heads * self.head_dim,
+            self.hidden_size,
+            bias=config.attention_bias
+        )
+
+        
+
+
+
 
 
 
