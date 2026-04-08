@@ -155,6 +155,7 @@ class Attention(nn.Module):
         self.num_kv_heads = config.num_kv_heads
         self.head_dim = config.head_dim
         self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
+        self.scaling = self.head_dim ** 0.5
 
         self.q = nn.Linear(
             self.hidden_size,
@@ -215,8 +216,23 @@ class Attention(nn.Module):
         if past_key_value:
             k, v = past_key_value.update(q, v)
 
+
+        # attention computation
+        attn_weight = torch.matmul(k, v.transpose(2, 3))
+        attn_weight = attn_weight * self.head_dim
+        attn_weight = torch.softmax(attn_weight)
+
+        attn_out = torch.matmul(attn_weight, v)
+        attn_out = attn_out.transpose(1, 2).contigious()
+        attn_out = attn_out.reshape(batch_size, seq_len, hidden_size)
+        attn_out = attn_out * torch.sigmoid(gate)
+
+        out = self.out_proj(attn_out)
+        return out
         
+
         
+
 
         
 
