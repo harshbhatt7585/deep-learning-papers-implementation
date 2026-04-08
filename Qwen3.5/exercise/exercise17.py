@@ -80,26 +80,18 @@ class GatedDeltaNet(nn.Module):
         hidden_states = apply_mask_to_padding_states(hidden_states=hidden_states, attention_mask=attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
         
-        use_precomputed_cache = cache_param is not None and cache_param.has_previous_state() and seq_len == 1
         conv_state = cache_param.conv_states[self.layer_idx] if cache_param is not None else None
         recurrent_state = cache_param.recurrent_states[self.layer_idx] if cache_param is not None else None
 
         mixed_qkv = self.qkv(hidden_states)
         mixed_qkv = mixed_qkv.transpose(1, 2)
 
-        if use_precomputed_cache:
-            mixed_qkv = torch_causal_conv1d_update(
-                mixed_qkv,
-                conv_state,
-                self.conv1d.weight.squeeze(1),
-                self.conv1d.bias,
-            )
-        else:
-            if cache_param is not None:
-                pad_len = max(self.conv_kernel_size - mixed_qkv.shape[-1], 0)
-                conv_state = F.pad(mixed_qkv, (pad_len, 0))
-                cache_param.conv_states[self.layer_idx] = conv_state
-            mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
+        if cache_param is not None:
+            pad_len = max(self.conv_kernel_size - mixed_qkv.shape[-1], 0)
+            conv_state = F.pad(mixed_qkv, (pad_len, 0))
+            cache_param.conv_states[self.layer_idx] = conv_state
+            
+        mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
         
         mixed_qkv = mixed_qkv.transpose(1, 2)
         z = self.z(hidden_states)
@@ -211,8 +203,7 @@ if __name__ == "__main__":
 
     batch_size = 4
     hidden_states = torch.randn(batch_size, 1, config.hidden_size)
-    fake_cache = FakeCache(config, batch_size=batch_size, layer_idx=1)
-    out = model(hidden_states, cache_param=fake_cache)
+    out = model(hidden_states)
     print(out.shape)
         
 

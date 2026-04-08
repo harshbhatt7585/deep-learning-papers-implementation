@@ -16,7 +16,7 @@ def apply_mask_to_padding_states(hidden_states: torch.Tensor, attention_mask: to
 def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
     inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)
     return x * inv_norm
-
+    
 
 def torch_causal_conv1d_update(
     hidden_states: torch.Tensor,
