@@ -264,14 +264,14 @@ class RopE(nn.Module):
         # hidden_satets: [batch, seq, dim]
         # positon_ids: [batch, seq_len]
         if positon_ids.ndim == 2:
-            positon_ids = positon_ids[None, ...].expend(3, positon_ids.shape[0], -1)
+            positon_ids = positon_ids[None, ...].expand(3, positon_ids.shape[0], -1)
         
         
         # we want to expand this dimension of inv_freq to work with positon_ids
         # [3, batch_size, 1, dim]
         expanded_inv_freq = self.inv_freq[None, None, ..., None].float().expand(
-            positon_ids[0],
-            positon_ids[1],
+            positon_ids.shape[0],
+            positon_ids.shape[1],
             -1,
             1
         )
