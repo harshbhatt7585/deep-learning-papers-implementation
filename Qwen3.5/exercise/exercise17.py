@@ -244,6 +244,7 @@ class RopE(nn.Module):
         self,
         config
     ):
+        super().__init__()
         self.rotraty_factor = 1.0
         self.theta = config.theta
         self.dim = config.head_dim
@@ -279,30 +280,8 @@ class RopE(nn.Module):
         freq = expanded_inv_freq @ positon_ids.shape[:, :, None, :]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
-
-
-
-        
-        
-        
-        
-
-        
-
-
-        
-
-        
-
-
-        
-
-
-        
-
-
-
-
+    
+    
 
 
 
@@ -359,6 +338,11 @@ if __name__ == "__main__":
     out = attn(hidden_states, (cos, sin))
     print(out.shape)
         
+    
+    rope = RopE(config)
+    pos_ids = torch.randn(batch_size, 20)
+    out = rope(hidden_states, pos_ids)
+    print(out.shape)
 
         
 
