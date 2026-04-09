@@ -277,11 +277,11 @@ class RopE(nn.Module):
         )
 
         # [3, batch, dim, dim]
-        freq = expanded_inv_freq @ positon_ids.shape[:, :, None, :]
+        freq = expanded_inv_freq @ positon_ids[:, :, None, :]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
     
-    
+
 
 
 
