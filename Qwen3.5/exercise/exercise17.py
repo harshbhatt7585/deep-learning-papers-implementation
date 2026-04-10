@@ -378,6 +378,8 @@ class TextModel(nn.Module):
             pos_ids = torch.arange(0, seq_len, dtype=input_embeds.dtype, device=input_embeds.shape) + past_seen_tokens
             pos_ids = pos_ids[None, ...].expand(batch_size, -1)
 
+        pos_emb = self.rope(input_embeds, pos_ids)
+        
         
 
         
