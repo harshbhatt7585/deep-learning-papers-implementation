@@ -1,3 +1,4 @@
+from math import e
 from delta import (
     apply_mask_to_padding_states,
     torch_causal_conv1d_update,
@@ -289,13 +290,13 @@ class Decoder(nn.Module):
         layer_idx: int
     ):
         self.layer_idx = layer_idx
-        layer_type = config.layer_types[layer_idx]
+        self.layer_type = config.layer_types[layer_idx]
 
-        if layer_type == "linear_attention":
-            self.layer = GatedDeltaNet(config=config, layer_idx=layer_idx)
+        if self.layer_type == "linear_attention":
+            self.linear_attention = GatedDeltaNet(config=config, layer_idx=layer_idx)
 
-        elif layer_type == "self_attention":
-            self.layer = Attention(config=config, layer_idx=layer_idx)
+        elif self.layer_type == "self_attention":
+            self.self_attention = Attention(config=config, layer_idx=layer_idx)
         
         else:
             pass
@@ -304,7 +305,33 @@ class Decoder(nn.Module):
         self.input_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
     
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        postional_embedding: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        past_key_value = None
+    ):
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
 
+        if self.layer_type == "linear_attnetion":
+            hidden_states = self.linear_attention(
+                hidden_states,
+                past_key_value,
+                attention_mask
+            )
+        elif self.layer_type == "self_attention":
+            hidden_states = self.self_attention(
+                hidden_states,
+                postional_embedding,
+                attention_mask,
+                past_key_value
+            )
+        else:
+            pass
+            
 
 
 
