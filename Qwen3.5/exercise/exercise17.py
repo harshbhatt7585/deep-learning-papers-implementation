@@ -4,7 +4,7 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise16 import MLP, RMSNorm, RMSNormGated
+from exercise.exercise16 import MLP, DynamicCache, RMSNorm, RMSNormGated
 from norm import Qwen35RMSNorm
 from rope import apply_rotary_pos_emb
 from torch import nn
@@ -362,10 +362,14 @@ class TextModel(nn.Module):
         past_key_value = None,
         use_cache: bool = False,
         input_embeds: torch.Tensor | None = None,
-        device: str = "cpu"
     ):
         if input_embeds is None:
             input_embeds = self.embedding(input_ids)
+
+        if use_cache and past_key_value is None:
+            cache = DynamicCache(config)
+        
+        seq_len = past_key_value.get_seq_length() if past_key_value is not None else 0
         
         
 
