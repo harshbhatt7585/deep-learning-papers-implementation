@@ -380,6 +380,14 @@ class TextModel(nn.Module):
 
         pos_emb = self.rope(input_embeds, pos_ids)
         
+
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_len + past_seen_tokens),
+                device=input_embeds.device,
+                dtype=input_embeds.dtype
+            )
+        
         
 
         
