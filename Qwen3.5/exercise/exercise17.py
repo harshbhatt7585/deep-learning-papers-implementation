@@ -5,6 +5,7 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
+from exercise.exercise10 import position_embeddings
 from exercise.exercise16 import MLP, DynamicCache, RMSNorm, RMSNormGated
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
@@ -398,7 +399,26 @@ class TextModel(nn.Module):
             device=input_embeds.device,
             dtype=input_embeds.dtype
         )
+
+        hidden_states = input_embeds
+
+        for layer in self.layers:
+            layer_mask = attention_mask if layer.layer_type == "linear_attention" else causal_mask
+            hidden_states = layer(
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=layer_mask,
+                past_key_value=past_key_value
+            )
+
+        hidden_states = self.norm(hidden_states)
+        return hidden_states, past_key_value
+
         
+
+
+
+
 
         
     
