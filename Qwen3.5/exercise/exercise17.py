@@ -1,4 +1,5 @@
 from math import e
+from turtle import pos
 from delta import (
     apply_mask_to_padding_states,
     torch_causal_conv1d_update,
@@ -369,8 +370,14 @@ class TextModel(nn.Module):
         if use_cache and past_key_value is None:
             cache = DynamicCache(config)
         
-        seq_len = past_key_value.get_seq_length() if past_key_value is not None else 0
-        
+        batch_size, seq_len, hidden_size = input_embeds.shape
+
+        past_seen_tokens = past_key_value.get_seq_length() if past_key_value is not None else 0
+
+        if pos_ids is None:
+            pos_ids = torch.arange(0, seq_len, dtype=input_embeds.dtype, device=input_embeds.shape) + past_seen_tokens
+            pos_ids = pos_ids[None, ...].expand(batch_size, -1)
+
         
 
         
