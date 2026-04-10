@@ -350,6 +350,24 @@ class TextModel(nn.Module):
         self.config = config
         self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rope = RopE(config)
+        self.embedding = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_ids)
+
+    
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positional_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        past_key_value = None,
+        use_cache: bool = False,
+        input_embeds: torch.Tensor | None = None,
+        device: str = "cpu"
+    ):
+        if input_embeds is None:
+            input_embeds = self.embedding(input_ids)
+        
+        
 
         
     
