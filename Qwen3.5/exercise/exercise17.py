@@ -286,6 +286,7 @@ class RopE(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(
+        self,
         config,
         layer_idx: int
     ):
@@ -399,5 +400,9 @@ if __name__ == "__main__":
     rope = RopE(config)
     pos_ids = torch.randn(batch_size, 20)
     out = rope(hidden_states, pos_ids)
+    # print(out)
+
+    decoder = Decoder(config)
+    out = decoder(hidden_states, (cos, sin))
     print(out)
 
