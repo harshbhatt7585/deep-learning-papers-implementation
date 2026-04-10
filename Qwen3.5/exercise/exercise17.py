@@ -403,7 +403,7 @@ if __name__ == "__main__":
     out = rope(hidden_states, pos_ids)
     # print(out)
 
-    decoder = Decoder(config)
+    decoder = Decoder(config, 0)
     out = decoder(hidden_states, (cos, sin))
-    print(out)
+    print(out.shape)
 
