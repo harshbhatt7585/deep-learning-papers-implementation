@@ -4,7 +4,7 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise16 import MLP, RMSNormGated
+from exercise.exercise16 import MLP, RMSNorm, RMSNormGated
 from norm import Qwen35RMSNorm
 from rope import apply_rotary_pos_emb
 from torch import nn
@@ -341,6 +341,19 @@ class Decoder(nn.Module):
         hidden_states = residual + hidden_states
         return hidden_states
             
+
+
+class TextModel(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+
+        self.config = config
+        self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        
+    
+
 
 
 
