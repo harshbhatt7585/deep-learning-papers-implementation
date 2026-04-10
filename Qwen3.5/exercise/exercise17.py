@@ -3,7 +3,7 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise16 import RMSNormGated
+from exercise.exercise16 import MLP, RMSNormGated
 from norm import Qwen35RMSNorm
 from rope import apply_rotary_pos_emb
 from torch import nn
@@ -280,6 +280,29 @@ class RopE(nn.Module):
         freq = expanded_inv_freq @ positon_ids[:, :, None, :]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
+
+
+
+class Decoder(nn.Module):
+    def __init__(
+        config,
+        layer_idx: int
+    ):
+        self.layer_idx = layer_idx
+        layer_type = config.layer_types[layer_idx]
+
+        if layer_type == "linear_attention":
+            self.layer = GatedDeltaNet(config=config, layer_idx=layer_idx)
+
+        elif layer_type == "self_attention":
+            self.layer = Attention(config=config, layer_idx=layer_idx)
+        
+        else:
+            pass
+        
+        self.mlp = MLP(config=config)
+        self.input_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
     
 
 
