@@ -6,6 +6,7 @@ from delta import (
     torch_recurrent_gated_delta_rule,
 )
 from exercise.exercise16 import MLP, DynamicCache, RMSNorm, RMSNormGated
+from mask import build_causal_mask
 from norm import Qwen35RMSNorm
 from rope import apply_rotary_pos_emb
 from torch import nn
@@ -387,7 +388,16 @@ class TextModel(nn.Module):
                 device=input_embeds.device,
                 dtype=input_embeds.dtype
             )
-        
+            
+        kv_length = seq_len + past_seen_tokens
+        causal_mask = build_causal_mask(
+            attention_mask,
+            batch_size,
+            query_length=seq_len,
+            kv_length=kv_length,
+            device=input_embeds.device,
+            dtype=input_embeds.dtype
+        )
         
 
         
