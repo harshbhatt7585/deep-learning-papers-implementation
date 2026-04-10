@@ -344,8 +344,3 @@ if __name__ == "__main__":
     out = rope(hidden_states, pos_ids)
     print(out)
 
-        
-
-        
-
-
