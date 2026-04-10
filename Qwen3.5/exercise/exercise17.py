@@ -290,6 +290,7 @@ class Decoder(nn.Module):
         config,
         layer_idx: int
     ):
+        super().__init__()
         self.layer_idx = layer_idx
         self.layer_type = config.layer_types[layer_idx]
 
