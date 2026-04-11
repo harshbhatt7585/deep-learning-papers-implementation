@@ -295,10 +295,13 @@ def apply_rotary_pos_emb(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ):
-    # cos: [batch_size, seq_len, dim]
-    # sin: [batch_size, seq_len, dim]
+    # cos: [batch_size, seq_len, pos_dim]
+    # sin: [batch_size, seq_len, pos_dim]
     # q: [batch, atten_head, seq_len, head_dim]
     # k: [batch, kv_head, seq_len, head_dim]
+
+    cos = cos.unsqueeze(1) # [batch, 1, seq_len, pos_dim]
+    sin = sin.unsqueeze(1) # [batch, 1, seq_len, pos_dim]
 
     rotary_dim = cos.shape[-1]
     q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
