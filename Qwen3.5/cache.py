@@ -1,5 +1,4 @@
 import torch
-from types import SimpleNamespace
 
 class Qwen35DynamicCache:
     def __init__(self, config):
@@ -24,6 +23,12 @@ class Qwen35DynamicCache:
             self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=2)
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
+    def update_conv_state(self, conv_state: torch.Tensor, layer_idx: int):
+        self.conv_states[layer_idx] = conv_state
+
+    def update_recurrent_state(self, recurrent_state: torch.Tensor | None, layer_idx: int):
+        self.recurrent_states[layer_idx] = recurrent_state
+
     def reorder_cache(self, beam_idx: torch.LongTensor):
         for layer_idx in range(len(self.key_cache)):
             if self.key_cache[layer_idx] is not None:
@@ -46,19 +51,3 @@ class Qwen35DynamicCache:
         return self.conv_states[self.last_linear_layer] is not None
 
         
-
-if __name__ == "__main__":
-    a = torch.randn(2, 4, 5, 32)
-    config = SimpleNamespace(
-        num_hidden_layers=4,
-        layer_types=[
-              "linear_attention",
-              "full_attention",
-              "linear_attention",
-              "full_attention",
-          ],
-        
-    )
-    cache = Qwen35DynamicCache(config)
-    print(a.shape)
-

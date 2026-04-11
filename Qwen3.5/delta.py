@@ -8,7 +8,9 @@ from norm import Qwen35RMSNormGated
 
 
 def apply_mask_to_padding_states(hidden_states: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
-    if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
+    if attention_mask is not None:
+        if attention_mask.shape[1] != hidden_states.shape[1]:
+            attention_mask = attention_mask[:, -hidden_states.shape[1] :]
         hidden_states = hidden_states * attention_mask[:, :, None].to(hidden_states.dtype)
     return hidden_states
 
@@ -150,7 +152,7 @@ class Qwen35GatedDeltaNet(nn.Module):
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
 
-        use_precomputed_states = cache_params is not None and cache_params.has_previous_state(self.layer_idx) and seq_len == 1
+        use_precomputed_states = cache_params is not None and cache_params.has_previous_state and seq_len == 1
         conv_state = cache_params.conv_states[self.layer_idx] if cache_params is not None else None
         recurrent_state = cache_params.recurrent_states[self.layer_idx] if cache_params is not None else None
 
@@ -215,6 +217,4 @@ class Qwen35GatedDeltaNet(nn.Module):
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
         return self.out_proj(core_attn_out)
-
-
 

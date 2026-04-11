@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from exercise.exercise16 import Decoder
-from norm import Qwen35RMSNorm
-from rope import Qwen35RotaryEmbedding
 import torch
 
 
@@ -36,4 +33,3 @@ if __name__ == "__main__":
         'cpu',
         torch.float32
     ))
-
