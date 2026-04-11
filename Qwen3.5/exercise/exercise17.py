@@ -14,8 +14,6 @@ import torch.nn.functional as F
 import torch
 
 
-
-
 class GatedDeltaNet(nn.Module):
     def __init__(
         self,
@@ -272,7 +270,7 @@ class RopE(nn.Module):
         
         
         # we want to expand this dimension of inv_freq to work with positon_ids
-        # [3, batch_size, 1, dim]
+        # [3, batch_size, din // 2, 1]
         expanded_inv_freq = self.inv_freq[None, None, ..., None].float().expand(
             positon_ids.shape[0],
             positon_ids.shape[1],
@@ -280,10 +278,23 @@ class RopE(nn.Module):
             1
         )
 
-        # [3, batch, dim, dim]
+        # [3, batch, dim // 2, seq_len]
         freq = expanded_inv_freq @ positon_ids[:, :, None, :]
+
+        # [3, batch, dim, 2 * dim]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
+
+
+
+def apply_rotary_pos_emb(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+):
+    # cos: [batch_size, ]
+
 
 
 
