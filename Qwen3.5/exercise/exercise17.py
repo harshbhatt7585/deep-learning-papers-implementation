@@ -8,7 +8,6 @@ from delta import (
 from exercise.exercise16 import MLP, DynamicCache, RMSNorm, RMSNormGated
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
-from rope import apply_rotary_pos_emb
 from torch import nn
 import torch.nn.functional as F
 import torch
@@ -286,6 +285,12 @@ class RopE(nn.Module):
         # [3, batch, seq_len, dim]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
+
+
+
+def rotate_half(x: torch.Tensor):
+    x1, x2 = x[..., :x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
 
 
 
