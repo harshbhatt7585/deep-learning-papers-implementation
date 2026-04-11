@@ -12,14 +12,14 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 class Qwen35RotaryEmbedding(torch.nn.Module):
     def __init__(self, config, device=None):
         super().__init__()
-        base = config.rope_parameters["rope_theta"]
-        partial_rotary_factor = config.rope_parameters.get("partial_rotary_factor", 1.0)
-        dim = int(config.head_dim * partial_rotary_factor)
+        base = config.theta
+        partial_rotary_factor = getattr(config, "rotaty_factor", getattr(config, "rotary_factor", 1.0))
+        dim = getattr(config, "dim", int(config.head_dim * partial_rotary_factor))
         inv_freq = 1.0 / (
             base ** (torch.arange(0, dim, 2, dtype=torch.int64, device=device).float() / dim)
         )
         self.attention_scaling = 1.0
-        self.mrope_section = config.rope_parameters.get("mrope_section", [11, 11, 10])
+        self.mrope_section = getattr(config, "mrope_section", [11, 11, 10])
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -73,7 +73,9 @@ def apply_rotary_pos_emb(
 if __name__ == "__main__":
     from types import SimpleNamespace
     config = SimpleNamespace(
-        rope_parameters={"rope_theta": 10000},
+        theta=10000.0,
+        rotaty_factor=1.0,
+        dim=20,
         head_dim=20
     )
     rope = Qwen35RotaryEmbedding(config, 'cpu')

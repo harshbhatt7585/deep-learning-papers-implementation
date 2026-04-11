@@ -114,13 +114,13 @@ class Qwen35GatedDeltaNet(nn.Module):
     def __init__(self, config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.num_v_heads = config.linear_num_value_heads
-        self.num_k_heads = config.linear_num_key_heads
-        self.head_k_dim = config.linear_key_head_dim
-        self.head_v_dim = config.linear_value_head_dim
+        self.num_v_heads = config.num_v_heads
+        self.num_k_heads = config.num_k_heads
+        self.head_k_dim = config.head_k_dim
+        self.head_v_dim = config.head_v_dim
         self.key_dim = self.head_k_dim * self.num_k_heads
         self.value_dim = self.head_v_dim * self.num_v_heads
-        self.conv_kernel_size = config.linear_conv_kernel_dim
+        self.conv_kernel_size = config.linear_conv_kernel_size
         self.layer_idx = layer_idx
 
         self.conv_dim = self.key_dim * 2 + self.value_dim
@@ -217,4 +217,3 @@ class Qwen35GatedDeltaNet(nn.Module):
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
         return self.out_proj(core_attn_out)
-
