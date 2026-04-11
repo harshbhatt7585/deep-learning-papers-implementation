@@ -376,7 +376,7 @@ class TextModel(nn.Module):
         past_seen_tokens = past_key_value.get_seq_length() if past_key_value is not None else 0
 
         if position_ids is None:
-            pos_ids = torch.arange(0, seq_len, dtype=input_embeds.dtype, device=input_embeds.shape) + past_seen_tokens
+            pos_ids = torch.arange(0, seq_len, dtype=input_embeds.dtype, device=input_embeds.device) + past_seen_tokens
             pos_ids = pos_ids[None, ...].expand(batch_size, -1)
 
         pos_emb = self.rope(input_embeds, pos_ids)
