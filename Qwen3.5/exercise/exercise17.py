@@ -289,13 +289,27 @@ class RopE(nn.Module):
 
 
 
-# def apply_rotary_pos_emb(
-#     q: torch.Tensor,
-#     k: torch.Tensor,
-#     cos: torch.Tensor,
-#     sin: torch.Tensor,
-# ):
-#     # cos: [batch_size, ]
+def apply_rotary_pos_emb(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+):
+    # cos: [batch_size, seq_len, dim]
+    # sin: [batch_size, seq_len, dim]
+    # q: [batch, atten_head, seq_len, head_dim]
+    # k: [batch, kv_head, seq_len, head_dim]
+
+    rotary_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., k:rotary_dim], k[..., rotary_dim:]
+
+    q_emebd = (q_rot * cos) + (rotary_half(q_rot) * sin)
+    k_emebd = (k_rot * cos) + (rotary_half(k_rot) * sin)
+
+    q_emebd = torch.cat([q_emebd, q_pass], dim=-1)
+    k_emebd = torch.cat([k_emebd, k_pass], dim=-1)
+    return q_emebd, k_emebd
 
 
 
