@@ -405,7 +405,7 @@ class TextModel(nn.Module):
             layer_mask = attention_mask if layer.layer_type == "linear_attention" else causal_mask
             hidden_states = layer(
                 hidden_states=hidden_states,
-                position_embeddings=pos_emb,
+                postional_embedding=pos_emb,
                 attention_mask=layer_mask,
                 past_key_value=past_key_value
             )
@@ -493,5 +493,5 @@ if __name__ == "__main__":
     out = llm(
         input_ids=input_ids,
     )
-    print(out.shape)
+    print(out)
 
