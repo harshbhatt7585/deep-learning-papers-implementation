@@ -280,20 +280,22 @@ class RopE(nn.Module):
 
         # [3, batch, dim // 2, seq_len]
         freq = expanded_inv_freq @ positon_ids[:, :, None, :]
+        # [3, batch, seq_len, dim // 2]
+        freq = freq.transpose(2, 3)
 
-        # [3, batch, dim, 2 * dim]
+        # [3, batch, seq_len, dim]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
 
 
 
-def apply_rotary_pos_emb(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-):
-    # cos: [batch_size, ]
+# def apply_rotary_pos_emb(
+#     q: torch.Tensor,
+#     k: torch.Tensor,
+#     cos: torch.Tensor,
+#     sin: torch.Tensor,
+# ):
+#     # cos: [batch_size, ]
 
 
 
