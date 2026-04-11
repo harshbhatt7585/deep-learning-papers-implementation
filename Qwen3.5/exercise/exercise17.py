@@ -5,7 +5,6 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise10 import position_embeddings
 from exercise.exercise16 import MLP, DynamicCache, RMSNorm, RMSNormGated
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
@@ -354,13 +353,13 @@ class TextModel(nn.Module):
         self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rope = RopE(config)
-        self.embedding = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_ids)
+        self.embedding = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
 
     
     def forward(
         self,
         input_ids: torch.Tensor,
-        positional_ids: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         past_key_value = None,
         use_cache: bool = False,
@@ -376,7 +375,7 @@ class TextModel(nn.Module):
 
         past_seen_tokens = past_key_value.get_seq_length() if past_key_value is not None else 0
 
-        if pos_ids is None:
+        if position_ids is None:
             pos_ids = torch.arange(0, seq_len, dtype=input_embeds.dtype, device=input_embeds.shape) + past_seen_tokens
             pos_ids = pos_ids[None, ...].expand(batch_size, -1)
 
@@ -406,7 +405,7 @@ class TextModel(nn.Module):
             layer_mask = attention_mask if layer.layer_type == "linear_attention" else causal_mask
             hidden_states = layer(
                 hidden_states=hidden_states,
-                position_embeddings=position_embeddings,
+                position_embeddings=pos_emb,
                 attention_mask=layer_mask,
                 past_key_value=past_key_value
             )
@@ -487,5 +486,12 @@ if __name__ == "__main__":
 
     decoder = Decoder(config, 0)
     out = decoder(hidden_states, (cos, sin))
+    print(out.shape)
+
+    llm = TextModel(config)
+    input_ids = torch.ones((batch_size, 20), dtype=torch.long)
+    out = llm(
+        input_ids=input_ids,
+    )
     print(out.shape)
 
