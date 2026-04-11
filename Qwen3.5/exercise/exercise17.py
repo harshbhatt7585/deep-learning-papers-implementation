@@ -12,7 +12,8 @@ from rope import apply_rotary_pos_emb
 from torch import nn
 import torch.nn.functional as F
 import torch
-from utils import repeat_kv
+
+
 
 
 class GatedDeltaNet(nn.Module):
@@ -220,8 +221,8 @@ class Attention(nn.Module):
         if past_key_value:
             k, v = past_key_value.update(q, v)
         
-        k = repeat_kv(k, self.num_kv_groups)
-        v = repeat_kv(v, self.num_kv_groups)
+        k = k.repeat_interleave(self.num_kv_groups, dim=1)
+        v = v.repeat_interleave(self.num_kv_groups, dim=1)
 
 
         # attention computation
