@@ -305,14 +305,14 @@ def apply_rotary_pos_emb(
 
     rotary_dim = cos.shape[-1]
     q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., k:rotary_dim], k[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
 
-    q_emebd = (q_rot * cos) + (rotary_half(q_rot) * sin)
-    k_emebd = (k_rot * cos) + (rotary_half(k_rot) * sin)
+    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
+    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
 
-    q_emebd = torch.cat([q_emebd, q_pass], dim=-1)
-    k_emebd = torch.cat([k_emebd, k_pass], dim=-1)
-    return q_emebd, k_emebd
+    q_embed = torch.cat([q_embed, q_pass], dim=-1)
+    k_embed = torch.cat([k_embed, k_pass], dim=-1)
+    return q_embed, k_embed
 
 
 
