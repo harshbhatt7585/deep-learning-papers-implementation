@@ -2,7 +2,6 @@ from math import e
 from turtle import pos
 from delta import (
     apply_mask_to_padding_states,
-    torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
 
