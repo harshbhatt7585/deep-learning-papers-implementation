@@ -429,6 +429,8 @@ class DynamicCache(nn.Module):
         else:
             self.key_cache[layer_idx] = torch.cat((self.key_cache[layer_idx], key), dim=-1)
             self.value_cache[layer_idx] = torch.cat((self.value_cache[layer_idx], value), dim=-1)
+        
+        return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
 
 
