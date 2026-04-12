@@ -5,7 +5,7 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise16 import MLP, RMSNormGated
+from exercise.exercise16 import MLP
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
 from torch import nn
