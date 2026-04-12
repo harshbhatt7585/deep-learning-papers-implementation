@@ -5,7 +5,7 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise16 import MLP
+
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
 from torch import nn
@@ -366,6 +366,23 @@ def build_causal_mask(
     padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype)) * min_value
     return padding_mask + causal
 
+
+
+
+class MLP(nn.Module):
+    def __init__(
+        self,
+        config
+    ):
+        super().__init__()
+        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+
+    def forward(self, x: torch.Tensor):
+        x = F.silu(self.gate_proj(x)) * self.up_proj(x)
+        x = self.down_proj(x)
+        return x
 
 
 
