@@ -405,6 +405,19 @@ class Decoder(nn.Module):
 
 
 
+class DynamicCache(nn.Module):
+    def __init__(
+        self,
+        config
+    ):
+        self.key_cache = [None for _ in range(config.num_hidden_layers)]
+        self.value_cache = [None for _ in range(config.num_hidden_layers)]
+        self.conv_states = [None for _ in range(config.num_hidden_layers)]
+        self.recurrent_state = [None for _ in range(config.num_hidden_layers)]
+
+
+
+
 class TextModel(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
@@ -474,8 +487,6 @@ class TextModel(nn.Module):
         return hidden_states, past_key_value
 
         
-
-
 
 if __name__ == "__main__":
     from types import SimpleNamespace
