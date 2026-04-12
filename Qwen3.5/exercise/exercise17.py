@@ -31,7 +31,9 @@ class RMSNorm(nn.Module):
         out = out * (1.0 + self.weight.float())
         return out.to(dtype=x.dtype)
 
-        
+
+
+
 
 
 class GatedDeltaNet(nn.Module):
@@ -67,7 +69,7 @@ class GatedDeltaNet(nn.Module):
         
         self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
         self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads).uniform_(0, 16)))
-        self.norm = RMSNormGated(self.head_v_dim, eps=config.rms_norm_eps)
+        self.norm = RMSNorm(self.head_v_dim, eps=config.rms_norm_eps)
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         self.qkv = nn.Linear(
@@ -158,7 +160,8 @@ class GatedDeltaNet(nn.Module):
 
         attn_core_out = attn_core_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
-        attn_core_out = self.norm(attn_core_out, z)
+        attn_core_out = self.norm(attn_core_out)
+        attn_core_out = attn_core_out * F.silu(z)
         attn_core_out = attn_core_out.reshape(batch_size, seq_len, -1)
 
         out = self.out_proj(attn_core_out)
