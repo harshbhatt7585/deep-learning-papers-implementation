@@ -6,7 +6,6 @@ from delta import (
     torch_recurrent_gated_delta_rule,
 )
 
-from mask import build_causal_mask
 from norm import Qwen35RMSNorm
 from torch import nn
 import torch.nn.functional as F
@@ -365,7 +364,6 @@ def build_causal_mask(
     
     padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype)) * min_value
     return padding_mask + causal
-
 
 
 
