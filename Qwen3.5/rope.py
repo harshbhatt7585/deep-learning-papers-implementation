@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -9,44 +10,38 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
-class Qwen35RotaryEmbedding(torch.nn.Module):
-    def __init__(self, config, device=None):
+
+class RoPE(nn.Module):
+    def __init__(self, config) -> None:
         super().__init__()
-        base = config.theta
-        partial_rotary_factor = getattr(config, "rotaty_factor", getattr(config, "rotary_factor", 1.0))
-        dim = getattr(config, "dim", int(config.head_dim * partial_rotary_factor))
-        inv_freq = 1.0 / (
-            base ** (torch.arange(0, dim, 2, dtype=torch.int64, device=device).float() / dim)
-        )
-        self.attention_scaling = 1.0
+        self.theta = config.theta
+        self.dim = min(config.dim, config.head_dim)
         self.mrope_section = getattr(config, "mrope_section", [11, 11, 10])
+        inv_freq = 1.0 / (
+            self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float32) / self.dim)
+        )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        position_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if position_ids.ndim == 2:
             position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
         elif position_ids.ndim != 3:
-            raise ValueError(f"Expected 2D or 3D position ids, got shape {tuple(position_ids.shape)}")
+            raise ValueError(f"Expected 2D or 3D position ids, got {tuple(position_ids.shape)}")
 
         inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(
             3, position_ids.shape[1], -1, 1
         )
         position_ids_expanded = position_ids[:, :, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
-        freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)
+        freqs = apply_rotary_pos_emb(freqs)
         emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos() * self.attention_scaling
-        sin = emb.sin() * self.attention_scaling
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
-
-    @staticmethod
-    def apply_interleaved_mrope(freqs: torch.Tensor, mrope_section: list[int]) -> torch.Tensor:
-        freqs_t = freqs[0].clone()
-        for dim, offset in enumerate((1, 2), start=1):
-            length = mrope_section[dim] * 3
-            idx = slice(offset, length, 3)
-            freqs_t[..., idx] = freqs[dim, ..., idx]
-        return freqs_t
+        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 
 
 def apply_rotary_pos_emb(
@@ -72,14 +67,16 @@ def apply_rotary_pos_emb(
 
 if __name__ == "__main__":
     from types import SimpleNamespace
+
     config = SimpleNamespace(
         theta=10000.0,
         rotaty_factor=1.0,
         dim=20,
-        head_dim=20
+        head_dim=20,
+        mrope_section=[3, 2, 2],
     )
-    rope = Qwen35RotaryEmbedding(config, 'cpu')
-    
+    rope = Qwen35RotaryEmbedding(config, "cpu")
+
     q = torch.randn(4, 8, 20, 20)
     k = torch.randn(4, 8, 20, 20)
     position_ids = torch.arange(20).unsqueeze(0).expand(4, -1)
@@ -87,5 +84,5 @@ if __name__ == "__main__":
 
     print(cos.shape)
     print(q.shape)
-
-    print(apply_rotary_pos_emb(q, k, cos, sin))
+    q_embed, k_embed = apply_rotary_pos_emb(q, k, cos, sin)
+    print(q_embed.shape, k_embed.shape)

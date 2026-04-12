@@ -10,6 +10,15 @@ ACT2FN = {
     "relu": F.relu,
 }
 
+def apply_interleaved_mrope(freqs: torch.Tensor) -> torch.Tensor:
+    freqs_t = freqs[0].clone()
+    for dim, offset in enumerate((1, 2), start=1):
+        length = self.mrope_section[dim] * 3
+        idx = slice(offset, length, 3)
+        freqs_t[..., idx] = freqs[dim, ..., idx]
+    return freqs_t
+
+
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_heads, seq_len, head_dim = hidden_states.shape
