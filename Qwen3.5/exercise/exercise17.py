@@ -1,5 +1,3 @@
-from math import e
-from turtle import pos
 from delta import (
     apply_mask_to_padding_states,
     torch_recurrent_gated_delta_rule,
@@ -101,7 +99,10 @@ class GatedDeltaNet(nn.Module):
         cache_param=None,
         attention_mask=None,
     ) -> torch.Tensor:
+        print("Attention mask shape", attention_mask.shape)
         hidden_states = apply_mask_to_padding_states(hidden_states=hidden_states, attention_mask=attention_mask)
+                
+
         batch_size, seq_len, _ = hidden_states.shape
         
         conv_state = cache_param.conv_states[self.layer_idx] if cache_param is not None else None
@@ -396,15 +397,15 @@ class Decoder(nn.Module):
         if self.layer_type == "linear_attention":
             self.linear_attention = GatedDeltaNet(config=config, layer_idx=layer_idx)
 
-        elif self.layer_type == "self_attention":
+        elif self.layer_type == "full_attention":
             self.self_attention = Attention(config=config, layer_idx=layer_idx)
         
         else:
             pass
         
         self.mlp = MLP(config=config)
-        self.input_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen35RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
     
     
     def forward(
@@ -423,7 +424,7 @@ class Decoder(nn.Module):
                 past_key_value,
                 attention_mask
             )
-        elif self.layer_type == "self_attention":
+        elif self.layer_type == "full_attention":
             hidden_states = self.self_attention(
                 hidden_states,
                 postional_embedding,
@@ -579,15 +580,15 @@ if __name__ == "__main__":
         mrope_section=[11, 11, 10],
     )
 
-    model = GatedDeltaNet(
-        config=config,
-        layer_idx=1
-    )
+    # model = GatedDeltaNet(
+    #     config=config,
+    #     layer_idx=1
+    # )
 
     batch_size = 4
     hidden_states = torch.randn(batch_size, 1, config.hidden_size)
-    out = model(hidden_states)
-    print(out.shape)
+    # out = model(hidden_states)
+    # print(out.shape)
 
     cos = torch.ones(batch_size, 1, config.head_dim)
     sin = torch.zeros(batch_size, 1, config.head_dim)
