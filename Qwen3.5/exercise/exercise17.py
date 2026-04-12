@@ -321,6 +321,30 @@ def apply_rotary_pos_emb(
 
 
 
+def build_causal_mask(
+    attention_mask: torch.Tensor | None,
+    batch_size: int,
+    query_length: int, 
+    kv_length: int,
+    device: str,
+    dtype: torch.dtype
+) -> torch.Tensor:
+    min_value = torch.finfo(dtype).min
+    causal = torch.full((query_length, kv_length), min_value, dtype=dtype, device=device) # [query_length, kv_length]
+    causal = torch.triu(causal, diagonal= 1 + kv_length - query_length)  # [query_length, kv_length]
+
+    causal = causal[None, ...].expand(batch_size, 1, query_length, kv_length) # [batch, 1, q_len, kv_len]
+    if attention_mask is None:
+        return causal
+
+    # attention_mask: [batch_size, seq_len]
+    
+    padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype)) * min_value
+    return padding_mask + causal
+
+
+
+
 
 class Decoder(nn.Module):
     def __init__(
@@ -378,7 +402,7 @@ class Decoder(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
-            
+
 
 
 class TextModel(nn.Module):
@@ -450,14 +474,6 @@ class TextModel(nn.Module):
         return hidden_states, past_key_value
 
         
-
-
-
-
-
-        
-    
-
 
 
 
