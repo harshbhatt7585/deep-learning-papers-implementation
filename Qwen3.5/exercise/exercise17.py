@@ -415,6 +415,22 @@ class DynamicCache(nn.Module):
         self.conv_states = [None for _ in range(config.num_hidden_layers)]
         self.recurrent_state = [None for _ in range(config.num_hidden_layers)]
 
+    
+    def update(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        layer_idx: int
+    ):
+        if self.key_cache[layer_idx] is None:
+            self.key_cache[layer_idx] = key
+            self.value_cache[layer_idx] = value
+        
+        else:
+            self.key_cache[layer_idx] = torch.cat((self.key_cache[layer_idx], key), dim=-1)
+            self.value_cache[layer_idx] = torch.cat((self.value_cache[layer_idx], value), dim=-1)
+
+
 
 
 
