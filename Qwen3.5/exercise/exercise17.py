@@ -6,7 +6,6 @@ from delta import (
     torch_recurrent_gated_delta_rule,
 )
 
-from norm import Qwen35RMSNorm
 from torch import nn
 import torch.nn.functional as F
 import torch
@@ -200,7 +199,7 @@ class Attention(nn.Module):
             bias=config.attention_bias
         )
 
-        self.norm = Qwen35RMSNorm(self.hidden_size, config.rms_norm_eps)
+        self.norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
 
 
         self.out_proj = nn.Linear(
