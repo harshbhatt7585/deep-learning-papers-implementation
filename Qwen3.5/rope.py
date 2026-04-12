@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from utils import apply_interleaved_mrope
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -11,12 +12,11 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 
-class RoPE(nn.Module):
+class Qwen35RotaryEmbedding(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         self.theta = config.theta
         self.dim = min(config.dim, config.head_dim)
-        self.mrope_section = getattr(config, "mrope_section", [11, 11, 10])
         inv_freq = 1.0 / (
             self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float32) / self.dim)
         )
@@ -39,7 +39,7 @@ class RoPE(nn.Module):
         )
         position_ids_expanded = position_ids[:, :, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
-        freqs = apply_rotary_pos_emb(freqs)
+        freqs = apply_interleaved_mrope(freqs)
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 

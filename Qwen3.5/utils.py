@@ -12,8 +12,9 @@ ACT2FN = {
 
 def apply_interleaved_mrope(freqs: torch.Tensor) -> torch.Tensor:
     freqs_t = freqs[0].clone()
+    mrope_section = [11, 11, 10]
     for dim, offset in enumerate((1, 2), start=1):
-        length = self.mrope_section[dim] * 3
+        length = mrope_section[dim] * 3
         idx = slice(offset, length, 3)
         freqs_t[..., idx] = freqs[dim, ..., idx]
     return freqs_t
