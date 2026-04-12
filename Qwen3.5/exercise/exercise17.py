@@ -458,7 +458,7 @@ class TextModel(nn.Module):
             input_embeds = self.embedding(input_ids)
 
         if use_cache and past_key_value is None:
-            cache = DynamicCache(config)
+            past_key_value = DynamicCache(config)
         
         batch_size, seq_len, hidden_size = input_embeds.shape
 
