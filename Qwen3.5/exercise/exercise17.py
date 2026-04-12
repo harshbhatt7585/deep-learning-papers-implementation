@@ -24,7 +24,12 @@ class RMSNorm(nn.Module):
 
     def _norm(self, x: torch.Tensor):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        
+
+    def forward(self, x: torch.Tensor):
+        out = self._norm(x)
+        out = out * (1.0 + self.weight.float())
+        return out.to(dtype=x.dtype)
+
         
 
 
