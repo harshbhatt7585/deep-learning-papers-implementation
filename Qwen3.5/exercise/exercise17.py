@@ -5,12 +5,27 @@ from delta import (
     torch_causal_conv1d_update,
     torch_recurrent_gated_delta_rule,
 )
-from exercise.exercise16 import MLP, DynamicCache, RMSNorm, RMSNormGated
+from exercise.exercise16 import MLP, RMSNorm, RMSNormGated
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
 from torch import nn
 import torch.nn.functional as F
 import torch
+
+
+class RMSNorm(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        eps: int = 1e-6
+    ):
+        self.eps = eps
+        self.weight = torch.Parameter(torch.zeros(dim))
+
+    def _norm(self, x: torch.Tensor):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        
+        
 
 
 class GatedDeltaNet(nn.Module):
