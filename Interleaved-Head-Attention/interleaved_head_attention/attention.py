@@ -243,43 +243,40 @@ class InterleavedHeadAttention(nn.Module):
         if attention_mask is None and self._can_use_builtin_causal():
             return None, expanded_keep
 
-        base_mask = self._build_base_attention_mask(seq_len=seq_len, device=device)
+        total_seq = seq_len * self.num_pseudo_heads
+        if self.config.mask_mode == "none" and self.config.window_size is None:
+            base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
+        else:
+            virtual_positions = torch.arange(total_seq, device=device)
+            query_tokens = virtual_positions // self.num_pseudo_heads
+            key_tokens = virtual_positions // self.num_pseudo_heads
+
+            if self.config.mask_mode == "none":
+                base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
+            elif self.config.mask_mode == "flat_causal":
+                if self.config.causal:
+                    base_mask = virtual_positions[:, None] >= virtual_positions[None, :]
+                else:
+                    base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
+            else:
+                if self.config.causal:
+                    base_mask = query_tokens[:, None] >= key_tokens[None, :]
+                else:
+                    base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
+
+            if self.config.window_size is not None:
+                token_delta = query_tokens[:, None] - key_tokens[None, :]
+                if self.config.causal:
+                    base_mask = base_mask & (token_delta >= 0) & (token_delta < self.config.window_size)
+                else:
+                    base_mask = base_mask & (token_delta.abs() < self.config.window_size)
+
         if expanded_keep is None:
             return base_mask.unsqueeze(0).expand(batch_size, -1, -1), None
 
         key_mask = expanded_keep[:, None, :]
         return base_mask.unsqueeze(0) & key_mask, expanded_keep
 
-    def _build_base_attention_mask(self, *, seq_len: int, device: torch.device) -> torch.Tensor:
-        total_seq = seq_len * self.num_pseudo_heads
-        if self.config.mask_mode == "none" and self.config.window_size is None:
-            return torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
-
-        virtual_positions = torch.arange(total_seq, device=device)
-        query_tokens = virtual_positions // self.num_pseudo_heads
-        key_tokens = virtual_positions // self.num_pseudo_heads
-
-        if self.config.mask_mode == "none":
-            mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
-        elif self.config.mask_mode == "flat_causal":
-            if self.config.causal:
-                mask = virtual_positions[:, None] >= virtual_positions[None, :]
-            else:
-                mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
-        else:
-            if self.config.causal:
-                mask = query_tokens[:, None] >= key_tokens[None, :]
-            else:
-                mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
-
-        if self.config.window_size is not None:
-            token_delta = query_tokens[:, None] - key_tokens[None, :]
-            if self.config.causal:
-                mask = mask & (token_delta >= 0) & (token_delta < self.config.window_size)
-            else:
-                mask = mask & (token_delta.abs() < self.config.window_size)
-
-        return mask
 if __name__ == "__main__":
     torch.manual_seed(0)
 
