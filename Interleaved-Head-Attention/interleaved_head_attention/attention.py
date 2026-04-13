@@ -4,10 +4,16 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-try:
-    from .config import IHAConfig
-except ImportError:
-    from config import IHAConfig
+from config import IHAConfig
+
+
+class Linear(nn.Linear):
+    """Match nanochat's explicit compute-dtype behavior."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weight = self.weight.to(dtype=x.dtype)
+        bias = None if self.bias is None else self.bias.to(dtype=x.dtype)
+        return F.linear(x, weight, bias)
 
 
 class InterleavedHeadAttention(nn.Module):
@@ -28,10 +34,10 @@ class InterleavedHeadAttention(nn.Module):
         self.head_dim = config.head_dim
         self.scaling = self.head_dim**-0.5
 
-        self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.bias)
-        self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.bias)
-        self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.bias)
-        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.bias)
+        self.q_proj = Linear(self.hidden_size, self.hidden_size, bias=config.bias)
+        self.k_proj = Linear(self.hidden_size, self.hidden_size, bias=config.bias)
+        self.v_proj = Linear(self.hidden_size, self.hidden_size, bias=config.bias)
+        self.o_proj = Linear(self.hidden_size, self.hidden_size, bias=config.bias)
 
         identity = torch.eye(self.num_heads).unsqueeze(-1).expand(
             -1,
@@ -96,9 +102,9 @@ class InterleavedHeadAttention(nn.Module):
         key_states = self.k_proj(hidden_states).reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         value_states = self.v_proj(hidden_states).reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        query_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_q, query_states)
-        key_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_k, key_states)
-        value_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_v, value_states)
+        query_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_q.to(query_states.dtype), query_states)
+        key_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_k.to(key_states.dtype), key_states)
+        value_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_v.to(value_states.dtype), value_states)
 
         query_states = self._merge_pseudo(query_states)
         key_states = self._merge_pseudo(key_states)
@@ -168,7 +174,7 @@ class InterleavedHeadAttention(nn.Module):
             self.num_heads * self.num_pseudo_heads,
             head_dim,
         )
-        return torch.einsum("ho,bnod->bhnd", self.collapse, flat_states)
+        return torch.einsum("ho,bnod->bhnd", self.collapse.to(flat_states.dtype), flat_states)
 
     def _can_use_builtin_causal(self) -> bool:
         return self.config.causal and self.config.window_size is None
