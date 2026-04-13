@@ -14,9 +14,7 @@ class InterleavedHeadAttention(nn.Module):
     """
     Interleaved Head Attention (IHA) as described in arXiv:2602.21371.
 
-    The paper contains two slightly different collapse definitions:
-    Algorithm 1 uses a per-head pseudo collapse, while Definition 3 collapses
-    across all H * P outputs. This module supports both via `collapse_mode`.
+    This implementation uses the global H * P -> H collapse from Definition 3.
     """
 
     def __init__(self, config: IHAConfig) -> None:
@@ -35,33 +33,19 @@ class InterleavedHeadAttention(nn.Module):
         self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.bias)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.bias)
 
-        mix_shape = (self.num_heads, self.num_heads, self.num_pseudo_heads)
-        self.alpha_q = nn.Parameter(torch.empty(mix_shape))
-        self.alpha_k = nn.Parameter(torch.empty(mix_shape))
-        self.alpha_v = nn.Parameter(torch.empty(mix_shape))
+        identity = torch.eye(self.num_heads).unsqueeze(-1).expand(
+            -1,
+            -1,
+            self.num_pseudo_heads,
+        ).clone()
+        self.alpha_q = nn.Parameter(identity.clone())
+        self.alpha_k = nn.Parameter(identity.clone())
+        self.alpha_v = nn.Parameter(identity.clone())
 
-        if config.collapse_mode == "per_head":
-            collapse_shape = (self.num_heads, self.num_pseudo_heads)
-        else:
-            collapse_shape = (self.num_heads, self.num_heads * self.num_pseudo_heads)
-        self.collapse = nn.Parameter(torch.empty(collapse_shape))
-
-        self.reset_iha_parameters()
-
-    def reset_iha_parameters(self) -> None:
-        with torch.no_grad():
-            identity = torch.eye(self.num_heads, dtype=self.alpha_q.dtype, device=self.alpha_q.device)
-            identity = identity.unsqueeze(-1).expand(-1, -1, self.num_pseudo_heads)
-            self.alpha_q.copy_(identity)
-            self.alpha_k.copy_(identity)
-            self.alpha_v.copy_(identity)
-
-            if self.config.collapse_mode == "per_head":
-                self.collapse.fill_(1.0 / self.num_pseudo_heads)
-            else:
-                self.collapse.zero_()
-                for head_idx in range(self.num_heads):
-                    self.collapse[head_idx, head_idx * self.num_pseudo_heads] = 1.0
+        collapse = torch.zeros(self.num_heads, self.num_heads * self.num_pseudo_heads)
+        head_idx = torch.arange(self.num_heads)
+        collapse[head_idx, head_idx * self.num_pseudo_heads] = 1.0
+        self.collapse = nn.Parameter(collapse)
 
     def expand_position_ids(
         self,
@@ -177,9 +161,6 @@ class InterleavedHeadAttention(nn.Module):
         )
 
     def _collapse_pseudo(self, states: torch.Tensor) -> torch.Tensor:
-        if self.config.collapse_mode == "per_head":
-            return torch.einsum("hp,bhnpd->bhnd", self.collapse, states)
-
         batch_size, _, seq_len, _, head_dim = states.shape
         flat_states = states.permute(0, 2, 1, 3, 4).contiguous().view(
             batch_size,
@@ -247,7 +228,6 @@ if __name__ == "__main__":
         num_pseudo_heads=2,
         attention_dropout=0.0,
         causal=True,
-        collapse_mode="per_head",
     )
     layer = InterleavedHeadAttention(config).eval()
 

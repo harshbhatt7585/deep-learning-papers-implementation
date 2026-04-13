@@ -7,9 +7,7 @@ This directory now contains a self-contained PyTorch implementation of Interleav
 - Standard `q_proj`, `k_proj`, `v_proj`, and `o_proj` layers.
 - Learned pseudo-head mixing tensors `alpha_q`, `alpha_k`, and `alpha_v` with shape `(H, H, P)`.
 - Token-major interleaving of pseudo heads into an expanded sequence of length `N * P`.
-- Two collapse variants:
-  - `per_head`: matches Algorithm 1 in the paper.
-  - `global`: matches the broader `H * P -> H` collapse used in Definition 3.
+- Global `H * P -> H` collapse after attention.
 - Flat causal masking over the fully interleaved virtual sequence.
 - Optional local sliding-window restriction using `window_size` in original-token units.
 
@@ -44,7 +42,6 @@ config = IHAConfig(
     num_pseudo_heads=8,
     attention_dropout=0.0,
     causal=True,
-    collapse_mode="per_head",
 )
 
 layer = InterleavedHeadAttention(config)
