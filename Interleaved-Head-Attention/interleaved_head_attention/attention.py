@@ -139,9 +139,7 @@ class InterleavedHeadAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        *,
-        need_weights: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> torch.Tensor:
         if hidden_states.dim() != 3:
             raise ValueError(
                 f"hidden_states must have shape (batch, seq_len, hidden_size), got {tuple(hidden_states.shape)}"
@@ -168,18 +166,7 @@ class InterleavedHeadAttention(nn.Module):
         )
         dropout_p = self.config.attention_dropout if self.training else 0.0
 
-        if need_weights:
-            attn_scores = torch.matmul(query_states, key_states.transpose(-1, -2)) * self.scaling
-            if attn_mask is not None:
-                attn_scores = attn_scores.masked_fill(
-                    ~attn_mask[:, None, :, :],
-                    torch.finfo(attn_scores.dtype).min,
-                )
-            attn_weights = torch.softmax(attn_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            if dropout_p:
-                attn_weights = F.dropout(attn_weights, p=dropout_p)
-            attn_output = torch.matmul(attn_weights, value_states)
-        elif attn_mask is None and self._can_use_builtin_causal():
+        if attn_mask is None and self._can_use_builtin_causal():
             attn_output = F.scaled_dot_product_attention(
                 query_states,
                 key_states,
@@ -187,7 +174,6 @@ class InterleavedHeadAttention(nn.Module):
                 dropout_p=dropout_p,
                 is_causal=True,
             )
-            attn_weights = None
         else:
             sdpa_mask = None if attn_mask is None else attn_mask[:, None, :, :]
             attn_output = F.scaled_dot_product_attention(
@@ -198,7 +184,6 @@ class InterleavedHeadAttention(nn.Module):
                 dropout_p=dropout_p,
                 is_causal=False,
             )
-            attn_weights = None
 
         if query_keep is not None:
             attn_output = attn_output * query_keep[:, None, :, None].to(attn_output.dtype)
@@ -218,7 +203,7 @@ class InterleavedHeadAttention(nn.Module):
             token_keep = self._normalize_attention_mask(attention_mask).to(attn_output.dtype)
             attn_output = attn_output * token_keep.unsqueeze(-1)
 
-        return attn_output, attn_weights
+        return attn_output
 
 
     def _merge_pseudo(self, states: torch.Tensor) -> torch.Tensor:
@@ -333,8 +318,7 @@ if __name__ == "__main__":
     layer = InterleavedHeadAttention(config).eval()
 
     hidden_states = torch.randn(2, 5, 32)
-    output, weights = layer(hidden_states, need_weights=True)
+    output = layer(hidden_states)
 
     print("Input shape:", tuple(hidden_states.shape))
     print("Output shape:", tuple(output.shape))
-    print("Attention weights shape:", None if weights is None else tuple(weights.shape))

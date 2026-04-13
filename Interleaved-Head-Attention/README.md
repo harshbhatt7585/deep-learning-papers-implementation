@@ -52,7 +52,7 @@ config = InterleavedHeadAttentionConfig(
 
 layer = InterleavedHeadAttention(config)
 hidden_states = torch.randn(2, 128, 512)
-output, _ = layer(hidden_states)
+output = layer(hidden_states)
 print(output.shape)  # torch.Size([2, 128, 512])
 ```
 
