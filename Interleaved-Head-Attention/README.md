@@ -10,10 +10,7 @@ This directory now contains a self-contained PyTorch implementation of Interleav
 - Two collapse variants:
   - `per_head`: matches Algorithm 1 in the paper.
   - `global`: matches the broader `H * P -> H` collapse used in Definition 3.
-- Three masking modes:
-  - `token_causal`: causal at the original token level.
-  - `flat_causal`: strict causal masking over the fully interleaved virtual sequence.
-  - `none`: no causal masking.
+- Flat causal masking over the fully interleaved virtual sequence.
 - Optional local sliding-window restriction using `window_size` in original-token units.
 
 ## Files
@@ -46,7 +43,6 @@ config = InterleavedHeadAttentionConfig(
     num_pseudo_heads=8,
     attention_dropout=0.0,
     causal=True,
-    mask_mode="token_causal",
     collapse_mode="per_head",
 )
 

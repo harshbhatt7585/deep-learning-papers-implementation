@@ -8,7 +8,6 @@ from torch import nn
 from torch.nn import functional as F
 
 CollapseMode = Literal["per_head", "global"]
-MaskMode = Literal["token_causal", "flat_causal", "none"]
 
 
 @dataclass
@@ -21,7 +20,6 @@ class InterleavedHeadAttentionConfig:
     causal: bool = True
     window_size: int | None = None
     collapse_mode: CollapseMode = "per_head"
-    mask_mode: MaskMode = "token_causal"
 
     @property
     def head_dim(self) -> int:
@@ -35,13 +33,6 @@ class InterleavedHeadAttention(nn.Module):
     The paper contains two slightly different collapse definitions:
     Algorithm 1 uses a per-head pseudo collapse, while Definition 3 collapses
     across all H * P outputs. This module supports both via `collapse_mode`.
-
-    Likewise, the paper describes flattening pseudo tokens into the sequence
-    axis and then applying standard causal attention. For autoregressive use,
-    `token_causal` is often the safer default because it preserves original
-    token causality while still letting pseudo tokens at the same position
-    interact. Set `mask_mode="flat_causal"` to apply strict causal attention
-    over the fully interleaved virtual sequence.
     """
 
     def __init__(self, config: InterleavedHeadAttentionConfig) -> None:
@@ -215,11 +206,7 @@ class InterleavedHeadAttention(nn.Module):
         return torch.einsum("ho,bnod->bhnd", self.collapse, flat_states)
 
     def _can_use_builtin_causal(self) -> bool:
-        return (
-            self.config.causal
-            and self.config.mask_mode == "flat_causal"
-            and self.config.window_size is None
-        )
+        return self.config.causal and self.config.window_size is None
 
     def _prepare_masks(
         self,
@@ -244,28 +231,18 @@ class InterleavedHeadAttention(nn.Module):
             return None, expanded_keep
 
         total_seq = seq_len * self.num_pseudo_heads
-        if self.config.mask_mode == "none" and self.config.window_size is None:
+        if not self.config.causal and self.config.window_size is None:
             base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
         else:
             virtual_positions = torch.arange(total_seq, device=device)
             query_tokens = virtual_positions // self.num_pseudo_heads
-            key_tokens = virtual_positions // self.num_pseudo_heads
-
-            if self.config.mask_mode == "none":
-                base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
-            elif self.config.mask_mode == "flat_causal":
-                if self.config.causal:
-                    base_mask = virtual_positions[:, None] >= virtual_positions[None, :]
-                else:
-                    base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
+            if self.config.causal:
+                base_mask = virtual_positions[:, None] >= virtual_positions[None, :]
             else:
-                if self.config.causal:
-                    base_mask = query_tokens[:, None] >= key_tokens[None, :]
-                else:
-                    base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
+                base_mask = torch.ones(total_seq, total_seq, dtype=torch.bool, device=device)
 
             if self.config.window_size is not None:
-                token_delta = query_tokens[:, None] - key_tokens[None, :]
+                token_delta = query_tokens[:, None] - query_tokens[None, :]
                 if self.config.causal:
                     base_mask = base_mask & (token_delta >= 0) & (token_delta < self.config.window_size)
                 else:
@@ -286,7 +263,6 @@ if __name__ == "__main__":
         num_pseudo_heads=2,
         attention_dropout=0.0,
         causal=True,
-        mask_mode="token_causal",
         collapse_mode="per_head",
     )
     layer = InterleavedHeadAttention(config).eval()
