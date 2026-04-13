@@ -145,6 +145,14 @@ class InterleavedHeadAttention(nn.Module):
                 f"hidden_states must have shape (batch, seq_len, hidden_size), got {tuple(hidden_states.shape)}"
             )
 
+        normalized_attention_mask = None
+        if attention_mask is not None:
+            if attention_mask.dim() != 2:
+                raise ValueError(
+                    f"attention_mask must have shape (batch, seq_len), got {tuple(attention_mask.shape)}"
+                )
+            normalized_attention_mask = attention_mask.bool()
+
         batch_size, seq_len, _ = hidden_states.shape
         query_states = self.q_proj(hidden_states).reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = self.k_proj(hidden_states).reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -161,7 +169,7 @@ class InterleavedHeadAttention(nn.Module):
         attn_mask, query_keep = self._prepare_masks(
             seq_len=seq_len,
             batch_size=batch_size,
-            attention_mask=attention_mask,
+            attention_mask=normalized_attention_mask,
             device=hidden_states.device,
         )
         dropout_p = self.config.attention_dropout if self.training else 0.0
@@ -199,8 +207,8 @@ class InterleavedHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
-        if attention_mask is not None:
-            token_keep = self._normalize_attention_mask(attention_mask).to(attn_output.dtype)
+        if normalized_attention_mask is not None:
+            token_keep = normalized_attention_mask.to(attn_output.dtype)
             attn_output = attn_output * token_keep.unsqueeze(-1)
 
         return attn_output
@@ -244,8 +252,11 @@ class InterleavedHeadAttention(nn.Module):
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         expanded_keep = None
         if attention_mask is not None:
-            keep = self._normalize_attention_mask(attention_mask)
-            expanded_keep = keep.unsqueeze(-1).expand(batch_size, seq_len, self.num_pseudo_heads).reshape(
+            expanded_keep = attention_mask.unsqueeze(-1).expand(
+                batch_size,
+                seq_len,
+                self.num_pseudo_heads,
+            ).reshape(
                 batch_size,
                 seq_len * self.num_pseudo_heads,
             )
@@ -290,19 +301,6 @@ class InterleavedHeadAttention(nn.Module):
                 mask = mask & (token_delta.abs() < self.config.window_size)
 
         return mask
-
-    def _normalize_attention_mask(self, attention_mask: torch.Tensor) -> torch.Tensor:
-        if attention_mask.dim() != 2:
-            raise ValueError(
-                f"attention_mask must have shape (batch, seq_len), got {tuple(attention_mask.shape)}"
-            )
-        if attention_mask.dtype == torch.bool:
-            return attention_mask
-        if torch.is_floating_point(attention_mask):
-            return attention_mask > 0
-        return attention_mask != 0
-
-
 if __name__ == "__main__":
     torch.manual_seed(0)
 
