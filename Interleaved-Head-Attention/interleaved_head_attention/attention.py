@@ -152,9 +152,9 @@ class InterleavedHeadAttention(nn.Module):
         key_states = self.k_proj(hidden_states).reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         value_states = self.v_proj(hidden_states).reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        query_states = self._mix_heads(query_states, self.alpha_q)
-        key_states = self._mix_heads(key_states, self.alpha_k)
-        value_states = self._mix_heads(value_states, self.alpha_v)
+        query_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_q, query_states)
+        key_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_k, key_states)
+        value_states = torch.einsum("mhp,bmnd->bhpnd", self.alpha_v, value_states)
 
         query_states = self._merge_pseudo(query_states)
         key_states = self._merge_pseudo(key_states)
@@ -194,10 +194,6 @@ class InterleavedHeadAttention(nn.Module):
 
         return attn_output, attn_weights
 
-
-
-    def _mix_heads(self, states: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
-        return torch.einsum("mhp,bmnd->bhpnd", alpha, states)
 
     def _merge_pseudo(self, states: torch.Tensor) -> torch.Tensor:
         batch_size, num_heads, num_pseudo, seq_len, head_dim = states.shape
