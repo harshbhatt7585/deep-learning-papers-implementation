@@ -166,13 +166,39 @@ class InterleavedHeadAttention(nn.Module):
             attention_mask=attention_mask,
             device=hidden_states.device,
         )
-        attn_output, attn_weights = self._run_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=attn_mask,
-            need_weights=need_weights,
-        )
+        dropout_p = self.config.attention_dropout if self.training else 0.0
+
+        if need_weights:
+            attn_scores = torch.matmul(query_states, key_states.transpose(-1, -2)) * self.scaling
+            if attn_mask is not None:
+                attn_scores = attn_scores.masked_fill(
+                    ~attn_mask[:, None, :, :],
+                    torch.finfo(attn_scores.dtype).min,
+                )
+            attn_weights = torch.softmax(attn_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            if dropout_p:
+                attn_weights = F.dropout(attn_weights, p=dropout_p)
+            attn_output = torch.matmul(attn_weights, value_states)
+        elif attn_mask is None and self._can_use_builtin_causal():
+            attn_output = F.scaled_dot_product_attention(
+                query_states,
+                key_states,
+                value_states,
+                dropout_p=dropout_p,
+                is_causal=True,
+            )
+            attn_weights = None
+        else:
+            sdpa_mask = None if attn_mask is None else attn_mask[:, None, :, :]
+            attn_output = F.scaled_dot_product_attention(
+                query_states,
+                key_states,
+                value_states,
+                attn_mask=sdpa_mask,
+                dropout_p=dropout_p,
+                is_causal=False,
+            )
+            attn_weights = None
 
         if query_keep is not None:
             attn_output = attn_output * query_keep[:, None, :, None].to(attn_output.dtype)
@@ -215,51 +241,6 @@ class InterleavedHeadAttention(nn.Module):
             head_dim,
         )
         return torch.einsum("ho,bnod->bhnd", self.collapse, flat_states)
-
-    def _run_attention(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        *,
-        attn_mask: torch.Tensor | None,
-        need_weights: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        dropout_p = self.config.attention_dropout if self.training else 0.0
-
-        if need_weights:
-            attn_scores = torch.matmul(query_states, key_states.transpose(-1, -2)) * self.scaling
-            if attn_mask is not None:
-                attn_scores = attn_scores.masked_fill(
-                    ~attn_mask[:, None, :, :],
-                    torch.finfo(attn_scores.dtype).min,
-                )
-            attn_weights = torch.softmax(attn_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            if dropout_p:
-                attn_weights = F.dropout(attn_weights, p=dropout_p)
-            attn_output = torch.matmul(attn_weights, value_states)
-            return attn_output, attn_weights
-
-        if attn_mask is None and self._can_use_builtin_causal():
-            attn_output = F.scaled_dot_product_attention(
-                query_states,
-                key_states,
-                value_states,
-                dropout_p=dropout_p,
-                is_causal=True,
-            )
-            return attn_output, None
-
-        sdpa_mask = None if attn_mask is None else attn_mask[:, None, :, :]
-        attn_output = F.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=sdpa_mask,
-            dropout_p=dropout_p,
-            is_causal=False,
-        )
-        return attn_output, None
 
     def _can_use_builtin_causal(self) -> bool:
         return (
