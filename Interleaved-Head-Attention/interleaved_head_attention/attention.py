@@ -17,12 +17,6 @@ class Linear(nn.Linear):
 
 
 class InterleavedHeadAttention(nn.Module):
-    """
-    Interleaved Head Attention (IHA) as described in arXiv:2602.21371.
-
-    This implementation uses the global H * P -> H collapse from Definition 3.
-    """
-
     def __init__(self, config: IHAConfig) -> None:
         super().__init__()
         self.config = config
