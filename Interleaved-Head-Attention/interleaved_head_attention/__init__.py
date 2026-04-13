@@ -1,4 +1,4 @@
 from .attention import InterleavedHeadAttention
-from .config import InterleavedHeadAttentionConfig
+from .config import IHAConfig
 
-__all__ = ["InterleavedHeadAttention", "InterleavedHeadAttentionConfig"]
+__all__ = ["InterleavedHeadAttention", "IHAConfig"]

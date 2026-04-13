@@ -35,10 +35,10 @@ import torch
 
 from interleaved_head_attention import (
     InterleavedHeadAttention,
-    InterleavedHeadAttentionConfig,
+    IHAConfig,
 )
 
-config = InterleavedHeadAttentionConfig(
+config = IHAConfig(
     hidden_size=512,
     num_attention_heads=8,
     num_pseudo_heads=8,

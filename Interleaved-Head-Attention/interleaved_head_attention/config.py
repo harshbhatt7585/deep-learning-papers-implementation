@@ -7,7 +7,7 @@ CollapseMode = Literal["per_head", "global"]
 
 
 @dataclass
-class InterleavedHeadAttentionConfig:
+class IHAConfig:
     hidden_size: int
     num_attention_heads: int
     num_pseudo_heads: int | None = None

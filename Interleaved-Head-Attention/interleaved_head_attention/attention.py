@@ -5,9 +5,9 @@ from torch import nn
 from torch.nn import functional as F
 
 try:
-    from .config import InterleavedHeadAttentionConfig
+    from .config import IHAConfig
 except ImportError:
-    from config import InterleavedHeadAttentionConfig
+    from config import IHAConfig
 
 
 class InterleavedHeadAttention(nn.Module):
@@ -19,7 +19,7 @@ class InterleavedHeadAttention(nn.Module):
     across all H * P outputs. This module supports both via `collapse_mode`.
     """
 
-    def __init__(self, config: InterleavedHeadAttentionConfig) -> None:
+    def __init__(self, config: IHAConfig) -> None:
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
@@ -241,7 +241,7 @@ class InterleavedHeadAttention(nn.Module):
 if __name__ == "__main__":
     torch.manual_seed(0)
 
-    config = InterleavedHeadAttentionConfig(
+    config = IHAConfig(
         hidden_size=32,
         num_attention_heads=4,
         num_pseudo_heads=2,
