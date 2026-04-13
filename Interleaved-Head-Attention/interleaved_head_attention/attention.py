@@ -112,7 +112,7 @@ class InterleavedHeadAttention(nn.Module):
         )
         dropout_p = self.config.attention_dropout if self.training else 0.0
 
-        if attn_mask is None and self._can_use_builtin_causal():
+        if attn_mask is None and self.config.causal and self.config.window_size is None:
             attn_output = F.scaled_dot_product_attention(
                 query_states,
                 key_states,
@@ -170,9 +170,6 @@ class InterleavedHeadAttention(nn.Module):
         )
         return torch.einsum("ho,bnod->bhnd", self.collapse.to(flat_states.dtype), flat_states)
 
-    def _can_use_builtin_causal(self) -> bool:
-        return self.config.causal and self.config.window_size is None
-
     def _prepare_masks(
         self,
         *,
@@ -192,7 +189,7 @@ class InterleavedHeadAttention(nn.Module):
                 seq_len * self.num_pseudo_heads,
             )
 
-        if attention_mask is None and self._can_use_builtin_causal():
+        if attention_mask is None and self.config.causal and self.config.window_size is None:
             return None, expanded_keep
 
         total_seq = seq_len * self.num_pseudo_heads
