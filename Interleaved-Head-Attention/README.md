@@ -1,6 +1,6 @@
 # Interleaved Head Attention
 
-This directory now contains a self-contained PyTorch implementation of Interleaved Head Attention (IHA) from the paper by Duvvuri et al.
+This directory now contains a self-contained PyTorch implementation of (Interleaved Head Attention (IHA))[https://arxiv.org/pdf/2602.21371].
 
 ## What is implemented
 
@@ -11,10 +11,6 @@ This directory now contains a self-contained PyTorch implementation of Interleav
 - Flat causal masking over the fully interleaved virtual sequence.
 - Optional local sliding-window restriction using `window_size` in original-token units.
 
-## Files
-
-- `interleaved_head_attention/config.py`: config dataclass.
-- `interleaved_head_attention/attention.py`: core implementation.
 
 ## Quick smoke check
 
