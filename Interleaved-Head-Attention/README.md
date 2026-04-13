@@ -15,7 +15,8 @@ This directory now contains a self-contained PyTorch implementation of Interleav
 
 ## Files
 
-- `interleaved_head_attention/attention.py`: core implementation and config dataclass.
+- `interleaved_head_attention/config.py`: config dataclass.
+- `interleaved_head_attention/attention.py`: core implementation.
 
 ## Quick smoke check
 
