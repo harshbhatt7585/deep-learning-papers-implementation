@@ -1,6 +1,6 @@
 # Interleaved Head Attention
 
-This directory now contains a self-contained PyTorch implementation of (Interleaved Head Attention (IHA))[https://arxiv.org/pdf/2602.21371].
+This directory contains a self-contained PyTorch implementation of [Interleaved Head Attention (IHA)](https://arxiv.org/pdf/2602.21371).
 
 ## What is implemented
 
