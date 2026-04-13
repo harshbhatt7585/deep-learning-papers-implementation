@@ -19,7 +19,16 @@ This directory now contains a self-contained PyTorch implementation of Interleav
 ## Files
 
 - `interleaved_head_attention/attention.py`: core implementation and config dataclass.
-- `tests/test_attention.py`: smoke and correctness-oriented tests.
+
+## Quick smoke check
+
+Run the module directly to execute a small random-input check:
+
+```bash
+python interleaved_head_attention/attention.py
+```
+
+It will construct a layer, run a forward pass on random inputs, and print the tensor shapes.
 
 ## Minimal usage
 

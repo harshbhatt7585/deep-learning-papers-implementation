@@ -339,3 +339,25 @@ class InterleavedHeadAttention(nn.Module):
         if torch.is_floating_point(attention_mask):
             return attention_mask > 0
         return attention_mask != 0
+
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    config = InterleavedHeadAttentionConfig(
+        hidden_size=32,
+        num_attention_heads=4,
+        num_pseudo_heads=2,
+        attention_dropout=0.0,
+        causal=True,
+        mask_mode="token_causal",
+        collapse_mode="per_head",
+    )
+    layer = InterleavedHeadAttention(config).eval()
+
+    hidden_states = torch.randn(2, 5, 32)
+    output, weights = layer(hidden_states, need_weights=True)
+
+    print("Input shape:", tuple(hidden_states.shape))
+    print("Output shape:", tuple(output.shape))
+    print("Attention weights shape:", None if weights is None else tuple(weights.shape))
