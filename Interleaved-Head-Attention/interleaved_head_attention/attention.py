@@ -23,29 +23,6 @@ class InterleavedHeadAttentionConfig:
     collapse_mode: CollapseMode = "per_head"
     mask_mode: MaskMode = "token_causal"
 
-    def __post_init__(self) -> None:
-        if self.hidden_size <= 0:
-            raise ValueError("hidden_size must be positive")
-        if self.num_attention_heads <= 0:
-            raise ValueError("num_attention_heads must be positive")
-        if self.hidden_size % self.num_attention_heads != 0:
-            raise ValueError("hidden_size must be divisible by num_attention_heads")
-
-        if self.num_pseudo_heads is None:
-            self.num_pseudo_heads = self.num_attention_heads
-        if self.num_pseudo_heads <= 0:
-            raise ValueError("num_pseudo_heads must be positive")
-
-        if self.window_size is not None and self.window_size <= 0:
-            raise ValueError("window_size must be positive when provided")
-        if self.collapse_mode not in {"per_head", "global"}:
-            raise ValueError("collapse_mode must be 'per_head' or 'global'")
-        if self.mask_mode not in {"token_causal", "flat_causal", "none"}:
-            raise ValueError("mask_mode must be 'token_causal', 'flat_causal', or 'none'")
-        if not self.causal and self.mask_mode != "none" and self.window_size is None:
-            # Non-causal attention does not need a causal policy unless a local window is requested.
-            self.mask_mode = "none"
-
     @property
     def head_dim(self) -> int:
         return self.hidden_size // self.num_attention_heads
@@ -72,7 +49,9 @@ class InterleavedHeadAttention(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-        self.num_pseudo_heads = config.num_pseudo_heads
+        self.num_pseudo_heads = (
+            config.num_pseudo_heads if config.num_pseudo_heads is not None else self.num_heads
+        )
         self.head_dim = config.head_dim
         self.scaling = self.head_dim**-0.5
 
