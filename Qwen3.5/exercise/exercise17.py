@@ -7,6 +7,8 @@ from torch import nn
 import torch.nn.functional as F
 import torch
 
+from utils import apply_interleaved_mrope
+
 
 class RMSNorm(nn.Module):
     def __init__(
@@ -301,8 +303,11 @@ class RopE(nn.Module):
         freq = expanded_inv_freq @ positon_ids[:, :, None, :]
         # [3, batch, seq_len, dim // 2]
         freq = freq.transpose(2, 3)
+        
+        # [batch, seq_len, dim // 2]
+        freq = apply_interleaved_mrope(freq)
 
-        # [3, batch, seq_len, dim]
+        # [batch, seq_len, dim]
         embd = torch.cat((freq, freq), dim=-1)
         return embd.cos().to(dtype=hidden_states.dtype), embd.sin().to(dtype=hidden_states.dtype)
 
