@@ -4,6 +4,40 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
+
+config = SimpleNamespace(
+        vocab_size=256,
+        pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=2,
+        tie_word_embeddings=False,
+        hidden_size=128,
+        num_hidden_layers=4,
+        layer_types=[
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "full_attention",
+        ],
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=32,
+        attention_dropout=0.0,
+        attention_bias=False,
+        rms_norm_eps=1e-6,
+        hidden_act="silu",
+        intermediate_size=256,
+        num_v_heads=4,
+        num_k_heads=2,
+        head_k_dim=32,
+        head_v_dim=32,
+        linear_conv_kernel_size=4,
+        rotaty_factor=1.0,
+        theta=10000.0,
+        dim=32,
+        mrope_section=[11, 11, 10],
+    )
 
 
 @dataclass

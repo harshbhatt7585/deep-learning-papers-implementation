@@ -9,8 +9,17 @@ class RMSNorm(nn.Module):
         dim: int,
         eps: int = 1e-6 
     ):
-        pass
-
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(dim))
+        self.eps = eps
+    
+    def _norm(self, x: torch.Tensor):
+        return x * torch.sqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+    
+    def forward(self, x: torch.Tensor):
+        out = self._norm(x.float())
+        out = out * (1 + self.weight.float())
+        return out
 
 
 class GatedDeltaNet(nn.Module):
@@ -56,5 +65,17 @@ class TextModel(nn.Module):
     ):
         pass
 
+        
+
+if __name__ == "__main__":
+    from config import config
+    rms = RMSNorm(config.hidden_size)
+
+    batch_size = 4
+    seq_len = 20
     
+    out = rms(torch.randn(batch_size, seq_len, config.hidden_size))
+    print(out.shape)
+
+
 
