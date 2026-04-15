@@ -1,6 +1,17 @@
+from click.core import V
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+
+from delta import torch_recurrent_gated_delta_rule
+
+"""
+self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
+self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads)._uniform(0, 16)))
+
+beta = torch.sigmoid(b)
+g = -torch.exp(self.A_log) * F.softplus(a + self.dt_bias)
+"""
 
 
 class RMSNorm(nn.Module):
@@ -31,7 +42,8 @@ class GatedDeltaNet(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.num_v_heads
         self.num_k_heads = config.num_k_heads
-        self.head_dim = config.head_dim
+        self.head_v_dim = config.head_v_dim
+        self.head_k_dim = config.head_k_dim
         self.k_dim = self.num_v_heads * self.head_dim
         self.v_dim = self.num_v_heads * self.head_dim
         self.kernel_size = config.linear_conv_kernel_size
@@ -51,6 +63,9 @@ class GatedDeltaNet(nn.Module):
         self.z = nn.Linear(self.hidden_size, self.v_dim, bias=False)
         self.b = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
         self.a = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
+
+        self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
+        self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads)._uniform(0, 16)))
     
         self.out_proj = nn.Linear(self.v_dim, self.hidden_size, bias=False)
     
@@ -85,6 +100,68 @@ class GatedDeltaNet(nn.Module):
         
         mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, seq_len]) # [batch, conv_dim, seq_len]
         mixed_qkv = mixed_qkv.transpose(1, 2) # [batch, seq_len, conv_dim]
+
+        # conv_dim: 2 * k_dim + v_dim
+
+        q, k, v = torch.split(
+            mixed_qkv,
+            [self.k_dim, self.k_dim, self.v_dim]
+        )
+
+        q = q.reshape(batch_size, seq_len, self.num_k_heads, self.hidden_size).transpose(1, 2)
+        k = k.reshape(batch_size, seq_len, self.num_k_heads, self.hidden_size).transpose(1, 2)
+        v = v.reshape(batch_size, seq_len, self.num_v_heads, self.hidden_size).transpose(1, 2)
+
+
+        z = self.z(hidden_states).reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
+
+        b = self.b(hidden_states) # [batch, seq_len, num_v_heads]
+        a = self.a(hidden_states) # [batch, seq_len, num_v_heads]
+
+        beta = torch.sigmoid(b)
+        g = -torch.exp(self.A_log) * F.softplus(a + self.dt_bias)
+
+        core_attn_out, recurrent_state = torch_recurrent_gated_delta_rule(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            recurrent_state,
+            cache is not None
+        )
+
+        if cache is not None:
+            cache.recurrent_state[self.layer_idx] = recurrent_state
+
+        # flatten
+        core_attn_out = core_attn_out.reshape(-1, self.num_v_heads)
+        z = z.reshape(-1, self.num_v_heads)
+
+        core_attn_out = self.norm(core_attn_out)
+        core_attn_out = core_attn_out * F.silu(z)
+        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+        
+        out = self.out_proj(core_attn_out)
+        return out
+
+    
+
+    
+
+
+
+
+
+        
+
+
+        
+    
+
+
+
+        
 
     
 
