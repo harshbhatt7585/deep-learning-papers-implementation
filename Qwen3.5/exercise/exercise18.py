@@ -216,23 +216,81 @@ class RoPE(nn.Module):
 
         return cos, sin
 
-
-
-        
-
     
 
-        
+def rotate_half(x: torch.Tensor):
+    x1, x2 = x[..., :x.shape[-1] // 2], x[..., x.shape[-1] // 2:]
+    return torch.cat((-x2, x1), dim=-1)
 
 
+def apply_rotary_pos_emb(q, k, cos, sin):
+    # cos: [batch, seq_len, pos_size]
+    # sin: [batch, seq_len, pos_size]
 
-class Attention(nn.Module):
+    cos = cos.unsqueeze(1) # [batch, 1, seq_len, pos_size]
+    sin = sin.sunsqueeze(1) # [batch, 1, seq_len, pos_size]
+
+
+    rotary_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+
+    q_emebd = (cos * q_pass) + (rotate_half(q_rot) * sin)
+    k_emebd = (sin * k_pass) + (rotate_half(k_rot) * sin)
+
+    q = torch.cat((q_emebd, q_pass), dim=-1)
+    k = torch.cat((k_emebd, k_pass), dim=-1)
+
+    return q, k
+
+
+class SelfAttention(nn.Module):
     def __init__(
         self,
         config,
         layer_idx: int
+    ):  
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.num_attention_heads = config.num_attention_head
+        self.num_kv_heads = config.num_key_value_heads
+        self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
+        self.head_dim = config.head_dim
+        
+        self.q_proj = nn.Linear(self.hidden_size, self.num_attention_heads * self.head_dim * 2, bias=config.attention_bias)
+        self.k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
+        self.v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
+
+        self.norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
+
+        self.out_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
+
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        pos_embddings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None = None,
+        cache = None
     ):
-        pass
+        # hidden_states: [batch, seq_len, hidden_size]
+        # pos_emd: [batch, seq_len, pos_size]
+
+        batch_size, seq_len, _ = hidden_states.shape
+
+        q_proj = self.q_proj(hidden_states) # [batch, seq, self.num_attention_heads * self.head_dim * 2]
+        q, gate = torch.chunk(q_proj, 2, dim=-1)
+        gate = gate.reshape(batch_size, seq_len, -1)
+
+        q = q.reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, attn_head, head_dim]
+        k = self.k(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
+        v = self.v(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
+
+        cos, sin = pos_embddings
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        
+
 
 
 class Decoder(nn.Module):
