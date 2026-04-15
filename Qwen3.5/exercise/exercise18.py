@@ -265,6 +265,8 @@ class SelfAttention(nn.Module):
 
         self.out_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
 
+        self.scaling = self.head_dim ** 0.5
+
     
     def forward(
         self,
@@ -291,6 +293,28 @@ class SelfAttention(nn.Module):
 
         if cache is not None:
             k, v = cache.update(k, v)
+        
+        k = k.repeat_interleave(self.num_kv_groups)
+        v = v.repeat_interleave(self.num_kv_groups)
+
+
+        # [batch, num_heads, head_dim, head_dim]
+        attn_weight = torch.matmul(q, k.transpose(1, 2)) 
+        attn_weight = attn_weight * self.scaling
+
+        if attention_mask is not None:
+            attn_weight = attn_weight + attention_mask
+        
+        attn_weight = F.softmax(attn_weight, dim=-1)
+        attn_out = torch.matmul(attn_weight, v) # [batch, num_heads, seq_len, dim]
+        attn_out = attn_out.transpose(1, 2).contiguous() # [batch, seq_len, num_heads, dim]
+        attn_out = attn_out.reshape(batch_size, seq_len, -1) # [batch, seq_len, hidden_size]
+        attn_out = attn_out * torch.sigmoid(gate)
+
+        out = self.out_proj(attn_out)
+        return out
+        
+
 
 
         
