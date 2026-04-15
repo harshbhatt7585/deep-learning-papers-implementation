@@ -398,6 +398,30 @@ class Decoder(nn.Module):
 
 
 
+def build_causal_mask(
+    attn_mask,
+    batch_size,
+    query_length,
+    kv_length,
+    dtype,
+    device
+):
+    min_value = torch.finfo(dtype=dtype, device=device)
+    causal = torch.full((query_length, kv_length), min_value, dtype=dtype, device=device)
+    causal = torch.triu(causal, diagonal=1 + kv_length - query_length)
+
+    causal = causal[None, ...].expand(batch_size, 1, query_length, kv_length)
+
+    if attn_mask is None:
+        return causal
+    
+    padding_mask = (1.0 - attn_mask[:, None, None, : ]).to * min_value
+    return padding_mask + causal
+    
+    
+
+    
+
 
 class TextModel(nn.Module):
     def __init__(
@@ -435,7 +459,7 @@ class TextModel(nn.Module):
 
         pos_embeddings = rope(input_embds, pos_ids)
         
-        attention_mask = build_causal_mask(hidden_size, batch_size, seq_len)
+        attention_mask = build_causal_mask(self.hidden_size, batch_size, seq_len)
         
         for layer in self.layers:
             hidden_states = layer(
