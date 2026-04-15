@@ -317,9 +317,6 @@ class SelfAttention(nn.Module):
 
 
 
-        
-
-
 
 class Decoder(nn.Module):
     def __init__(
@@ -327,8 +324,49 @@ class Decoder(nn.Module):
         config,
         layer_idx: int
     ):
-        pass
+        self.layer_idx = layer_idx
+        self.layer_type = config.layer_types[layer_idx]
+        
+        if self.layer_type == "linear_attention":
+            self.linear_attn = GatedDeltaNet(config, layer_idx)
+        else:
+            self.self_attn = SelfAttention(config, layer_idx)
 
+        self.mlp = MLP(config)
+        self.input_layer_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.post_attn_norm = RMSNorm(config.hiddeen_size, config.rms_norm_eps)
+
+
+    def forward(
+        self,        
+        hidden_states: torch.Tensor,
+        pos_embeddings: tuple,
+        attention_mask: torch.Tensor | None,
+        cache = None
+    ):
+        residual = hidden_states
+        hidden_states = self.input_layer_norm(hidden_states)
+        
+        if self.layer_type == "linear_attention":
+            hidden_states = self.linear_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                cache=cache
+            )
+        else:
+            hidden_states = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                pos_embeddings=pos_embeddings,
+                cache=cache
+            )
+        
+        hidden_states = hidden_states + residual
+        residual = hidden_states
+        hidden_states = self.post_attn_norm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return hidden_states + residual
+        
 
 
 class DynamicCache(nn.Module):
@@ -369,3 +407,4 @@ if __name__ == "__main__":
     rope = RoPE(config)
     out = rope(hidden_states, pos_ids)
     print(out)
+
