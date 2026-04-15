@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from delta import torch_recurrent_gated_delta_rule
+from utils import apply_interleaved_mrope
 
 """
 self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
@@ -145,31 +146,6 @@ class GatedDeltaNet(nn.Module):
         out = self.out_proj(core_attn_out)
         return out
 
-    
-
-    
-
-
-
-
-
-        
-
-
-        
-    
-
-
-
-        
-
-    
-
-        
-    
-
-        
-
 
 
 
@@ -178,7 +154,59 @@ class RoPE(nn.Module):
         self,
         config
     ):
-        pass
+        self.dim = config.head_dim
+        self.theta = config.theta
+
+        # [dim // 2]
+        inv_freq = 1.0 / (
+            self.theta ** torch.arange(0, self.dim, 2) / self.dim
+        )
+
+        self.register_buffer('inv_freq', inv_freq)
+
+
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        pos_ids: torch.Tensor
+    ):
+
+        # x: [batch, seq, hidden_size]
+        # pos_ids: [batch. seq_len]
+
+        # [3, batch, seq_len]
+        pos_ids = pos_ids[None, ...].expand(3, pos_ids.shape[0], -1)
+
+        # [3, batch, dim // 2, 1]
+        inv_freq = self.inv_freq[None, None, ..., None].expand(
+            3,
+            pos_ids.shape[1],
+            -1,
+            1
+        ).to(device=x.device)
+
+        # [3, batch, dim // 2, seq_len]
+        freq = inv_freq @ pos_ids[:, :, None, :] 
+
+        # [3, batch, seq_len, dim // 2]
+        freq = freq.transpose(2, 3)
+
+        # [batch, seq_len, dim // 2]
+        freq = apply_interleaved_mrope(freq)
+
+        # [batch, seq_len, dim]
+        emebd = torch.cat((freq, freq), dim=-1)
+        
+        cos = emebd.cos().to(dtype=x.dtype, device=x.device)
+        sin = emebd.cos().to(dtype=x.dtype, device=x.device)
+
+        return cos, sin
+        
+
+    
+
+        
 
 
 
@@ -196,6 +224,15 @@ class Decoder(nn.Module):
         self, 
         config,
         layer_idx: int
+    ):
+        pass
+
+
+
+class DynamicCache(nn.Module):
+    def __init__(
+        self,
+        config
     ):
         pass
 
