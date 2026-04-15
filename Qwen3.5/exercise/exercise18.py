@@ -1,4 +1,3 @@
-from click.core import V
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -256,6 +255,7 @@ class SelfAttention(nn.Module):
         self.num_kv_heads = config.num_key_value_heads
         self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
         self.head_dim = config.head_dim
+        self.layer_idx = layer_idx
         
         self.q_proj = nn.Linear(self.hidden_size, self.num_attention_heads * self.head_dim * 2, bias=config.attention_bias)
         self.k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
@@ -292,7 +292,7 @@ class SelfAttention(nn.Module):
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
         if cache is not None:
-            k, v = cache.update(k, v)
+            k, v = cache.update(k, v, self.layer_idx)
         
         k = k.repeat_interleave(self.num_kv_groups)
         v = v.repeat_interleave(self.num_kv_groups)
@@ -369,12 +369,34 @@ class Decoder(nn.Module):
         
 
 
-class DynamicCache(nn.Module):
-    def __init__(
-        self,
-        config
-    ):
-        pass
+# class DynamicCache:
+#     def __init__(
+#         self,
+#         config
+#     ):
+#         self.recurrent_state = [None for _ in range(self.num_hidden_layers)]
+#         self.conv_state = [None for _ in range(self.num_hidden_layers)]
+#         self.key = [None for _ in range(self.num_hidden_layers)]
+#         self.value = [None for _ in range(self.num_hidden_layers)]
+
+#     def update(
+#         self,
+#         key: torch.Tensor,
+#         value: torch.Tensor,
+#         layer_idx: int
+#     ):
+#         if self.key[layer_idx] is None:
+#             self.key[layer_idx] = key
+#             self.value[layer_idx] = value
+        
+#         else:
+#             self.key[layer_idx] = torch.cat((self.key[layer_idx], key), dim=2)
+#             self.value[layer_idx] = torch.cat((self.value[layer_idx], value), dim=2)
+        
+#         return self.key[layer_idx], self.value[layer_idx]
+
+
+
 
 
 class TextModel(nn.Module):
@@ -382,7 +404,57 @@ class TextModel(nn.Module):
         self,
         config
     ):
-        pass
+        super().__init__()
+        
+        self.hidden_size = config.hidden_size
+        self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
+        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.out_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.embedding = nn.Embedding(config.vcab_size, config.hidden_size)
+        self.rope = RoPE(config)
+
+    def forward(
+        self,
+        input_ids,
+        input_embds = None,
+        pos_ids = None,
+        attention_mask = None,
+        cache = None
+    ):
+        # input_ids: [batch, seq_len]
+        if input_embds is None:
+            input_embds = self.embedding(input_ids) # [batch, seq_len, hidden_size]
+
+
+        seq_len = input_ids.shape[-1]
+
+
+        if pos_ids is None:
+            pos_ids = torch.arange(0, seq_len, dtype=input_embds.dtype, device=input_embds.device)
+            pos_ids = pos_ids[None, :].expand(input_embds.shape[0], -1)
+
+        pos_embeddings = rope(input_embds, pos_ids)
+        
+        attention_mask = build_causal_mask(hidden_size, batch_size, seq_len)
+        
+        for layer in self.layers:
+            hidden_states = layer(
+                hidden_states,
+                pos_embeddings,
+                attention_mask,
+                cache
+            )
+
+        
+        hidden_states = self.norm(hidden_states)
+        return self.out_proj(hidden_states)
+
+        
+        
+
+        
+
+
 
         
 
@@ -407,4 +479,3 @@ if __name__ == "__main__":
     rope = RoPE(config)
     out = rope(hidden_states, pos_ids)
     print(out)
-
