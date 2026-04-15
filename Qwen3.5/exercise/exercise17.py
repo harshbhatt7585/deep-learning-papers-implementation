@@ -143,6 +143,7 @@ class GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(rep, dim=2)
             key = key.repeat_interleave(rep, dim=2)
 
+
         attn_core_out, recurrent_state = torch_recurrent_gated_delta_rule(
             query,
             key,
@@ -238,7 +239,7 @@ class Attention(nn.Module):
 
 
         if past_key_value:
-            k, v = past_key_value.update(q, v)
+            k, v = past_key_value.update(k, v)
         
         k = k.repeat_interleave(self.num_kv_groups, dim=1)
         v = v.repeat_interleave(self.num_kv_groups, dim=1)

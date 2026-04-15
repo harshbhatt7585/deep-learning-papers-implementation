@@ -289,6 +289,10 @@ class SelfAttention(nn.Module):
         cos, sin = pos_embddings
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
+        if cache is not None:
+            k, v = cache.update(k, v)
+
+
         
 
 
