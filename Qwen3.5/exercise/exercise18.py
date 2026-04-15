@@ -165,7 +165,8 @@ class RoPE(nn.Module):
     def __init__(
         self,
         config
-    ):
+    ):  
+        super().__init__()
         self.dim = config.head_dim
         self.theta = config.theta
 
@@ -199,7 +200,7 @@ class RoPE(nn.Module):
         ).to(device=x.device)
 
         # [3, batch, dim // 2, seq_len]
-        freq = inv_freq @ pos_ids[:, :, None, :] 
+        freq = inv_freq @ pos_ids[:, :, None, :]
 
         # [3, batch, seq_len, dim // 2]
         freq = freq.transpose(2, 3)
@@ -277,3 +278,8 @@ if __name__ == "__main__":
     delta_net = GatedDeltaNet(config, 1)
     out = delta_net(hidden_states, attention_mask)
     print(out.shape)
+
+    pos_ids = torch.arange(0, seq_len)[None, :].expand(batch_size, -1).float()
+    rope = RoPE(config)
+    out = rope(hidden_states, pos_ids)
+    print(out)
