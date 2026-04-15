@@ -8,7 +8,7 @@ from utils import apply_interleaved_mrope
 
 """
 self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
-self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads)._uniform(0, 16)))
+self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads).uniform_(0, 16)))
 
 beta = torch.sigmoid(b)
 g = -torch.exp(self.A_log) * F.softplus(a + self.dt_bias)
@@ -26,7 +26,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
     
     def _norm(self, x: torch.Tensor):
-        return x * torch.sqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
     
     def forward(self, x: torch.Tensor):
         out = self._norm(x.float())
@@ -39,17 +39,19 @@ class GatedDeltaNet(nn.Module):
         self,
         config,
         layer_idx: int
-    ):
+    ): 
+        super().__init__()
+        self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.num_v_heads
         self.num_k_heads = config.num_k_heads
         self.head_v_dim = config.head_v_dim
         self.head_k_dim = config.head_k_dim
-        self.k_dim = self.num_v_heads * self.head_dim
-        self.v_dim = self.num_v_heads * self.head_dim
+        self.k_dim = self.num_k_heads * self.head_k_dim
+        self.v_dim = self.num_v_heads * self.head_v_dim
         self.kernel_size = config.linear_conv_kernel_size
 
-        self.norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
+        self.norm = RMSNorm(self.head_v_dim, config.rms_norm_eps)
 
         self.conv_dim = self.k_dim * 2 + self.v_dim
         self.qkv = nn.Linear(self.hidden_size, self.conv_dim, bias=False)
@@ -58,7 +60,9 @@ class GatedDeltaNet(nn.Module):
             in_channels=self.conv_dim,
             out_channels=self.conv_dim,
             kernel_size=self.kernel_size,
-            groups=self.conv1d
+            groups=self.conv_dim,
+            bias=False,
+            padding=self.kernel_size - 1
         )
         
         self.z = nn.Linear(self.hidden_size, self.v_dim, bias=False)
@@ -66,7 +70,7 @@ class GatedDeltaNet(nn.Module):
         self.a = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
 
         self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
-        self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads)._uniform(0, 16)))
+        self.A_log = nn.Parameter(torch.log(torch.empty(self.num_v_heads).uniform_(0, 16)))
     
         self.out_proj = nn.Linear(self.v_dim, self.hidden_size, bias=False)
     
@@ -80,10 +84,10 @@ class GatedDeltaNet(nn.Module):
         # hidden_states: [batch_size, seq_len, hidden_size]
         # attention_mask: [batch_size, seq_len]
 
-        if attention_mask.shape[1] != hidden_states.shape[1]:
-            attention_mask = attention_mask[:, -hidden_states[1] :]
-        
-        hidden_states = hidden_states * attention_mask[:, :, None]
+        if attention_mask is not None:
+            if attention_mask.shape[1] != hidden_states.shape[1]:
+                attention_mask = attention_mask[:, -hidden_states.shape[1] :]
+            hidden_states = hidden_states * attention_mask[:, :, None].to(hidden_states.dtype)
 
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -99,19 +103,20 @@ class GatedDeltaNet(nn.Module):
             conv_state = F.pad(mixed_qkv, (pad_len, 0))
             cache.conv_state[self.layer_idx] = conv_state
         
-        mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, seq_len]) # [batch, conv_dim, seq_len]
+        mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len]) # [batch, conv_dim, seq_len]
         mixed_qkv = mixed_qkv.transpose(1, 2) # [batch, seq_len, conv_dim]
 
         # conv_dim: 2 * k_dim + v_dim
 
         q, k, v = torch.split(
             mixed_qkv,
-            [self.k_dim, self.k_dim, self.v_dim]
+            [self.k_dim, self.k_dim, self.v_dim],
+            dim=-1
         )
 
-        q = q.reshape(batch_size, seq_len, self.num_k_heads, self.hidden_size).transpose(1, 2)
-        k = k.reshape(batch_size, seq_len, self.num_k_heads, self.hidden_size).transpose(1, 2)
-        v = v.reshape(batch_size, seq_len, self.num_v_heads, self.hidden_size).transpose(1, 2)
+        q = q.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
+        k = k.reshape(batch_size, seq_len, self.num_k_heads, self.head_k_dim)
+        v = v.reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
 
 
         z = self.z(hidden_states).reshape(batch_size, seq_len, self.num_v_heads, self.head_v_dim)
@@ -121,6 +126,13 @@ class GatedDeltaNet(nn.Module):
 
         beta = torch.sigmoid(b)
         g = -torch.exp(self.A_log) * F.softplus(a + self.dt_bias)
+
+        if self.num_v_heads // self.num_k_heads > 1:
+            rep = self.num_v_heads // self.num_k_heads
+            q = q.repeat_interleave(rep, dim=2)
+            k = k.repeat_interleave(rep, dim=2)
+            
+
 
         core_attn_out, recurrent_state = torch_recurrent_gated_delta_rule(
             q,
@@ -136,8 +148,8 @@ class GatedDeltaNet(nn.Module):
             cache.recurrent_state[self.layer_idx] = recurrent_state
 
         # flatten
-        core_attn_out = core_attn_out.reshape(-1, self.num_v_heads)
-        z = z.reshape(-1, self.num_v_heads)
+        core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
+        z = z.reshape(-1, self.head_v_dim)
 
         core_attn_out = self.norm(core_attn_out)
         core_attn_out = core_attn_out * F.silu(z)
@@ -202,6 +214,9 @@ class RoPE(nn.Module):
         sin = emebd.cos().to(dtype=x.dtype, device=x.device)
 
         return cos, sin
+
+
+
         
 
     
@@ -255,6 +270,10 @@ if __name__ == "__main__":
     
     out = rms(torch.randn(batch_size, seq_len, config.hidden_size))
     print(out.shape)
+    
+    hidden_states = torch.randn((batch_size, seq_len, config.hidden_size))
+    attention_mask = torch.randn((batch_size, seq_len))
 
-
-
+    delta_net = GatedDeltaNet(config, 1)
+    out = delta_net(hidden_states, attention_mask)
+    print(out.shape)
