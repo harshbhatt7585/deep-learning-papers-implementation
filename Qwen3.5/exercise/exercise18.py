@@ -266,7 +266,7 @@ class SelfAttention(nn.Module):
         self.v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
         self.out_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
 
-        self.scaling = self.head_dim ** 0.5
+        self.scaling = self.head_dim ** -0.5
 
         self.q_norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
         self.k_norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
