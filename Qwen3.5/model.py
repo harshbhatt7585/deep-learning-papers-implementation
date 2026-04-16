@@ -5,6 +5,7 @@ from torch import nn
 
 from cache import Qwen35DynamicCache
 from decoder import Qwen35DecoderLayer
+from exercise.exercise18 import TextModel
 from mask import build_causal_mask
 from norm import Qwen35RMSNorm
 from rope import Qwen35RotaryEmbedding
@@ -81,7 +82,7 @@ class Qwen35ForCausalLM(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.model = Qwen35TextModel(config)
+        self.model = TextModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.tie_weights()
 

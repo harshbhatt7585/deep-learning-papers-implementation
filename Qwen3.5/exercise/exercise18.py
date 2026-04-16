@@ -303,7 +303,7 @@ class SelfAttention(nn.Module):
 
         # [batch, num_heads, head_dim, head_dim]
         attn_weight = torch.matmul(q, k.transpose(2, 3)) 
-        attn_weight = attn_weight * self.scaling
+        attn_weight = attn_weight * self.scaling 
 
         if attention_mask is not None:
             attn_weight = attn_weight + attention_mask
@@ -372,31 +372,31 @@ class Decoder(nn.Module):
         
 
 
-# class DynamicCache:
-#     def __init__(
-#         self,
-#         config
-#     ):
-#         self.recurrent_state = [None for _ in range(self.num_hidden_layers)]
-#         self.conv_state = [None for _ in range(self.num_hidden_layers)]
-#         self.key = [None for _ in range(self.num_hidden_layers)]
-#         self.value = [None for _ in range(self.num_hidden_layers)]
+class DynamicCache:
+    def __init__(
+        self,
+        config
+    ):
+        self.recurrent_state = [None for _ in range(self.num_hidden_layers)]
+        self.conv_state = [None for _ in range(self.num_hidden_layers)]
+        self.key = [None for _ in range(self.num_hidden_layers)]
+        self.value = [None for _ in range(self.num_hidden_layers)]
 
-#     def update(
-#         self,
-#         key: torch.Tensor,
-#         value: torch.Tensor,
-#         layer_idx: int
-#     ):
-#         if self.key[layer_idx] is None:
-#             self.key[layer_idx] = key
-#             self.value[layer_idx] = value
+    def update(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        layer_idx: int
+    ):
+        if self.key[layer_idx] is None:
+            self.key[layer_idx] = key
+            self.value[layer_idx] = value
         
-#         else:
-#             self.key[layer_idx] = torch.cat((self.key[layer_idx], key), dim=2)
-#             self.value[layer_idx] = torch.cat((self.value[layer_idx], value), dim=2)
+        else:
+            self.key[layer_idx] = torch.cat((self.key[layer_idx], key), dim=2)
+            self.value[layer_idx] = torch.cat((self.value[layer_idx], value), dim=2)
         
-#         return self.key[layer_idx], self.value[layer_idx]
+        return self.key[layer_idx], self.value[layer_idx]
 
 
 
@@ -435,30 +435,34 @@ class TextModel(nn.Module):
         self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.out_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.embedding = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.rope = RoPE(config)
 
     def forward(
         self,
         input_ids,
-        input_embds = None,
-        pos_ids = None,
         attention_mask = None,
-        cache = None
+        position_ids = None,
+        past_key_values = None,
+        inputs_embeds = None,
+        use_cache = None,
     ):
+        input_embds = inputs_embeds
+        cache = past_key_values
+        pos_ids = position_ids
         # input_ids: [batch, seq_len]
         if input_embds is None:
-            input_embds = self.embedding(input_ids) # [batch, seq_len, hidden_size]
+            input_embds = self.embed_tokens(input_ids) # [batch, seq_len, hidden_size]
 
 
-        seq_len = input_ids.shape[-1]
+        batch_size, seq_len, _  = input_embds.shape
 
 
         if pos_ids is None:
             pos_ids = torch.arange(0, seq_len, dtype=input_embds.dtype, device=input_embds.device)
             pos_ids = pos_ids[None, :].expand(input_embds.shape[0], -1)
 
-        pos_embeddings = rope(input_embds, pos_ids)
+        pos_embeddings = self.rope(input_embds, pos_ids)
 
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_len), dtype=input_embds.dtype, device=input_embds.device)
@@ -483,6 +487,9 @@ class TextModel(nn.Module):
         
         hidden_states = self.norm(hidden_states)
         return self.out_proj(hidden_states), None
+
+
+
     
 
         
@@ -512,7 +519,8 @@ if __name__ == "__main__":
 
     model = TextModel(config)
     out = model(
-         torch.ones((batch_size, 20), dtype=torch.long)
+         torch.ones((batch_size, 20), dtype=torch.long),
+
     )
 
     print(out)
