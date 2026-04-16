@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from delta import torch_recurrent_gated_delta_rule
+from exercise.exercise16 import MLP
 from utils import apply_interleaved_mrope
 
 """
@@ -83,6 +84,8 @@ class GatedDeltaNet(nn.Module):
         # hidden_states: [batch_size, seq_len, hidden_size]
         # attention_mask: [batch_size, seq_len]
 
+        # attention_mask
+
         if attention_mask is not None:
             if attention_mask.shape[1] != hidden_states.shape[1]:
                 attention_mask = attention_mask[:, -hidden_states.shape[1] :]
@@ -131,7 +134,6 @@ class GatedDeltaNet(nn.Module):
             q = q.repeat_interleave(rep, dim=2)
             k = k.repeat_interleave(rep, dim=2)
             
-
 
         core_attn_out, recurrent_state = torch_recurrent_gated_delta_rule(
             q,
@@ -227,15 +229,17 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     # sin: [batch, seq_len, pos_size]
 
     cos = cos.unsqueeze(1) # [batch, 1, seq_len, pos_size]
-    sin = sin.sunsqueeze(1) # [batch, 1, seq_len, pos_size]
+    sin = sin.unsqueeze(1) # [batch, 1, seq_len, pos_size]
 
+
+    print(cos.shape)
 
     rotary_dim = cos.shape[-1]
     q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
     k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
 
-    q_emebd = (cos * q_pass) + (rotate_half(q_rot) * sin)
-    k_emebd = (sin * k_pass) + (rotate_half(k_rot) * sin)
+    q_emebd = (cos * q_rot) + (rotate_half(q_rot) * sin)
+    k_emebd = (sin * k_rot) + (rotate_half(k_rot) * sin)
 
     q = torch.cat((q_emebd, q_pass), dim=-1)
     k = torch.cat((k_emebd, k_pass), dim=-1)
@@ -251,7 +255,7 @@ class SelfAttention(nn.Module):
     ):  
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.num_attention_heads = config.num_attention_head
+        self.num_attention_heads = config.num_attention_heads
         self.num_kv_heads = config.num_key_value_heads
         self.num_kv_groups = self.num_attention_heads // self.num_kv_heads
         self.head_dim = config.head_dim
@@ -271,7 +275,7 @@ class SelfAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        pos_embddings: tuple[torch.Tensor, torch.Tensor],
+        pos_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         cache = None
     ):
@@ -288,18 +292,17 @@ class SelfAttention(nn.Module):
         k = self.k(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
         v = self.v(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
 
-        cos, sin = pos_embddings
+        cos, sin = pos_embeddings
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
         if cache is not None:
             k, v = cache.update(k, v, self.layer_idx)
         
-        k = k.repeat_interleave(self.num_kv_groups)
-        v = v.repeat_interleave(self.num_kv_groups)
-
+        k = k.repeat_interleave(self.num_kv_groups, dim=1)
+        v = v.repeat_interleave(self.num_kv_groups, dim=1)
 
         # [batch, num_heads, head_dim, head_dim]
-        attn_weight = torch.matmul(q, k.transpose(1, 2)) 
+        attn_weight = torch.matmul(q, k.transpose(2, 3)) 
         attn_weight = attn_weight * self.scaling
 
         if attention_mask is not None:
@@ -317,13 +320,13 @@ class SelfAttention(nn.Module):
 
 
 
-
 class Decoder(nn.Module):
     def __init__(
         self, 
         config,
         layer_idx: int
-    ):
+    ): 
+        super().__init__()
         self.layer_idx = layer_idx
         self.layer_type = config.layer_types[layer_idx]
         
@@ -334,7 +337,7 @@ class Decoder(nn.Module):
 
         self.mlp = MLP(config)
         self.input_layer_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.post_attn_norm = RMSNorm(config.hiddeen_size, config.rms_norm_eps)
+        self.post_attn_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
 
     def forward(
@@ -406,7 +409,7 @@ def build_causal_mask(
     dtype,
     device
 ):
-    min_value = torch.finfo(dtype=dtype, device=device)
+    min_value = torch.finfo(dtype).min
     causal = torch.full((query_length, kv_length), min_value, dtype=dtype, device=device)
     causal = torch.triu(causal, diagonal=1 + kv_length - query_length)
 
@@ -415,10 +418,8 @@ def build_causal_mask(
     if attn_mask is None:
         return causal
     
-    padding_mask = (1.0 - attn_mask[:, None, None, : ]).to * min_value
+    padding_mask = (1.0 - attn_mask[:, None, None, : ]) * min_value
     return padding_mask + causal
-    
-    
 
     
 
@@ -434,7 +435,7 @@ class TextModel(nn.Module):
         self.layers = nn.ModuleList([Decoder(config, i) for i in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.out_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.embedding = nn.Embedding(config.vcab_size, config.hidden_size)
+        self.embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.rope = RoPE(config)
 
     def forward(
@@ -458,27 +459,31 @@ class TextModel(nn.Module):
             pos_ids = pos_ids[None, :].expand(input_embds.shape[0], -1)
 
         pos_embeddings = rope(input_embds, pos_ids)
+
+        if attention_mask is None:
+            attention_mask = torch.ones((batch_size, seq_len), dtype=input_embds.dtype, device=input_embds.device)
         
-        attention_mask = build_causal_mask(self.hidden_size, batch_size, seq_len)
-        
+        causal = build_causal_mask(
+            attention_mask, 
+            batch_size, 
+            seq_len, 
+            seq_len, 
+            dtype=input_embds.dtype, 
+            device=input_embds.device)
+
+        hidden_states = input_embds
+
         for layer in self.layers:
             hidden_states = layer(
                 hidden_states,
                 pos_embeddings,
-                attention_mask,
+                attention_mask if layer.layer_type == "linear_attention" else causal,
                 cache
             )
-
         
         hidden_states = self.norm(hidden_states)
-        return self.out_proj(hidden_states)
-
-        
-        
-
-        
-
-
+        return self.out_proj(hidden_states), None
+    
 
         
 
@@ -502,4 +507,12 @@ if __name__ == "__main__":
     pos_ids = torch.arange(0, seq_len)[None, :].expand(batch_size, -1).float()
     rope = RoPE(config)
     out = rope(hidden_states, pos_ids)
+    # print(out)
+
+
+    model = TextModel(config)
+    out = model(
+         torch.ones((batch_size, 20), dtype=torch.long)
+    )
+
     print(out)
