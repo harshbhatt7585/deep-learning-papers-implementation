@@ -264,12 +264,12 @@ class SelfAttention(nn.Module):
         self.q_proj = nn.Linear(self.hidden_size, self.num_attention_heads * self.head_dim * 2, bias=config.attention_bias)
         self.k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
         self.v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-
-        self.norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
-
         self.out_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
 
         self.scaling = self.head_dim ** 0.5
+
+        self.q_norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
+        self.k_norm = RMSNorm(self.hidden_size, config.rms_norm_eps)
 
     
     def forward(
@@ -288,8 +288,8 @@ class SelfAttention(nn.Module):
         q, gate = torch.chunk(q_proj, 2, dim=-1)
         gate = gate.reshape(batch_size, seq_len, -1)
 
-        q = q.reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, attn_head, head_dim]
-        k = self.k(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
+        q = self.q_norm(q.reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim)).transpose(1, 2) # [batch, seq_len, attn_head, head_dim]
+        k = self.k_norm(self.k(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
         v = self.v(hidden_states).reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2) # [batch, seq_len, kv_heads, head_dim]
 
         cos, sin = pos_embeddings
@@ -313,6 +313,7 @@ class SelfAttention(nn.Module):
         attn_out = attn_out.transpose(1, 2).contiguous() # [batch, seq_len, num_heads, dim]
         attn_out = attn_out.reshape(batch_size, seq_len, -1) # [batch, seq_len, hidden_size]
         attn_out = attn_out * torch.sigmoid(gate)
+
 
         out = self.out_proj(attn_out)
         return out
@@ -377,10 +378,13 @@ class DynamicCache:
         self,
         config
     ):
-        self.recurrent_state = [None for _ in range(self.num_hidden_layers)]
-        self.conv_state = [None for _ in range(self.num_hidden_layers)]
-        self.key = [None for _ in range(self.num_hidden_layers)]
-        self.value = [None for _ in range(self.num_hidden_layers)]
+        self.recurrent_state = [None for _ in range(config.num_hidden_layers)]
+        self.conv_state = [None for _ in range(config.num_hidden_layers)]
+        self.key = [None for _ in range(config.num_hidden_layers)]
+        self.value = [None for _ in range(config.num_hidden_layers)]
+        self.transformer_layers = [
+            i for i in range(config.num_hidden_layers) if config.layer_types[i] == "full_attention"
+        ]
 
     def update(
         self,
@@ -397,7 +401,13 @@ class DynamicCache:
             self.value[layer_idx] = torch.cat((self.value[layer_idx], value), dim=2)
         
         return self.key[layer_idx], self.value[layer_idx]
-
+    
+    def get_seq_len(self):
+        if self.key[self.transformer_layers[0]] is not None:
+            return self.key[self.transformer_layers[0]].shape[-2]
+        else:
+            return 0
+    
 
 
 
@@ -437,6 +447,7 @@ class TextModel(nn.Module):
         self.out_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.rope = RoPE(config)
+        self.config = config
 
     def forward(
         self,
@@ -457,21 +468,28 @@ class TextModel(nn.Module):
 
         batch_size, seq_len, _  = input_embds.shape
 
+        if cache is None:
+            cache = DynamicCache(self.config)
+
+        past_seen_tokens = cache.get_seq_len()
+
 
         if pos_ids is None:
-            pos_ids = torch.arange(0, seq_len, dtype=input_embds.dtype, device=input_embds.device)
+            pos_ids = torch.arange(0, seq_len, dtype=input_embds.dtype, device=input_embds.device) + past_seen_tokens
             pos_ids = pos_ids[None, :].expand(input_embds.shape[0], -1)
 
         pos_embeddings = self.rope(input_embds, pos_ids)
 
         if attention_mask is None:
-            attention_mask = torch.ones((batch_size, seq_len), dtype=input_embds.dtype, device=input_embds.device)
+            attention_mask = torch.ones((batch_size, seq_len + past_seen_tokens), dtype=input_embds.dtype, device=input_embds.device)
+
+        kv_length = seq_len + past_seen_tokens
         
         causal = build_causal_mask(
             attention_mask, 
             batch_size, 
             seq_len, 
-            seq_len, 
+            kv_length, 
             dtype=input_embds.dtype, 
             device=input_embds.device)
 
@@ -486,13 +504,11 @@ class TextModel(nn.Module):
             )
         
         hidden_states = self.norm(hidden_states)
-        return self.out_proj(hidden_states), None
+        return self.out_proj(hidden_states), cache
 
 
 
-    
 
-        
 
 if __name__ == "__main__":
     from config import config
