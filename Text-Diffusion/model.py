@@ -47,30 +47,22 @@ class TransformerBlock(nn.Module):
         if attention_mask is not None:
             if attention_mask.ndim == 2:
                 key_padding_mask = ~attention_mask.bool()
-            elif attention_mask.ndim in {3, 4}:
-                keep_mask = attention_mask
-                if keep_mask.ndim == 4:
-                    if keep_mask.shape[1] != 1:
-                        raise ValueError("4D attention_mask must have shape (batch, 1, query, key)")
-                    keep_mask = keep_mask[:, 0]
-                keep_mask = keep_mask.to(dtype=torch.bool, device=x.device)
-                batch_size = keep_mask.shape[0]
-                attn_mask = ~keep_mask
+            elif attention_mask.ndim == 3:
+                batch_size, query_len, key_len = attention_mask.shape
+                attn_mask = ~attention_mask.bool().to(device=x.device)
                 attn_mask = attn_mask[:, None].expand(
                     batch_size,
                     self.attn.num_heads,
-                    keep_mask.shape[-2],
-                    keep_mask.shape[-1],
+                    query_len,
+                    key_len,
                 )
                 attn_mask = attn_mask.reshape(
                     batch_size * self.attn.num_heads,
-                    keep_mask.shape[-2],
-                    keep_mask.shape[-1],
+                    query_len,
+                    key_len,
                 )
             else:
-                raise ValueError(
-                    "attention_mask must be 2D padding mask, 3D keep mask, or 4D keep mask"
-                )
+                raise ValueError("attention_mask must be 2D or 3D")
 
         h = self.attn_norm(x)
         attn_out, _ = self.attn(
