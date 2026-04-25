@@ -143,3 +143,38 @@ def build_block_diffusion_attention_mask(
     return block_ids[:, None] >= block_ids[None, :]
 
 
+
+def _sample_tokens(
+    logits,
+    *,
+    temperature = 0.0,
+    top_k = None,
+    top_p = None,
+):
+    if temperature == 0.0:
+        probs = F.softmax(logits, dim=-1)
+        confidence, tokens = probs.max(dim=-1)
+        return tokens, confidence
+    
+    scaled = logits / temperature
+    if top_k is not None:
+        values, _ = torch.topk(scaled, k=min(top_k, scaled.shape[-1], dim=-1))
+        cutoff = values[..., -1, None]
+        scaled = scaled.masked_fill(scaled < cutoff, float("-inf"))
+    
+    if top_k is not top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(scaled, descending=True, dim=-1)
+        sorted_probs = F.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        remove_sorted = cumulative_probs > top_p
+        remove_sorted[..., 1:] = remove_sorted[..., :-1].clone()
+        remove_sorted[..., 0] = False
+        remove = torch.zero_like(remove_sorted).scatter(-1, sorted_indices, remove_sorted)
+        scaled = scaled.masked_fill(remove, float('-inf'))
+
+    probs = F.softmax(scaled, dim=-1)
+    tokens = torch.multinomial(probs.view(-1, probs.shape[-1], num_samples=1))
+    tokens = tokens.view(probs.shape[:-1])
+    confidence, probs.gather(-1, tokens.unssqueeze(-1)).squeeze(-1)
+    return tokens, confidence
+    
