@@ -39,7 +39,7 @@ You need at least these token IDs:
 - `mask_token_id`: the diffusion placeholder the model must denoise.
 - `eos_token_id`: optional end-of-sequence marker.
 
-In `model.py`, `SimpleCharTokenizer` builds a tiny character-level vocabulary:
+In `tokenizer.py`, `SimpleCharTokenizer` builds a tiny character-level vocabulary:
 
 ```python
 tokenizer = SimpleCharTokenizer.from_texts(["hello world"])
@@ -230,7 +230,8 @@ After you understand `model.py`, scale one part at a time:
 
 ## Files
 
-- `model.py`: complete minimal implementation.
+- `model.py`: model, denoising loss, and LLaDA-style generation loop.
+- `tokenizer.py`: tiny character tokenizer and padding helper.
 - `IMPLEMENT.md`: this learning guide.
 
 ## Reference Points
