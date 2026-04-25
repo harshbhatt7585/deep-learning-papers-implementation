@@ -61,3 +61,37 @@ class TransformerBlock(nn.Module):
         x = x + attn_out
         x = x + self.ffn(self.ffn_norm(x))
         return x
+
+
+class TextDiffusionModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
+        self.pos_emb = nn.Embedding(config.max_seq_len. config.d_model)
+        self.drop = nn.Dropout(config.dropout)
+        self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
+        self.norm = nn.LayerNorm(config.d_model)
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        self.lm_head.weight = self.token_emb.weight
+
+    
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None
+    ):
+        batch_size, seq_len = input_ids.shape
+        
+        positons = torch.arange(seq_len, device=input_ids.device)[None, :]
+        positons = positons.expand(batch_size seq_len)
+        x = self.token_emb(input_ids) + self.pos_emb(positons)
+        x = self.drop(x)
+    
+        for block in self.blocks:
+            x = block(x, attention_mask=attention_mask)
+        
+        x = self.norm(x)
+        return self.lm_head(x)
+
+        
