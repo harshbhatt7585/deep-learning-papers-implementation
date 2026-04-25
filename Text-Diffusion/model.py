@@ -216,11 +216,9 @@ def generate(
     gen_length: int,
     block_length: int = 8,
     steps: int = 8,
-    minimal_topk: int = 1,
     threshold: float = 0.7,
     editing_threshold: float | None = 0.9,
     max_post_steps: int = 16,
-    num_to_transfer: int | None = None,
     temperature: float = 0.0,
     top_k: int | None = None,
     top_p: float | None = None,
@@ -230,18 +228,6 @@ def generate(
 
     if prompt_ids.ndim == 1:
         prompt_ids = prompt_ids.unsqueeze(0)
-    if prompt_ids.shape[0] != 1:
-        raise ValueError("This educational generator supports batch size 1 only")
-    if gen_length <= 0:
-        raise ValueError("gen_length must be positive")
-    if block_length <= 0:
-        raise ValueError("block_length must be positive")
-    if steps <= 0:
-        raise ValueError("steps must be positive")
-    if minimal_topk <= 0:
-        raise ValueError("minimal_topk must be positive")
-    if top_p is not None and not 0.0 < top_p <= 1.0:
-        raise ValueError("top_p must be in (0, 1]")
 
     model.eval()
     config = model.config
@@ -250,11 +236,8 @@ def generate(
     requested_len = prompt_len + gen_length
     num_blocks = math.ceil(requested_len / block_length)
     total_len = num_blocks * block_length
-    if total_len > config.max_seq_len:
-        raise ValueError(f"requested length {total_len} exceeds max_seq_len {config.max_seq_len}")
 
-    steps = min(steps, max(1, gen_length // max(minimal_topk, 1)))
-    transfer_count = num_to_transfer if num_to_transfer is not None else max(1, math.ceil(block_length / steps))
+    transfer_count = max(1, math.ceil(block_length / steps))
     full_attention_mask = build_block_diffusion_attention_mask(
         seq_len=total_len,
         block_length=block_length,
