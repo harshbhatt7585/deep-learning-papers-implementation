@@ -36,23 +36,19 @@ class TransformerBlock(nn.Module):
             if attention_mask.ndim == 2:
                 key_padding_mask = ~attention.bool()
             elif attention_mask.ndim in 3:
-                keep_mask = attention_mask
-                kee_mask = keep_mask.to(dtype=torch.bool, device=x.device)
-                attn_mask = ~kee_mask
+                batch_size, query_len, key_len = attention_mask
+                attn_mask = ~attention_mask.bool().to(device=x.device)
                 attn_mask = attn_mask[:, None].expand(
-                    keep_mask.shape[0],
+                    batch_size,
                     self.attn.num_heads,
-                    keep_mask.shape[-2],
-                    keep_mask.shape[-1]
+                    query_len,
+                    key_len
                 )
                 attn_mask = attn_mask.reshape(
-                    keep_mask.shape[0] * self.attn.num_heads,
-                    keep_mask.shape[-2],
-                    kee_mask.shape[-1]
+                    batch_size * self.attn.num_heads,
+                    query_len,
+                    key_len
                 )
-            else:
-                pass
-                
         h = self.attn_norm(x)
         attn_out, _ = self.attn(
             h,
