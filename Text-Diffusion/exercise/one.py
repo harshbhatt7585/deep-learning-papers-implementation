@@ -94,4 +94,27 @@ class TextDiffusionModel(nn.Module):
         x = self.norm(x)
         return self.lm_head(x)
 
-        
+
+def make_masked_inputs(
+    input_ids,
+    *,
+    mask_token_id,
+    pad_token_id,
+    mask_prob = 0.3
+):
+    valid_tokens = input_ids != pad_token_id
+    random_mask = torch.rand(input_ids.shape) < mask_prob
+    mask_positions = random_mask & valid_tokens
+
+    noised = input_ids.clone()
+    noised[mask_positions] = mask_token_id
+    
+    labels = torch.full_like(input_ids, -100)
+    labels[mask_positions] = input_ids[mask_positions]
+    return noised, labels
+
+
+
+
+
+
