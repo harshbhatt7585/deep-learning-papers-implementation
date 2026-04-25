@@ -114,7 +114,21 @@ def make_masked_inputs(
     return noised, labels
 
 
-
-
+def diffusion_loss(
+    model,
+    input_ids,
+    *,
+    mask_prob = 0.3
+):
+    config = model.config
+    noised, labels = make_masked_inputs(
+        input_ids,
+        mask_token_id=config.mask_token_ids,
+        pad_token_id=config.pad_token_id,
+        mask_prob=mask_prob,
+    )
+    attention_mask = noised != config.pad_token_id
+    logits = model(noised, attention_mask=attention_mask)
+    return F.cross_entropy(logits.view(-1, config.vocab_size), labels.view(-1))
 
 
