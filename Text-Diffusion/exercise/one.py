@@ -132,3 +132,14 @@ def diffusion_loss(
     return F.cross_entropy(logits.view(-1, config.vocab_size), labels.view(-1))
 
 
+
+def build_block_diffusion_attention_mask(
+    *,
+    seq_len,
+    block_length,
+    device
+):
+    block_ids = torch.arange(seq_len) // block_length
+    return block_ids[:, None] >= block_ids[None, :]
+
+
