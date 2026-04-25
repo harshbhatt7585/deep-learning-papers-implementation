@@ -134,13 +134,6 @@ def make_masked_inputs(
     random_mask = torch.rand(input_ids.shape, device=input_ids.device) < mask_prob
     mask_positions = random_mask & valid_tokens
 
-    # Guarantee at least one supervised token per row.
-    missing = ~mask_positions.any(dim=1)
-    if missing.any():
-        first_valid = valid_tokens.float().argmax(dim=1)
-        rows = torch.where(missing)[0]
-        mask_positions[rows, first_valid[rows]] = True
-
     noised = input_ids.clone()
     noised[mask_positions] = mask_token_id
 
