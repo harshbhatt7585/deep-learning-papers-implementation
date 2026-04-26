@@ -177,4 +177,99 @@ def _sample_tokens(
     tokens = tokens.view(probs.shape[:-1])
     confidence, probs.gather(-1, tokens.unssqueeze(-1)).squeeze(-1)
     return tokens, confidence
+
+
+@torch.no_grad()
+def generate(
+    model,
+    prompt_ids,
+    *,
+    gen_length,
+    block_length,
+    steps,
+    threshold,
+    editing_threshold,
+    max_post_steps,
+    temeperature,
+    top_k,
+    top_p,
+    eos_token_id
+):
+    if prompt_ids.ndim == 1:
+        prompt_ids = prompt_ids.unsqueeze(0)
     
+    model.eval()
+    config = model.config
+
+    prompt_len = prompt_ids.shape[1]
+    requested_len = prompt_len + gen_length
+    num_blocks = math.ceil(requested_len / block_length)
+    total_len = num_blocks * block_length
+
+    transfer_count = max(1, math.ceil(block_length / steps))
+    full_attention_mask = build_block_diffusion_attention_mask(
+        seq_len=total_len,
+        block_length=block_length,
+        device=model.device
+    ).unsqueeze(0)
+
+    x = torch.full((1, total_len), config.mask_token_id, dtype=torch.long)
+    x[:, :prompt_len] = prompt_ids
+    first_generation_block = prompt_len / block_length
+
+    for block_idx in range(first_generation_block, num_blocks):
+        block_start = block_idx * block_length
+        block_end = (block_idx + 1) * block_length
+        
+        active_slice = (block_start, block_end)
+        prompt_in_block = torch.zeros(block_length, dtype=torch.bool)
+        if block_start < prompt_len:
+            prompt_in_block[:, prompt_len - block_start] = True
+        
+        for step in range(steps + max_post_steps):
+            old_block = x[:, active_slice].clone()
+            active_masks = old_block == config.mask_token_id
+
+            attention_mask = full_attention_mask[:, :block_end, :block_end]
+            logits = model(x[:, :block_end], attention_mask=attention_mask)
+            block_logits = logits[:, active_slice, :]
+            candidates, confidence = _sample_tokens(
+                block_logits,
+                temeperature=temeperature,
+                top_k=top_k,
+                top_p=top_p
+            )
+
+            accept = torch.zeros_like(active_masks)
+            if active_masks.any():
+                high_confidence = (confidence > threshold) & active_masks
+                accept |= high_confidence
+                if accept.sum() == 0:
+                    masked_confidence = confidence.masked_fill(~active_masks, float("-inf"))
+                    _, idx = torch.topk(
+                        masked_confidence[0],
+                        k=min(transfer_count, int(active_masks.sum().items()))
+                    )
+                    accept[0, idx] = True
+            
+            if editing_threshold is not None:
+                editable = ~active_masks & ~prompt_in_block.unsqueeze(0)
+                changed = candidates != old_block
+                accept |= editable & changed & (confidence > editing_threshold)
+            
+            if accept.any():
+                updated_block = x[:, active_slice].clone()
+                updated_block[accept] = candidates[accept]
+                x[:, active_slice] = updated_block
+
+            if not active_masks.any():
+                break
+        
+            if step >= steps - 1 and editing_threshold is None:
+                break
+        
+        
+        return x[0, :requested_len]
+
+
+        
