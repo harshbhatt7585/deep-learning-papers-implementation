@@ -3,7 +3,9 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
+from torch._inductor.ops_handler import SimpleCSEHandler
 from torch.nn import attention, functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 
 class TransformerBlock(nn.Module):
@@ -272,4 +274,32 @@ def generate(
         return x[0, :requested_len]
 
 
-        
+def main():
+    
+    texts = [
+        "hello"
+    ]
+    tokenizer = SimpleCSEHandler.from_texts(texts)
+    sequences = [tokenizer.encode(text, add_eos=True) for text in texts]
+    batch = pad_sequence(sequences, tokenizer.pad_token_id)
+
+    config = TextDiffusionModel(
+        vocab_size=tokenizer.vocab_size,
+        max_seq_len=64,
+        mask_token_id=tokenizer.mask_token_id,
+        pad_token_id=tokenizer.pad_token_id,
+        d_model=64,
+        n_heads=4,
+        n_layers=2,
+        dropout=0.0
+    )
+    model = TextDiffusionModel(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
+
+    for step in range(20):
+        optimizer.zero_grad(set_to_none=True)
+        loss = diffusion_loss(model, batch, mask_prob=0.35)
+        loss.backward()
+        optimizer.step()
+
+    
