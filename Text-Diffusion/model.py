@@ -224,7 +224,7 @@ def generate(
     top_p: float | None = None,
     eos_token_id: int | None = None,
 ) -> torch.Tensor:
-    """LLaDA-style block diffusion generation without MoE or pretrained weights."""
+    """Block-wise diffusion generation: fill masks from left blocks to right blocks."""
 
     if prompt_ids.ndim == 1:
         prompt_ids = prompt_ids.unsqueeze(0)
@@ -251,17 +251,14 @@ def generate(
     for block_idx in range(first_generation_block, num_blocks):
         block_start = block_idx * block_length
         block_end = (block_idx + 1) * block_length
-        post_steps = 0
+        active_slice = slice(block_start, block_end)
+        prompt_in_block = torch.zeros(block_length, dtype=torch.bool, device=model.device)
+        if block_start < prompt_len:
+            prompt_in_block[: prompt_len - block_start] = True
 
-        while True:
-            active_slice = slice(block_start, block_end)
+        for step in range(steps + max_post_steps):
             old_block = x[:, active_slice].clone()
             active_masks = old_block == config.mask_token_id
-
-            if not active_masks.any():
-                post_steps += 1
-                if editing_threshold is None or post_steps > max_post_steps:
-                    break
 
             attention_mask = full_attention_mask[:, :block_end, :block_end]
             logits = model(x[:, :block_end], attention_mask=attention_mask)
@@ -273,16 +270,11 @@ def generate(
                 top_p=top_p,
             )
 
-            prompt_in_block = torch.zeros(block_length, dtype=torch.bool, device=model.device)
-            if block_start < prompt_len:
-                prompt_in_block[: prompt_len - block_start] = True
-
             accept = torch.zeros_like(active_masks)
             if active_masks.any():
                 high_confidence = (confidence > threshold) & active_masks
-                if high_confidence.sum() >= transfer_count:
-                    accept |= high_confidence
-                else:
+                accept |= high_confidence
+                if accept.sum() == 0:
                     masked_confidence = confidence.masked_fill(~active_masks, float("-inf"))
                     _, idx = torch.topk(
                         masked_confidence[0],
@@ -300,7 +292,9 @@ def generate(
                 updated_block[accept] = candidates[accept]
                 x[:, active_slice] = updated_block
 
-            if not active_masks.any() and not accept.any():
+            if not active_masks.any():
+                break
+            if step >= steps - 1 and editing_threshold is None:
                 break
 
         if eos_token_id is not None:
