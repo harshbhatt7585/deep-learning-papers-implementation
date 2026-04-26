@@ -3,15 +3,28 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
-from torch._inductor.ops_handler import SimpleCSEHandler
 from torch.nn import attention, functional as F
-from torch.nn.utils.rnn import pad_sequence
 
+from tokenizer import SimpleCharTokenizer, pad_sequences
+
+
+
+@dataclass
+class TextDiffusionConfig:
+    vocab_size: int
+    max_seq_len: int
+    mask_token_id: int
+    pad_token_id: int
+    d_model: int = 128
+    n_heads: int = 4
+    n_layers: int = 4
+    dropout: float = 0.1
+    ff_mult: int = 4
 
 class TransformerBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.attn_norm = nn.LinearNorm(config.d_model)
+        self.attn_norm = nn.LayerNorm(config.d_model)
         self.attn = nn.MultiheadAttention(
             config.d_model,
             config.n_heads,
@@ -36,7 +49,7 @@ class TransformerBlock(nn.Module):
         attn_mask = None
         if attention_mask is not None:
             if attention_mask.ndim == 2:
-                key_padding_mask = ~attention.bool()
+                key_padding_mask = ~attention_mask.bool()
             elif attention_mask.ndim in 3:
                 batch_size, query_len, key_len = attention_mask
                 attn_mask = ~attention_mask.bool().to(device=x.device)
@@ -70,7 +83,7 @@ class TextDiffusionModel(nn.Module):
         super().__init__()
         self.config = config
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
-        self.pos_emb = nn.Embedding(config.max_seq_len. config.d_model)
+        self.pos_emb = nn.Embedding(config.max_seq_len, config.d_model)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
         self.norm = nn.LayerNorm(config.d_model)
@@ -86,7 +99,7 @@ class TextDiffusionModel(nn.Module):
         batch_size, seq_len = input_ids.shape
         
         positons = torch.arange(seq_len, device=input_ids.device)[None, :]
-        positons = positons.expand(batch_size seq_len)
+        positons = positons.expand(batch_size, seq_len)
         x = self.token_emb(input_ids) + self.pos_emb(positons)
         x = self.drop(x)
     
@@ -125,7 +138,7 @@ def diffusion_loss(
     config = model.config
     noised, labels = make_masked_inputs(
         input_ids,
-        mask_token_id=config.mask_token_ids,
+        mask_token_id=config.mask_token_id,
         pad_token_id=config.pad_token_id,
         mask_prob=mask_prob,
     )
@@ -279,11 +292,11 @@ def main():
     texts = [
         "hello"
     ]
-    tokenizer = SimpleCSEHandler.from_texts(texts)
+    tokenizer = SimpleCharTokenizer.from_texts(texts)
     sequences = [tokenizer.encode(text, add_eos=True) for text in texts]
-    batch = pad_sequence(sequences, tokenizer.pad_token_id)
+    batch = pad_sequences(sequences, tokenizer.pad_token_id)
 
-    config = TextDiffusionModel(
+    config = TextDiffusionConfig(
         vocab_size=tokenizer.vocab_size,
         max_seq_len=64,
         mask_token_id=tokenizer.mask_token_id,
@@ -301,5 +314,9 @@ def main():
         loss = diffusion_loss(model, batch, mask_prob=0.35)
         loss.backward()
         optimizer.step()
+        print(loss)
+
+if __name__== "__main__":
+    main()
 
     
