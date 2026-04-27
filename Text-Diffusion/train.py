@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from model import TextDiffusionConfig, TextDiffusionModel, diffusion_loss, generate
-from tokenizer import SimpleCharTokenizer
+from tokenizer import LLaDA21Tokenizer, SimpleCharTokenizer
 
 
 NANOCHAT_BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
@@ -69,13 +69,14 @@ def save_checkpoint(
     *,
     out_dir: Path,
     model: TextDiffusionModel,
-    tokenizer: SimpleCharTokenizer,
+    tokenizer: LLaDA21Tokenizer | SimpleCharTokenizer,
     optimizer: torch.optim.Optimizer,
     step: int,
     args: argparse.Namespace,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer.save(out_dir / "tokenizer.json")
+    tokenizer_path = out_dir / ("tokenizer_hf" if isinstance(tokenizer, LLaDA21Tokenizer) else "tokenizer.json")
+    tokenizer.save(tokenizer_path)
     args_dict = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(args).items()
@@ -86,6 +87,7 @@ def save_checkpoint(
             "config": asdict(model.config),
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "tokenizer_type": "llada21" if isinstance(tokenizer, LLaDA21Tokenizer) else "char",
             "args": args_dict,
         },
         out_dir / "checkpoint.pt",
@@ -96,7 +98,7 @@ def save_checkpoint(
 def print_sample(
     *,
     model: TextDiffusionModel,
-    tokenizer: SimpleCharTokenizer,
+    tokenizer: LLaDA21Tokenizer | SimpleCharTokenizer,
     prompt: str,
     gen_length: int,
     block_length: int,
@@ -221,6 +223,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the tiny text diffusion model.")
     parser.add_argument("--data", type=Path, help="Plain text dataset path.")
     parser.add_argument("--nanochat", action="store_true", help="Use nanochat's current ClimbMix parquet dataset.")
+    parser.add_argument("--tokenizer", choices=["llada21", "char"], default="llada21")
+    parser.add_argument("--tokenizer-local-files-only", action="store_true")
     parser.add_argument("--nanochat-cache-dir", type=Path, default=Path("data/nanochat_climbmix"))
     parser.add_argument("--nanochat-train-shards", type=int, default=1)
     parser.add_argument("--max-train-chars", type=int, default=5_000_000)
@@ -252,7 +256,12 @@ def main() -> None:
     device = pick_device()
 
     train_text, val_text = load_training_text(args)
-    tokenizer = SimpleCharTokenizer.from_texts([train_text, val_text or "", args.sample_prompt])
+    if args.tokenizer == "llada21":
+        tokenizer = LLaDA21Tokenizer.from_pretrained(
+            local_files_only=args.tokenizer_local_files_only,
+        )
+    else:
+        tokenizer = SimpleCharTokenizer.from_texts([train_text, val_text or "", args.sample_prompt])
     train_ids = torch.tensor(tokenizer.encode(train_text, add_eos=True), dtype=torch.long)
 
     if val_text is None:
@@ -281,6 +290,7 @@ def main() -> None:
 
     print(f"device: {device}")
     print(f"data_source: {'nanochat/climbmix-400b-shuffle' if args.nanochat else args.data}")
+    print(f"tokenizer: {args.tokenizer}")
     print(f"train chars: {len(train_text):,}")
     print(f"val chars: {len(val_text) if val_text is not None else len(train_text) - int(0.95 * len(train_text)):,}")
     print(f"train tokens: {train_data.numel():,}")
