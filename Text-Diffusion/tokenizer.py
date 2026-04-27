@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Iterable
 
 import torch
@@ -80,6 +82,21 @@ class SimpleCharTokenizer:
                 continue
             pieces.append(token)
         return "".join(pieces)
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.write_text(json.dumps({"id_to_token": self.id_to_token}, indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "SimpleCharTokenizer":
+        path = Path(path)
+        data = json.loads(path.read_text())
+        tokenizer = cls(chars=[])
+        tokenizer.id_to_token = data["id_to_token"]
+        tokenizer.token_to_id = {
+            token: idx for idx, token in enumerate(tokenizer.id_to_token)
+        }
+        return tokenizer
 
 
 def pad_sequences(sequences: list[list[int]], pad_token_id: int) -> torch.Tensor:
