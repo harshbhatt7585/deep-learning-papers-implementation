@@ -178,20 +178,12 @@ def _sample_tokens(
     logits: torch.Tensor,
     *,
     temperature: float = 0.0,
-    top_k: int | None = None,
-    top_p: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if temperature == 0.0:
         probs = F.softmax(logits, dim=-1)
         confidence, tokens = probs.max(dim=-1)
         return tokens, confidence
 
-    scaled = logits / temperature
-    
-    probs = F.softmax(scaled, dim=-1)
-    tokens = torch.multinomial(probs.view(-1, probs.shape[-1]), num_samples=1)
-    tokens = tokens.view(probs.shape[:-1])
-    confidence = probs.gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
     return tokens, confidence
 
 
@@ -252,8 +244,6 @@ def generate(
             candidates, confidence = _sample_tokens(
                 block_logits,
                 temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
             )
 
             accept = torch.zeros_like(active_masks)
