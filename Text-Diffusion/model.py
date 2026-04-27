@@ -297,12 +297,6 @@ def generate(
             if step >= steps - 1 and editing_threshold is None:
                 break
 
-        if eos_token_id is not None:
-            generated = x[0, prompt_len:min(block_end, requested_len)]
-            eos_positions = (generated == eos_token_id).nonzero(as_tuple=True)[0]
-            if len(eos_positions) > 0:
-                return x[0, : prompt_len + int(eos_positions[0]) + 1]
-
     return x[0, :requested_len]
 
 
