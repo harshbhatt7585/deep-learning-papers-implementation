@@ -166,10 +166,7 @@ def build_block_diffusion_attention_mask(
     block_length: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """Return a LLaDA-style block-causal keep mask with full attention inside each block."""
 
-    if block_length <= 0:
-        raise ValueError("block_length must be positive")
     block_ids = torch.arange(seq_len, device=device) // block_length
     return block_ids[:, None] >= block_ids[None, :]
 
