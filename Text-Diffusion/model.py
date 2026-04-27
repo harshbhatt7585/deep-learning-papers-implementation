@@ -222,7 +222,6 @@ def generate(
     temperature: float = 0.0,
     top_k: int | None = None,
     top_p: float | None = None,
-    eos_token_id: int | None = None,
 ) -> torch.Tensor:
     """Block-wise diffusion generation: fill masks from left blocks to right blocks."""
 
