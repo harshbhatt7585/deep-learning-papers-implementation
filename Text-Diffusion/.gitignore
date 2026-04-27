@@ -1,0 +1,7 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+runs/
+data/
+wandb/

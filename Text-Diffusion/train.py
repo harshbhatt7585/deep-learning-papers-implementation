@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import time
 import urllib.request
+from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model import TextDiffusionConfig, TextDiffusionModel, diffusion_loss, generate
 from tokenizer import LLaDA21Tokenizer, SimpleCharTokenizer
@@ -17,12 +21,105 @@ NANOCHAT_BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuf
 NANOCHAT_MAX_SHARD = 6542
 
 
-def pick_device() -> torch.device:
+def is_dist() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def rank() -> int:
+    return dist.get_rank() if is_dist() else 0
+
+
+def world_size() -> int:
+    return dist.get_world_size() if is_dist() else 1
+
+
+def is_main_process() -> bool:
+    return rank() == 0
+
+
+def log(message: str) -> None:
+    if is_main_process():
+        print(message, flush=True)
+
+
+def wandb_config(args: argparse.Namespace, config: TextDiffusionConfig, *, device: torch.device) -> dict:
+    args_dict = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+    return {
+        **args_dict,
+        "device": str(device),
+        "world_size": world_size(),
+        "model": asdict(config),
+    }
+
+
+def init_wandb(args: argparse.Namespace, config: TextDiffusionConfig, *, device: torch.device):
+    if not args.wandb or not is_main_process():
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise ImportError("Install wandb or remove --wandb. With uv: uv sync") from exc
+
+    run_name = args.wandb_name or args.out_dir.name
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=run_name,
+        group=args.wandb_group,
+        tags=args.wandb_tags,
+        dir=args.wandb_dir,
+        config=wandb_config(args, config, device=device),
+    )
+
+
+def unwrap_model(model: torch.nn.Module) -> TextDiffusionModel:
+    if isinstance(model, DDP):
+        model = model.module
+    if hasattr(model, "_orig_mod"):
+        model = model._orig_mod
+    return model
+
+
+def setup_distributed() -> int:
+    if "RANK" not in os.environ:
+        return 0
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    dist.init_process_group(backend=backend)
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        torch.cuda.set_device(local_rank)
+    return local_rank
+
+
+def cleanup_distributed() -> None:
+    if is_dist():
+        dist.destroy_process_group()
+
+
+def pick_device(local_rank: int = 0) -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda", local_rank)
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def configure_cuda() -> None:
+    if not torch.cuda.is_available():
+        return
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
+
+
+def autocast_context(device: torch.device, dtype: str):
+    if device.type != "cuda" or dtype == "float32":
+        return nullcontext()
+    torch_dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+    return torch.autocast(device_type="cuda", dtype=torch_dtype)
 
 
 def get_batch(
@@ -31,10 +128,11 @@ def get_batch(
     batch_size: int,
     seq_len: int,
     device: torch.device,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     starts = torch.randint(0, data.numel() - seq_len, (batch_size,))
     batch = torch.stack([data[start:start + seq_len] for start in starts])
-    return batch.to(device)
+    return batch.to(device, non_blocking=non_blocking)
 
 
 @torch.no_grad()
@@ -47,15 +145,27 @@ def estimate_loss(
     mask_prob: float,
     eval_batches: int,
     device: torch.device,
+    amp_dtype: str,
+    non_blocking: bool,
 ) -> float:
     model.eval()
     losses = []
     for _ in range(eval_batches):
-        batch = get_batch(data, batch_size=batch_size, seq_len=seq_len, device=device)
-        loss = diffusion_loss(model, batch, mask_prob=mask_prob)
+        batch = get_batch(
+            data,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=device,
+            non_blocking=non_blocking,
+        )
+        with autocast_context(device, amp_dtype):
+            loss = diffusion_loss(model, batch, mask_prob=mask_prob)
         losses.append(loss.item())
     model.train()
-    return sum(losses) / len(losses)
+    local = torch.tensor([sum(losses), len(losses)], dtype=torch.float64, device=device)
+    if is_dist():
+        dist.all_reduce(local, op=dist.ReduceOp.SUM)
+    return float((local[0] / local[1]).item())
 
 
 def learning_rate(step: int, *, max_steps: int, warmup_steps: int, base_lr: float) -> float:
@@ -68,13 +178,14 @@ def learning_rate(step: int, *, max_steps: int, warmup_steps: int, base_lr: floa
 def save_checkpoint(
     *,
     out_dir: Path,
-    model: TextDiffusionModel,
+    model: torch.nn.Module,
     tokenizer: LLaDA21Tokenizer | SimpleCharTokenizer,
     optimizer: torch.optim.Optimizer,
     step: int,
     args: argparse.Namespace,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    source_model = unwrap_model(model)
     tokenizer_path = out_dir / ("tokenizer_hf" if isinstance(tokenizer, LLaDA21Tokenizer) else "tokenizer.json")
     tokenizer.save(tokenizer_path)
     args_dict = {
@@ -84,8 +195,8 @@ def save_checkpoint(
     torch.save(
         {
             "step": step,
-            "config": asdict(model.config),
-            "model_state": model.state_dict(),
+            "config": asdict(source_model.config),
+            "model_state": source_model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "tokenizer_type": "llada21" if isinstance(tokenizer, LLaDA21Tokenizer) else "char",
             "args": args_dict,
@@ -97,7 +208,7 @@ def save_checkpoint(
 @torch.no_grad()
 def print_sample(
     *,
-    model: TextDiffusionModel,
+    model: torch.nn.Module,
     tokenizer: LLaDA21Tokenizer | SimpleCharTokenizer,
     prompt: str,
     gen_length: int,
@@ -105,10 +216,11 @@ def print_sample(
     steps: int,
     threshold: float,
     device: torch.device,
-) -> None:
+) -> str:
+    source_model = unwrap_model(model)
     prompt_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long, device=device)
     output = generate(
-        model,
+        source_model,
         prompt_ids,
         gen_length=gen_length,
         block_length=block_length,
@@ -117,8 +229,10 @@ def print_sample(
         editing_threshold=None,
         eos_token_id=tokenizer.eos_token_id,
     )
-    print("sample:", repr(tokenizer.decode(output.detach().cpu())))
+    sample = tokenizer.decode(output.detach().cpu())
+    print("sample:", repr(sample))
     model.train()
+    return sample
 
 
 def nanochat_shard_name(index: int) -> str:
@@ -232,6 +346,7 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-char"))
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--eval-interval", type=int, default=100)
     parser.add_argument("--eval-batches", type=int, default=10)
@@ -239,6 +354,7 @@ def main() -> None:
     parser.add_argument("--save-interval", type=int, default=500)
     parser.add_argument("--mask-prob", type=float, default=0.30)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-heads", type=int, default=4)
@@ -249,11 +365,26 @@ def main() -> None:
     parser.add_argument("--sample-block-length", type=int, default=32)
     parser.add_argument("--sample-steps", type=int, default=8)
     parser.add_argument("--sample-threshold", type=float, default=0.5)
+    parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile for the training model.")
+    parser.add_argument("--compile-mode", type=str, default="default")
+    parser.add_argument("--fused-adamw", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases.")
+    parser.add_argument("--wandb-project", type=str, default="text-diffusion")
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-name", type=str, default=None)
+    parser.add_argument("--wandb-group", type=str, default=None)
+    parser.add_argument("--wandb-tags", type=str, nargs="*", default=None)
+    parser.add_argument("--wandb-dir", type=Path, default=Path("runs/wandb"))
     args = parser.parse_args()
 
-    torch.manual_seed(args.seed)
-    device = pick_device()
+    local_rank = setup_distributed()
+    configure_cuda()
+    device = pick_device(local_rank)
+    torch.manual_seed(args.seed + rank())
 
     train_text, val_text = load_training_text(args)
     if args.tokenizer == "llada21":
@@ -273,6 +404,10 @@ def main() -> None:
         val_data = torch.tensor(tokenizer.encode(val_text, add_eos=True), dtype=torch.long)
     if train_data.numel() <= args.seq_len or val_data.numel() <= args.seq_len:
         raise ValueError("Dataset is too small for --seq-len. Use more text or lower --seq-len.")
+    non_blocking = args.pin_memory and device.type == "cuda"
+    if non_blocking:
+        train_data = train_data.pin_memory()
+        val_data = val_data.pin_memory()
 
     max_sample_len = len(tokenizer.encode(args.sample_prompt)) + args.sample_length
     config = TextDiffusionConfig(
@@ -285,20 +420,45 @@ def main() -> None:
         n_layers=args.n_layers,
         dropout=args.dropout,
     )
-    model = TextDiffusionModel(config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1)
+    model: torch.nn.Module = TextDiffusionModel(config).to(device)
+    if args.compile:
+        model = torch.compile(model, mode=args.compile_mode)
+    if is_dist():
+        ddp_kwargs = {"device_ids": [local_rank]} if device.type == "cuda" else {}
+        model = DDP(model, **ddp_kwargs)
 
-    print(f"device: {device}")
-    print(f"data_source: {'nanochat/climbmix-400b-shuffle' if args.nanochat else args.data}")
-    print(f"tokenizer: {args.tokenizer}")
-    print(f"train chars: {len(train_text):,}")
-    print(f"val chars: {len(val_text) if val_text is not None else len(train_text) - int(0.95 * len(train_text)):,}")
-    print(f"train tokens: {train_data.numel():,}")
-    print(f"val tokens: {val_data.numel():,}")
-    print(f"vocab_size: {tokenizer.vocab_size}")
-    print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
+    optimizer_kwargs = {
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "betas": (0.9, 0.95),
+    }
+    if args.fused_adamw and device.type == "cuda":
+        optimizer_kwargs["fused"] = True
+    optimizer = torch.optim.AdamW(model.parameters(), **optimizer_kwargs)
+    scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda" and args.amp_dtype == "float16"))
+    wandb_run = init_wandb(args, config, device=device)
+
+    log(f"device: {device}")
+    log(f"world_size: {world_size()}")
+    log(f"data_source: {'nanochat/climbmix-400b-shuffle' if args.nanochat else args.data}")
+    log(f"tokenizer: {args.tokenizer}")
+    log(f"train chars: {len(train_text):,}")
+    log(f"val chars: {len(val_text) if val_text is not None else len(train_text) - int(0.95 * len(train_text)):,}")
+    log(f"train tokens: {train_data.numel():,}")
+    log(f"val tokens: {val_data.numel():,}")
+    log(f"vocab_size: {tokenizer.vocab_size}")
+    log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
+    log(f"tokens_per_step: {args.batch_size * args.seq_len * args.grad_accum_steps * world_size():,}")
+    log(f"amp_dtype: {args.amp_dtype}")
+    log(f"compile: {args.compile}")
+    if wandb_run is not None:
+        wandb_run.summary["parameters"] = sum(p.numel() for p in unwrap_model(model).parameters())
+        wandb_run.summary["train_tokens"] = train_data.numel()
+        wandb_run.summary["val_tokens"] = val_data.numel()
 
     model.train()
+    running_loss = 0.0
+    last_log_time = time.time()
     for step in range(args.max_steps):
         lr = learning_rate(
             step,
@@ -309,19 +469,60 @@ def main() -> None:
         for group in optimizer.param_groups:
             group["lr"] = lr
 
-        batch = get_batch(
-            train_data,
-            batch_size=args.batch_size,
-            seq_len=args.seq_len,
-            device=device,
-        )
         optimizer.zero_grad(set_to_none=True)
-        loss = diffusion_loss(model, batch, mask_prob=args.mask_prob)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        step_loss = 0.0
+        for micro_step in range(args.grad_accum_steps):
+            batch = get_batch(
+                train_data,
+                batch_size=args.batch_size,
+                seq_len=args.seq_len,
+                device=device,
+                non_blocking=non_blocking,
+            )
+            sync_context = (
+                model.no_sync()
+                if isinstance(model, DDP) and micro_step < args.grad_accum_steps - 1
+                else nullcontext()
+            )
+            with sync_context:
+                with autocast_context(device, args.amp_dtype):
+                    loss = diffusion_loss(model, batch, mask_prob=args.mask_prob)
+                    scaled_loss = loss / args.grad_accum_steps
+                scaler.scale(scaled_loss).backward()
+            step_loss += loss.detach().item()
 
-        if step == 0 or (step + 1) % args.eval_interval == 0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        step_loss /= args.grad_accum_steps
+        running_loss += step_loss
+
+        if args.log_interval > 0 and (step + 1) % args.log_interval == 0:
+            elapsed = time.time() - last_log_time
+            tokens = args.batch_size * args.seq_len * args.grad_accum_steps * args.log_interval * world_size()
+            train_loss = running_loss / args.log_interval
+            tokens_per_second = tokens / max(elapsed, 1e-9)
+            log(
+                f"step {step + 1:05d} "
+                f"train_loss {train_loss:.4f} "
+                f"lr {lr:.2e} "
+                f"tok/s {tokens_per_second:,.0f}"
+            )
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "train/loss": train_loss,
+                        "train/lr": lr,
+                        "train/tokens_per_second": tokens_per_second,
+                        "train/tokens": (step + 1) * args.batch_size * args.seq_len * args.grad_accum_steps * world_size(),
+                    },
+                    step=step + 1,
+                )
+            running_loss = 0.0
+            last_log_time = time.time()
+
+        if step == 0 or (args.eval_interval > 0 and (step + 1) % args.eval_interval == 0):
             val_loss = estimate_loss(
                 model,
                 val_data,
@@ -330,16 +531,27 @@ def main() -> None:
                 mask_prob=args.mask_prob,
                 eval_batches=args.eval_batches,
                 device=device,
+                amp_dtype=args.amp_dtype,
+                non_blocking=non_blocking,
             )
-            print(
+            log(
                 f"step {step + 1:05d} "
-                f"train_loss {loss.item():.4f} "
+                f"train_loss {step_loss:.4f} "
                 f"val_loss {val_loss:.4f} "
                 f"lr {lr:.2e}"
             )
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "eval/loss": val_loss,
+                        "eval/train_loss_at_eval": step_loss,
+                        "train/lr": lr,
+                    },
+                    step=step + 1,
+                )
 
-        if (step + 1) % args.sample_interval == 0:
-            print_sample(
+        if is_main_process() and args.sample_interval > 0 and (step + 1) % args.sample_interval == 0:
+            sample = print_sample(
                 model=model,
                 tokenizer=tokenizer,
                 prompt=args.sample_prompt,
@@ -349,8 +561,12 @@ def main() -> None:
                 threshold=args.sample_threshold,
                 device=device,
             )
+            if wandb_run is not None:
+                import wandb
 
-        if (step + 1) % args.save_interval == 0:
+                wandb_run.log({"sample/text": wandb.Html(f"<pre>{sample}</pre>")}, step=step + 1)
+
+        if is_main_process() and args.save_interval > 0 and (step + 1) % args.save_interval == 0:
             save_checkpoint(
                 out_dir=args.out_dir,
                 model=model,
@@ -359,17 +575,24 @@ def main() -> None:
                 step=step + 1,
                 args=args,
             )
-            print(f"saved checkpoint: {args.out_dir / 'checkpoint.pt'}")
+            log(f"saved checkpoint: {args.out_dir / 'checkpoint.pt'}")
+            if wandb_run is not None:
+                wandb_run.log({"checkpoint/step": step + 1}, step=step + 1)
 
-    save_checkpoint(
-        out_dir=args.out_dir,
-        model=model,
-        tokenizer=tokenizer,
-        optimizer=optimizer,
-        step=args.max_steps,
-        args=args,
-    )
-    print(f"saved final checkpoint: {args.out_dir / 'checkpoint.pt'}")
+    if is_main_process():
+        save_checkpoint(
+            out_dir=args.out_dir,
+            model=model,
+            tokenizer=tokenizer,
+            optimizer=optimizer,
+            step=args.max_steps,
+            args=args,
+        )
+        log(f"saved final checkpoint: {args.out_dir / 'checkpoint.pt'}")
+        if wandb_run is not None:
+            wandb_run.summary["final_step"] = args.max_steps
+            wandb_run.finish()
+    cleanup_distributed()
 
 
 if __name__ == "__main__":
