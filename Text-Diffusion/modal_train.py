@@ -53,6 +53,8 @@ def train_4gpu(
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
+    compile: bool = False,
+    compile_mode: str = "default",
     wandb: bool = False,
 ) -> None:
     command = [
@@ -96,6 +98,8 @@ def train_4gpu(
         "--out-dir",
         out_dir,
     ]
+    if compile:
+        command.extend(["--compile", "--compile-mode", compile_mode])
     if wandb:
         command.append("--wandb")
 
@@ -119,6 +123,8 @@ def main(
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
+    compile: bool = False,
+    compile_mode: str = "default",
     wandb: bool = False,
 ) -> None:
     train_4gpu.remote(
@@ -133,5 +139,7 @@ def main(
         n_heads=n_heads,
         n_layers=n_layers,
         out_dir=out_dir,
+        compile=compile,
+        compile_mode=compile_mode,
         wandb=wandb,
     )
