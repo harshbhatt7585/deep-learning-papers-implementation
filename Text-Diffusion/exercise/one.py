@@ -5,10 +5,6 @@ import torch
 from torch import nn
 from torch.nn import attention, functional as F
 
-from tokenizer import SimpleCharTokenizer, pad_sequences
-
-
-
 @dataclass
 class TextDiffusionConfig:
     vocab_size: int
@@ -288,33 +284,7 @@ def generate(
 
 
 def main():
-    
-    texts = [
-        "hello"
-    ]
-    tokenizer = SimpleCharTokenizer.from_texts(texts)
-    sequences = [tokenizer.encode(text, add_eos=True) for text in texts]
-    batch = pad_sequences(sequences, tokenizer.pad_token_id)
-
-    config = TextDiffusionConfig(
-        vocab_size=tokenizer.vocab_size,
-        max_seq_len=64,
-        mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        d_model=64,
-        n_heads=4,
-        n_layers=2,
-        dropout=0.0
-    )
-    model = TextDiffusionModel(config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
-
-    for step in range(20):
-        optimizer.zero_grad(set_to_none=True)
-        loss = diffusion_loss(model, batch, mask_prob=0.35)
-        loss.backward()
-        optimizer.step()
-        print(loss)
+    raise SystemExit("Use ../train.py; this project now supports only the LLaDA2.1 tokenizer.")
 
 if __name__== "__main__":
     main()

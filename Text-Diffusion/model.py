@@ -7,8 +7,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from tokenizer import SimpleCharTokenizer, pad_sequences
-
 
 @dataclass
 class TextDiffusionConfig:
@@ -318,52 +316,7 @@ def generate(
 
 
 def main() -> None:
-    torch.manual_seed(0)
-
-    texts = [
-        "hello world",
-        "hello diffusion",
-        "text diffusion fills masks",
-        "masked tokens are denoised",
-    ]
-    tokenizer = SimpleCharTokenizer.from_texts(texts)
-    sequences = [tokenizer.encode(text, add_eos=True) for text in texts]
-    batch = pad_sequences(sequences, tokenizer.pad_token_id)
-
-    config = TextDiffusionConfig(
-        vocab_size=tokenizer.vocab_size,
-        max_seq_len=64,
-        mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        d_model=64,
-        n_heads=4,
-        n_layers=2,
-        dropout=0.0,
-    )
-    model = TextDiffusionModel(config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
-
-    for step in range(20):
-        optimizer.zero_grad(set_to_none=True)
-        loss = diffusion_loss(model, batch, mask_prob=0.35)
-        loss.backward()
-        optimizer.step()
-        if step in {0, 19}:
-            print(f"step {step:02d} loss {loss.item():.4f}")
-
-    prompt = torch.tensor(tokenizer.encode("hello "), dtype=torch.long)
-    output = generate(
-        model,
-        prompt,
-        gen_length=24,
-        block_length=8,
-        steps=8,
-        threshold=0.45,
-        editing_threshold=0.80,
-        eos_token_id=tokenizer.eos_token_id,
-    )
-    print("generated ids:", output.tolist())
-    print("generated text:", repr(tokenizer.decode(output)))
+    raise SystemExit("Use train.py and sample.py; this project now supports only the LLaDA2.1 tokenizer.")
 
 
 if __name__ == "__main__":

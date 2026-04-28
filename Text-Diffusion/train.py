@@ -49,10 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-chars", type=int, default=5_000_000)
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
 
-    parser.add_argument("--tokenizer", choices=["llada21", "char"], default="llada21")
     parser.add_argument("--tokenizer-local-files-only", action="store_true")
 
-    parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-char"))
+    parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-llada21"))
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
@@ -236,7 +235,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"device: {runtime.device}")
     log(f"world_size: {world_size()}")
     log(f"data_source: {'nanochat/climbmix-400b-shuffle' if args.nanochat else args.data}")
-    log(f"tokenizer: {args.tokenizer}")
+    log("tokenizer: llada21")
     log(f"train chars: {len(data.train_text):,}")
     log(f"val chars: {val_chars:,}")
     log(f"train tokens: {data.train_tokens.numel():,}")

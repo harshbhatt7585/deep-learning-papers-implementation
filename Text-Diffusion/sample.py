@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from model import TextDiffusionConfig, TextDiffusionModel, generate
-from tokenizer import LLaDA21Tokenizer, SimpleCharTokenizer
+from tokenizer import LLaDA21Tokenizer
 
 
 def pick_device() -> torch.device:
@@ -17,19 +17,18 @@ def pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def load_tokenizer(checkpoint_dir: Path, tokenizer_type: str):
-    if tokenizer_type == "llada21":
-        return LLaDA21Tokenizer.load(checkpoint_dir / "tokenizer_hf")
-    return SimpleCharTokenizer.load(checkpoint_dir / "tokenizer.json")
-
-
 def load_checkpoint(checkpoint_dir: Path, device: torch.device):
     checkpoint = torch.load(
         checkpoint_dir / "checkpoint.pt",
         map_location=device,
         weights_only=False,
     )
-    tokenizer = load_tokenizer(checkpoint_dir, checkpoint.get("tokenizer_type") or "char")
+    tokenizer_type = checkpoint.get("tokenizer_type")
+    if tokenizer_type != "llada21":
+        raise ValueError(
+            f"unsupported tokenizer_type {tokenizer_type!r}; only llada21 checkpoints are supported"
+        )
+    tokenizer = LLaDA21Tokenizer.load(checkpoint_dir / "tokenizer_hf")
     config = TextDiffusionConfig(**checkpoint["config"])
 
     model = TextDiffusionModel(config).to(device)

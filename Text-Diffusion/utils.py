@@ -15,12 +15,12 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model import TextDiffusionModel
-from tokenizer import LLaDA21Tokenizer, SimpleCharTokenizer
+from tokenizer import LLaDA21Tokenizer
 
 
 NANOCHAT_BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 NANOCHAT_MAX_SHARD = 6542
-Tokenizer = LLaDA21Tokenizer | SimpleCharTokenizer
+Tokenizer = LLaDA21Tokenizer
 
 
 @dataclass
@@ -131,6 +131,7 @@ def init_wandb(args: argparse.Namespace, config, runtime: Runtime):
     if not args.wandb or not is_main_process():
         return None
 
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     try:
         import wandb
     except ImportError as exc:
@@ -258,11 +259,9 @@ def load_raw_text(args: argparse.Namespace) -> tuple[str, str | None]:
 
 
 def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | None) -> Tokenizer:
-    if args.tokenizer == "llada21":
-        return LLaDA21Tokenizer.from_pretrained(
-            local_files_only=args.tokenizer_local_files_only,
-        )
-    return SimpleCharTokenizer.from_texts([train_text, val_text or "", args.sample_prompt])
+    return LLaDA21Tokenizer.from_pretrained(
+        local_files_only=args.tokenizer_local_files_only,
+    )
 
 
 def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
@@ -306,15 +305,14 @@ def save_checkpoint(
     out_dir.mkdir(parents=True, exist_ok=True)
     source_model = unwrap_model(model)
 
-    tokenizer_path = out_dir / ("tokenizer_hf" if isinstance(tokenizer, LLaDA21Tokenizer) else "tokenizer.json")
-    tokenizer.save(tokenizer_path)
+    tokenizer.save(out_dir / "tokenizer_hf")
     torch.save(
         {
             "step": step,
             "config": asdict(source_model.config),
             "model_state": source_model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
-            "tokenizer_type": "llada21" if isinstance(tokenizer, LLaDA21Tokenizer) else "char",
+            "tokenizer_type": "llada21",
             "args": args_as_plain_dict(args),
         },
         out_dir / "checkpoint.pt",

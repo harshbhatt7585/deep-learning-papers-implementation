@@ -39,14 +39,15 @@ You need at least these token IDs:
 - `mask_token_id`: the diffusion placeholder the model must denoise.
 - `eos_token_id`: optional end-of-sequence marker.
 
-In `tokenizer.py`, `SimpleCharTokenizer` builds a tiny character-level vocabulary:
+In `tokenizer.py`, `LLaDA21Tokenizer` wraps the LLaDA2.1-mini tokenizer:
 
 ```python
-tokenizer = SimpleCharTokenizer.from_texts(["hello world"])
+tokenizer = LLaDA21Tokenizer.from_pretrained()
 ids = tokenizer.encode("hello", add_eos=True)
 ```
 
-This keeps the example independent of Hugging Face tokenizers.
+Training and sampling use this tokenizer exclusively so checkpoint vocabularies
+match the LLaDA2.1 token IDs.
 
 ## Step 2: Build A Denoiser Transformer
 
@@ -190,19 +191,17 @@ Set it to `None` to disable editing.
 
 Prompt tokens are never edited.
 
-## Step 8: Run The Example
+## Step 8: Run A Smoke Test
 
 From this directory:
 
 ```bash
-python model.py
+python train.py --data IMPLEMENT.md --tokenizer-local-files-only --max-steps 1 --batch-size 1 --seq-len 16 --eval-interval 1 --eval-batches 1 --sample-interval 1 --save-interval 0 --sample-length 8 --sample-block-length 8 --sample-steps 2 --d-model 16 --n-heads 4 --n-layers 1 --amp-dtype float32
 ```
 
-The script builds a toy tokenizer, creates a tiny model, runs a few training
-steps on a tiny character dataset, and calls the diffusion generator.
-
-Do not expect useful language quality from this toy run. It is intentionally
-small so you can understand and modify it.
+Use `train.py` for smoke tests and real training. The standalone `model.py`
+entry point is disabled because this project now uses only the LLaDA2.1
+tokenizer.
 
 ## Step 9: What Is Now Closer To LLaDA2.1-mini
 
@@ -221,7 +220,6 @@ The implementation now matches these high-level LLaDA2.1 ideas:
 
 After you understand `model.py`, scale one part at a time:
 
-- Replace character tokenization with a real subword tokenizer.
 - Replace learned absolute positions with RoPE.
 - Replace the tiny MLP blocks with larger Transformer blocks.
 - Add Mixture-of-Experts feed-forward layers.
@@ -231,7 +229,7 @@ After you understand `model.py`, scale one part at a time:
 ## Files
 
 - `model.py`: model, denoising loss, and LLaDA-style generation loop.
-- `tokenizer.py`: tiny character tokenizer and padding helper.
+- `tokenizer.py`: LLaDA2.1 tokenizer wrapper and padding helper.
 - `IMPLEMENT.md`: this learning guide.
 
 ## Reference Points

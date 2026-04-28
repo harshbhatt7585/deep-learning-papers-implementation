@@ -56,8 +56,6 @@ def train_4gpu(
         "--nproc_per_node=4",
         str(WORKDIR / "train.py"),
         "--nanochat",
-        "--tokenizer",
-        "llada21",
         "--nanochat-cache-dir",
         "/data/nanochat_climbmix",
         "--nanochat-train-shards",
