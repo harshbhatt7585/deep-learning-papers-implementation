@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn import functional as F
 
 
@@ -42,6 +43,13 @@ def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> t
     y1 = x1 * cos + x2 * sin
     y2 = x1 * (-sin) + x2 * cos
     return torch.cat([y1, y2], dim=-1)
+
+
+SDPA_BACKENDS = [
+    SDPBackend.FLASH_ATTENTION,
+    SDPBackend.EFFICIENT_ATTENTION,
+    SDPBackend.MATH,
+]
 
 
 class Linear(nn.Linear):
@@ -99,14 +107,15 @@ class SelfAttention(nn.Module):
                 raise ValueError("attention_mask must be 2D or 3D")
             attn_mask = attn_mask.to(device=x.device)
 
-        y = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=0.0,
-            is_causal=False,
-        )
+        with sdpa_kernel(SDPA_BACKENDS):
+            y = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                is_causal=False,
+            )
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
         return self.c_proj(y)
 
