@@ -15,7 +15,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from model import (
     TextDiffusionConfig,
     TextDiffusionModel,
-    diffusion_loss,
     generate,
     make_masked_inputs,
 )
@@ -257,6 +256,8 @@ def train_one_step(
     runtime: Runtime,
 ) -> float:
     optimizer.zero_grad(set_to_none=True)
+    source_model = unwrap_model(model)
+    config = source_model.config
     step_loss = 0.0
 
     for micro_step in range(args.grad_accum_steps):
@@ -271,9 +272,21 @@ def train_one_step(
             if isinstance(model, DDP) and micro_step < args.grad_accum_steps - 1
             else nullcontext()
         )
+        noised, labels = make_masked_inputs(
+            batch,
+            mask_token_id=config.mask_token_id,
+            pad_token_id=config.pad_token_id,
+            mask_prob=args.mask_prob,
+        )
+        attention_mask = noised != config.pad_token_id
+
         with sync_context:
             with autocast_context(runtime.device, args.amp_dtype):
-                loss = diffusion_loss(model, batch, mask_prob=args.mask_prob)
+                logits = model(noised, attention_mask=attention_mask)
+                loss = F.cross_entropy(
+                    logits.view(-1, config.vocab_size),
+                    labels.view(-1),
+                )
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
         step_loss += loss.detach().item()
