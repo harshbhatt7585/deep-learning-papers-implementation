@@ -16,63 +16,128 @@ class TextDiffusionConfig:
     pad_token_id: int
     d_model: int = 128
     n_heads: int = 4
+    n_kv_heads: int | None = None
     n_layers: int = 4
     dropout: float = 0.1
     ff_mult: int = 4
+
+    def __post_init__(self) -> None:
+        if self.n_kv_heads is None:
+            self.n_kv_heads = self.n_heads
+        if self.d_model % self.n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads")
+        if self.n_kv_heads > self.n_heads or self.n_heads % self.n_kv_heads != 0:
+            raise ValueError("n_kv_heads must divide n_heads")
+        if (self.d_model // self.n_heads) % 2 != 0:
+            raise ValueError("attention head_dim must be even for rotary embeddings")
+
+
+def norm(x: torch.Tensor) -> torch.Tensor:
+    return F.rms_norm(x, (x.size(-1),))
+
+
+def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    dim = x.shape[-1] // 2
+    x1, x2 = x[..., :dim], x[..., dim:]
+    y1 = x1 * cos + x2 * sin
+    y2 = x1 * (-sin) + x2 * cos
+    return torch.cat([y1, y2], dim=-1)
+
+
+class Linear(nn.Linear):
+    """Nanochat-style bias-free Linear with fp32 master weights."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.weight.to(dtype=x.dtype), self.bias)
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, config: TextDiffusionConfig) -> None:
+        super().__init__()
+        self.n_heads = config.n_heads
+        self.n_kv_heads = config.n_kv_heads or config.n_heads
+        self.d_model = config.d_model
+        self.head_dim = config.d_model // config.n_heads
+
+        self.c_q = Linear(config.d_model, self.n_heads * self.head_dim, bias=False)
+        self.c_k = Linear(config.d_model, self.n_kv_heads * self.head_dim, bias=False)
+        self.c_v = Linear(config.d_model, self.n_kv_heads * self.head_dim, bias=False)
+        self.c_proj = Linear(config.d_model, config.d_model, bias=False)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        cos_sin: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape
+        q = self.c_q(x).view(batch_size, seq_len, self.n_heads, self.head_dim)
+        k = self.c_k(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        v = self.c_v(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+
+        cos, sin = cos_sin
+        q = apply_rotary_emb(q, cos[:, :seq_len], sin[:, :seq_len])
+        k = apply_rotary_emb(k, cos[:, :seq_len], sin[:, :seq_len])
+
+        q = norm(q).transpose(1, 2) * 1.2
+        k = norm(k).transpose(1, 2) * 1.2
+        v = v.transpose(1, 2)
+
+        if self.n_kv_heads != self.n_heads:
+            repeats = self.n_heads // self.n_kv_heads
+            k = k.repeat_interleave(repeats, dim=1)
+            v = v.repeat_interleave(repeats, dim=1)
+
+        attn_mask = None
+        if attention_mask is not None:
+            if attention_mask.ndim == 2:
+                attn_mask = attention_mask[:, None, None, :].bool()
+            elif attention_mask.ndim == 3:
+                attn_mask = attention_mask[:, None, :, :].bool()
+            else:
+                raise ValueError("attention_mask must be 2D or 3D")
+            attn_mask = attn_mask.to(device=x.device)
+
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+        )
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
+        return self.c_proj(y)
+
+
+class MLP(nn.Module):
+    def __init__(self, config: TextDiffusionConfig) -> None:
+        super().__init__()
+        self.c_fc = Linear(config.d_model, config.ff_mult * config.d_model, bias=False)
+        self.c_proj = Linear(config.ff_mult * config.d_model, config.d_model, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.c_fc(x)
+        x = F.relu(x).square()
+        return self.c_proj(x)
 
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: TextDiffusionConfig) -> None:
         super().__init__()
-        self.attn_norm = nn.LayerNorm(config.d_model)
-        self.attn = nn.MultiheadAttention(
-            config.d_model,
-            config.n_heads,
-            dropout=config.dropout,
-            batch_first=True,
-        )
-        self.ffn_norm = nn.LayerNorm(config.d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(config.d_model, config.ff_mult * config.d_model),
-            nn.GELU(),
-            nn.Linear(config.ff_mult * config.d_model, config.d_model),
-            nn.Dropout(config.dropout),
-        )
+        self.attn = SelfAttention(config)
+        self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
-        key_padding_mask = None
-        attn_mask = None
-        if attention_mask is not None:
-            if attention_mask.ndim == 2:
-                key_padding_mask = ~attention_mask.bool()
-            elif attention_mask.ndim == 3:
-                batch_size, query_len, key_len = attention_mask.shape
-                attn_mask = ~attention_mask.bool().to(device=x.device)
-                attn_mask = attn_mask[:, None].expand(
-                    batch_size,
-                    self.attn.num_heads,
-                    query_len,
-                    key_len,
-                )
-                attn_mask = attn_mask.reshape(
-                    batch_size * self.attn.num_heads,
-                    query_len,
-                    key_len,
-                )
-            else:
-                raise ValueError("attention_mask must be 2D or 3D")
-
-        h = self.attn_norm(x)
-        attn_out, _ = self.attn(
-            h,
-            h,
-            h,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        x = x + attn_out
-        x = x + self.ffn(self.ffn_norm(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        cos_sin: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask)
+        x = x + self.mlp(norm(x))
         return x
 
 
@@ -83,12 +148,14 @@ class TextDiffusionModel(nn.Module):
         super().__init__()
         self.config = config
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
-        self.pos_emb = nn.Embedding(config.max_seq_len, config.d_model)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
-        self.norm = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight
+        cos, sin = self._precompute_rotary_embeddings(config.max_seq_len, config.d_model // config.n_heads)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+        self.init_weights()
 
     @property
     def device(self) -> torch.device:
@@ -106,16 +173,41 @@ class TextDiffusionModel(nn.Module):
         if seq_len > self.config.max_seq_len:
             raise ValueError(f"seq_len {seq_len} exceeds max_seq_len {self.config.max_seq_len}")
 
-        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
-        positions = positions.expand(batch_size, seq_len)
-        x = self.token_emb(input_ids) + self.pos_emb(positions)
+        x = norm(self.token_emb(input_ids))
         x = self.drop(x)
+        cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
 
         for block in self.blocks:
-            x = block(x, attention_mask=attention_mask)
+            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask)
 
-        x = self.norm(x)
+        x = norm(x)
         return self.lm_head(x)
+
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        nn.init.normal_(self.token_emb.weight, mean=0.0, std=0.02)
+
+        scale = 3**0.5 * self.config.d_model**-0.5
+        for block in self.blocks:
+            nn.init.uniform_(block.attn.c_q.weight, -scale, scale)
+            nn.init.uniform_(block.attn.c_k.weight, -scale, scale)
+            nn.init.uniform_(block.attn.c_v.weight, -scale, scale)
+            nn.init.zeros_(block.attn.c_proj.weight)
+            nn.init.uniform_(block.mlp.c_fc.weight, -0.4 * scale, 0.4 * scale)
+            nn.init.zeros_(block.mlp.c_proj.weight)
+
+    def _precompute_rotary_embeddings(
+        self,
+        seq_len: int,
+        head_dim: int,
+        base: int = 100_000,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32)
+        inv_freq = 1.0 / (base ** (channel_range / head_dim))
+        t = torch.arange(seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)
+        cos, sin = freqs.cos(), freqs.sin()
+        return cos[None, :, None, :], sin[None, :, None, :]
 
 
 def make_masked_inputs(
