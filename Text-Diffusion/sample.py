@@ -24,8 +24,12 @@ def load_tokenizer(checkpoint_dir: Path, tokenizer_type: str):
 
 
 def load_checkpoint(checkpoint_dir: Path, device: torch.device):
-    checkpoint = torch.load(checkpoint_dir / "checkpoint.pt", map_location=device)
-    tokenizer = load_tokenizer(checkpoint_dir, checkpoint["tokenizer_type"])
+    checkpoint = torch.load(
+        checkpoint_dir / "checkpoint.pt",
+        map_location=device,
+        weights_only=False,
+    )
+    tokenizer = load_tokenizer(checkpoint_dir, checkpoint.get("tokenizer_type") or "char")
     config = TextDiffusionConfig(**checkpoint["config"])
 
     model = TextDiffusionModel(config).to(device)
@@ -43,6 +47,8 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--top-p", type=float, default=None)
     args = parser.parse_args()
 
     device = pick_device()
@@ -58,6 +64,8 @@ def main() -> None:
         threshold=args.threshold,
         editing_threshold=None,
         temperature=args.temperature,
+        top_k=args.top_k,
+        top_p=args.top_p,
         eos_token_id=tokenizer.eos_token_id,
     )
 

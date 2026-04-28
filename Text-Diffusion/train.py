@@ -78,6 +78,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-block-length", type=int, default=32)
     parser.add_argument("--sample-steps", type=int, default=8)
     parser.add_argument("--sample-threshold", type=float, default=0.5)
+    parser.add_argument("--sample-temperature", type=float, default=0.0)
+    parser.add_argument("--sample-top-k", type=int, default=None)
+    parser.add_argument("--sample-top-p", type=float, default=None)
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
@@ -177,10 +180,11 @@ def estimate_eval_metrics(
         )
 
     model.train()
+    totals_device = torch.device("cpu") if runtime.device.type == "mps" else runtime.device
     totals = torch.tensor(
         [total_loss, total_masked_tokens, total_bytes],
         dtype=torch.float64,
-        device=runtime.device,
+        device=totals_device,
     )
     if is_dist():
         dist.all_reduce(totals, op=dist.ReduceOp.SUM)
@@ -216,6 +220,9 @@ def sample_text(
         steps=args.sample_steps,
         threshold=args.sample_threshold,
         editing_threshold=None,
+        temperature=args.sample_temperature,
+        top_k=args.sample_top_k,
+        top_p=args.sample_top_p,
         eos_token_id=tokenizer.eos_token_id,
     )
     sample = tokenizer.decode(output.detach().cpu())
@@ -244,6 +251,62 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
 def log_train_metrics(wandb_run, step: int, metrics: dict[str, float]) -> None:
     if wandb_run is not None:
         wandb_run.log(metrics, step=step)
+
+
+def create_wandb_sample_table(wandb_run):
+    if wandb_run is None:
+        return None
+
+    import wandb
+
+    return wandb.Table(
+        columns=[
+            "step",
+            "prompt",
+            "generated_text",
+            "eval_loss",
+            "eval_masked_bpb",
+            "eval_masked_tokens",
+            "sample_length",
+            "block_length",
+            "steps",
+            "threshold",
+            "temperature",
+            "top_k",
+            "top_p",
+        ]
+    )
+
+
+def log_wandb_sample_table(
+    wandb_run,
+    table,
+    *,
+    step: int,
+    sample: str,
+    eval_metrics: dict[str, float] | None,
+    args: argparse.Namespace,
+) -> None:
+    if wandb_run is None or table is None:
+        return
+
+    metrics = eval_metrics or {}
+    table.add_data(
+        step,
+        args.sample_prompt,
+        sample,
+        metrics.get("loss"),
+        metrics.get("masked_bpb"),
+        metrics.get("masked_tokens"),
+        args.sample_length,
+        args.sample_block_length,
+        args.sample_steps,
+        args.sample_threshold,
+        args.sample_temperature,
+        args.sample_top_k,
+        args.sample_top_p,
+    )
+    wandb_run.log({"eval/generated_samples": table}, step=step)
 
 
 def train_one_step(
@@ -318,6 +381,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     model.train()
     running_loss = 0.0
     last_log_time = time.time()
+    latest_eval_metrics: dict[str, float] | None = None
+    wandb_sample_table = create_wandb_sample_table(wandb_run)
 
     for step in range(args.max_steps):
         step_id = step + 1
@@ -366,6 +431,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 args,
                 runtime,
             )
+            latest_eval_metrics = eval_metrics
             log(
                 f"step {step_id:05d} "
                 f"train_loss {step_loss:.4f} "
@@ -391,6 +457,14 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 import wandb
 
                 wandb_run.log({"sample/text": wandb.Html(f"<pre>{sample}</pre>")}, step=step_id)
+                log_wandb_sample_table(
+                    wandb_run,
+                    wandb_sample_table,
+                    step=step_id,
+                    sample=sample,
+                    eval_metrics=latest_eval_metrics,
+                    args=args,
+                )
 
         if is_main_process() and args.save_interval > 0 and step_id % args.save_interval == 0:
             save_checkpoint(

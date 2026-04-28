@@ -177,13 +177,42 @@ def _sample_tokens(
     logits: torch.Tensor,
     *,
     temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if temperature == 0.0:
         probs = F.softmax(logits, dim=-1)
         confidence, tokens = probs.max(dim=-1)
         return tokens, confidence
 
-    probs = F.softmax(logits / temperature, dim=-1)
+    if temperature < 0.0:
+        raise ValueError("temperature must be non-negative")
+    if top_k is not None and top_k <= 0:
+        raise ValueError("top_k must be positive")
+    if top_p is not None and not 0.0 < top_p <= 1.0:
+        raise ValueError("top_p must be in (0, 1]")
+
+    scaled = logits / temperature
+    if top_k is not None:
+        kth_values = torch.topk(
+            scaled,
+            k=min(top_k, scaled.shape[-1]),
+            dim=-1,
+        ).values[..., -1, None]
+        scaled = scaled.masked_fill(scaled < kth_values, float("-inf"))
+
+    if top_p is not None and top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(scaled, descending=True, dim=-1)
+        sorted_probs = F.softmax(sorted_logits, dim=-1)
+        cumulative_probs = sorted_probs.cumsum(dim=-1)
+        remove_sorted = cumulative_probs > top_p
+        remove_sorted[..., 1:] = remove_sorted[..., :-1].clone()
+        remove_sorted[..., 0] = False
+        sorted_logits = sorted_logits.masked_fill(remove_sorted, float("-inf"))
+        scaled = torch.full_like(scaled, float("-inf"))
+        scaled.scatter_(-1, sorted_indices, sorted_logits)
+
+    probs = F.softmax(scaled, dim=-1)
     tokens = torch.multinomial(probs.view(-1, probs.shape[-1]), num_samples=1)
     tokens = tokens.view(probs.shape[:-1])
     confidence = probs.gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
@@ -248,6 +277,8 @@ def generate(
             candidates, confidence = _sample_tokens(
                 block_logits,
                 temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
             )
 
             accept = torch.zeros_like(active_masks)
