@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from model import TextDiffusionConfig, TextDiffusionModel, generate
-from tokenizer import LLaDA21Tokenizer
+from tokenizer import LLaDA21Tokenizer, NanochatTokenizer
 
 
 def pick_device() -> torch.device:
@@ -24,11 +24,14 @@ def load_checkpoint(checkpoint_dir: Path, device: torch.device):
         weights_only=False,
     )
     tokenizer_type = checkpoint.get("tokenizer_type")
-    if tokenizer_type != "llada21":
+    if tokenizer_type == "llada21":
+        tokenizer = LLaDA21Tokenizer.load(checkpoint_dir / "tokenizer_hf")
+    elif tokenizer_type == "nanochat":
+        tokenizer = NanochatTokenizer.load(checkpoint_dir / "tokenizer_hf")
+    else:
         raise ValueError(
-            f"unsupported tokenizer_type {tokenizer_type!r}; only llada21 checkpoints are supported"
+            f"unsupported tokenizer_type {tokenizer_type!r}; supported values are llada21 and nanochat"
         )
-    tokenizer = LLaDA21Tokenizer.load(checkpoint_dir / "tokenizer_hf")
     config = TextDiffusionConfig(**checkpoint["config"])
 
     model = TextDiffusionModel(config).to(device)

@@ -49,7 +49,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-chars", type=int, default=5_000_000)
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
 
+    parser.add_argument("--tokenizer", choices=["llada21", "nanochat"], default="llada21")
     parser.add_argument("--tokenizer-local-files-only", action="store_true")
+    parser.add_argument("--nanochat-tokenizer-cache-dir", type=Path, default=Path("data/nanochat_tokenizer_32k"))
+    parser.add_argument("--nanochat-tokenizer-vocab-size", type=int, default=32_768)
+    parser.add_argument("--nanochat-tokenizer-train-chars", type=int, default=2_000_000_000)
+    parser.add_argument("--nanochat-tokenizer-doc-cap", type=int, default=10_000)
 
     parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-llada21"))
     parser.add_argument("--seq-len", type=int, default=128)
@@ -135,6 +140,11 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
     return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
+def masked_cross_entropy(logits: torch.Tensor, labels: torch.Tensor, *, reduction: str = "mean") -> torch.Tensor:
+    masked = labels != -100
+    return F.cross_entropy(logits[masked], labels[masked], reduction=reduction)
+
+
 @torch.no_grad()
 def estimate_eval_metrics(
     model: torch.nn.Module,
@@ -165,11 +175,7 @@ def estimate_eval_metrics(
         attention_mask = noised != source_model.config.pad_token_id
         with autocast_context(runtime.device, args.amp_dtype):
             logits = model(noised, attention_mask=attention_mask)
-            loss_sum = F.cross_entropy(
-                logits.view(-1, source_model.config.vocab_size),
-                labels.view(-1),
-                reduction="sum",
-            )
+            loss_sum = masked_cross_entropy(logits, labels, reduction="sum")
 
         total_loss += float(loss_sum.item())
         total_masked_tokens += int((labels != -100).sum().item())
@@ -235,7 +241,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"device: {runtime.device}")
     log(f"world_size: {world_size()}")
     log(f"data_source: {'nanochat/climbmix-400b-shuffle' if args.nanochat else args.data}")
-    log("tokenizer: llada21")
+    log(f"tokenizer: {args.tokenizer}")
     log(f"train chars: {len(data.train_text):,}")
     log(f"val chars: {val_chars:,}")
     log(f"train tokens: {data.train_tokens.numel():,}")
@@ -345,10 +351,7 @@ def train_one_step(
         with sync_context:
             with autocast_context(runtime.device, args.amp_dtype):
                 logits = model(noised, attention_mask=attention_mask)
-                loss = F.cross_entropy(
-                    logits.view(-1, config.vocab_size),
-                    labels.view(-1),
-                )
+                loss = masked_cross_entropy(logits, labels)
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
         step_loss += loss.detach().item()

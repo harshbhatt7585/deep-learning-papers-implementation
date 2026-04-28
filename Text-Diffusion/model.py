@@ -258,7 +258,8 @@ def diffusion_loss(
     if bool(attention_mask.all()):
         attention_mask = None
     logits = model(noised, attention_mask=attention_mask)
-    return F.cross_entropy(logits.view(-1, config.vocab_size), labels.view(-1))
+    masked = labels != -100
+    return F.cross_entropy(logits[masked], labels[masked])
 
 
 def build_block_diffusion_attention_mask(

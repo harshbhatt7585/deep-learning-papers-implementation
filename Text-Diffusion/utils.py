@@ -15,12 +15,12 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model import TextDiffusionModel
-from tokenizer import LLaDA21Tokenizer
+from tokenizer import LLaDA21Tokenizer, NanochatTokenizer
 
 
 NANOCHAT_BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 NANOCHAT_MAX_SHARD = 6542
-Tokenizer = LLaDA21Tokenizer
+Tokenizer = LLaDA21Tokenizer | NanochatTokenizer
 
 
 @dataclass
@@ -185,6 +185,7 @@ def download_nanochat_shard(index: int, cache_dir: Path) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / nanochat_shard_name(index)
     if path.exists():
+        log(f"using cached {path.name}")
         return path
 
     url = f"{NANOCHAT_BASE_URL}/{path.name}"
@@ -238,16 +239,26 @@ def load_nanochat_text(args: argparse.Namespace) -> tuple[str, str]:
 
     for shard_index in range(args.nanochat_train_shards):
         path = download_nanochat_shard(shard_index, args.nanochat_cache_dir)
+        shard_max_chars = remaining_chars
+        log(f"reading train shard {shard_index + 1}/{args.nanochat_train_shards}: {path.name}")
         text = read_parquet_text(path, max_chars=remaining_chars)
         train_pieces.append(text)
+        log(f"loaded train shard {path.name}: {len(text):,} chars")
         if remaining_chars is not None:
             remaining_chars -= len(text)
             if remaining_chars <= 0:
+                log(f"reached max_train_chars={args.max_train_chars:,}")
                 break
+        if shard_max_chars is not None and len(text) < shard_max_chars:
+            log(f"shard {path.name} ended before max char cap")
 
     val_path = download_nanochat_shard(NANOCHAT_MAX_SHARD, args.nanochat_cache_dir)
+    log(f"reading val shard: {val_path.name}")
     val_text = read_parquet_text(val_path, max_chars=args.max_val_chars)
-    return "\n".join(train_pieces), val_text
+    train_text = "\n".join(train_pieces)
+    log(f"loaded nanochat train text: {len(train_text):,} chars")
+    log(f"loaded nanochat val text: {len(val_text):,} chars")
+    return train_text, val_text
 
 
 def load_raw_text(args: argparse.Namespace) -> tuple[str, str | None]:
@@ -259,15 +270,47 @@ def load_raw_text(args: argparse.Namespace) -> tuple[str, str | None]:
 
 
 def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | None) -> Tokenizer:
-    return LLaDA21Tokenizer.from_pretrained(
-        local_files_only=args.tokenizer_local_files_only,
-    )
+    if args.tokenizer == "llada21":
+        return LLaDA21Tokenizer.from_pretrained(
+            local_files_only=args.tokenizer_local_files_only,
+        )
+    if args.tokenizer == "nanochat":
+        if is_dist():
+            tokenizer = None
+            if rank() == 0:
+                tokenizer = NanochatTokenizer.from_pretrained(
+                    args.nanochat_tokenizer_cache_dir,
+                    train_text=train_text,
+                    vocab_size=args.nanochat_tokenizer_vocab_size,
+                    train_chars=args.nanochat_tokenizer_train_chars,
+                    doc_cap=args.nanochat_tokenizer_doc_cap,
+                    local_files_only=args.tokenizer_local_files_only,
+                )
+            dist.barrier()
+            if tokenizer is None:
+                tokenizer = NanochatTokenizer.from_pretrained(
+                    args.nanochat_tokenizer_cache_dir,
+                    local_files_only=True,
+                )
+            return tokenizer
+        return NanochatTokenizer.from_pretrained(
+            args.nanochat_tokenizer_cache_dir,
+            train_text=train_text,
+            vocab_size=args.nanochat_tokenizer_vocab_size,
+            train_chars=args.nanochat_tokenizer_train_chars,
+            doc_cap=args.nanochat_tokenizer_doc_cap,
+            local_files_only=args.tokenizer_local_files_only,
+        )
+    raise ValueError(f"unsupported tokenizer {args.tokenizer!r}")
 
 
 def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
     train_text, val_text = load_raw_text(args)
+    log(f"loading tokenizer: {args.tokenizer}")
     tokenizer = build_tokenizer(args, train_text, val_text)
+    log("tokenizing train text")
     train_ids = torch.tensor(tokenizer.encode(train_text, add_eos=True), dtype=torch.long)
+    log(f"tokenized train text: {train_ids.numel():,} tokens")
 
     if val_text is None:
         split = int(0.95 * train_ids.numel())
@@ -275,7 +318,9 @@ def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
         val_tokens = train_ids[split:]
     else:
         train_tokens = train_ids
+        log("tokenizing val text")
         val_tokens = torch.tensor(tokenizer.encode(val_text, add_eos=True), dtype=torch.long)
+        log(f"tokenized val text: {val_tokens.numel():,} tokens")
 
     if train_tokens.numel() <= args.seq_len or val_tokens.numel() <= args.seq_len:
         raise ValueError("Dataset is too small for --seq-len. Use more text or lower --seq-len.")
@@ -312,7 +357,7 @@ def save_checkpoint(
             "config": asdict(source_model.config),
             "model_state": source_model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
-            "tokenizer_type": "llada21",
+            "tokenizer_type": tokenizer.tokenizer_type,
             "args": args_as_plain_dict(args),
         },
         out_dir / "checkpoint.pt",
