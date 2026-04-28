@@ -32,6 +32,9 @@ app = modal.App(APP_NAME)
     image=image,
     gpu="A100:4",
     timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
     volumes={
         "/data": data_volume,
         "/runs": runs_volume,
