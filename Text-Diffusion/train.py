@@ -11,9 +11,10 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model import TextDiffusionConfig, TextDiffusionModel, diffusion_loss, generate
+from model import TextDiffusionConfig, TextDiffusionModel, diffusion_loss, generate, make_masked_inputs
 from tokenizer import LLaDA21Tokenizer, SimpleCharTokenizer
 
 
@@ -136,9 +137,10 @@ def get_batch(
 
 
 @torch.no_grad()
-def estimate_loss(
+def estimate_eval_metrics(
     model: TextDiffusionModel,
     data: torch.Tensor,
+    tokenizer: LLaDA21Tokenizer | SimpleCharTokenizer,
     *,
     batch_size: int,
     seq_len: int,
@@ -147,9 +149,13 @@ def estimate_loss(
     device: torch.device,
     amp_dtype: str,
     non_blocking: bool,
-) -> float:
+) -> dict[str, float]:
     model.eval()
-    losses = []
+    source_model = unwrap_model(model)
+    total_loss = 0.0
+    total_masked_tokens = 0
+    total_bytes = 0
+
     for _ in range(eval_batches):
         batch = get_batch(
             data,
@@ -158,14 +164,46 @@ def estimate_loss(
             device=device,
             non_blocking=non_blocking,
         )
+        noised, labels = make_masked_inputs(
+            batch,
+            mask_token_id=source_model.config.mask_token_id,
+            pad_token_id=source_model.config.pad_token_id,
+            mask_prob=mask_prob,
+        )
+        attention_mask = noised != source_model.config.pad_token_id
         with autocast_context(device, amp_dtype):
-            loss = diffusion_loss(model, batch, mask_prob=mask_prob)
-        losses.append(loss.item())
+            logits = model(noised, attention_mask=attention_mask)
+            loss_sum = F.cross_entropy(
+                logits.view(-1, source_model.config.vocab_size),
+                labels.view(-1),
+                reduction="sum",
+            )
+
+        total_loss += float(loss_sum.item())
+        total_masked_tokens += int((labels != -100).sum().item())
+        total_bytes += sum(
+            len(tokenizer.decode(row.detach().cpu().tolist()).encode("utf-8"))
+            for row in batch
+        )
+
     model.train()
-    local = torch.tensor([sum(losses), len(losses)], dtype=torch.float64, device=device)
+    local = torch.tensor(
+        [total_loss, total_masked_tokens, total_bytes],
+        dtype=torch.float64,
+        device=device,
+    )
     if is_dist():
         dist.all_reduce(local, op=dist.ReduceOp.SUM)
-    return float((local[0] / local[1]).item())
+
+    total_loss = float(local[0].item())
+    total_masked_tokens = max(1.0, float(local[1].item()))
+    total_bytes = max(1.0, float(local[2].item()))
+    return {
+        "loss": total_loss / total_masked_tokens,
+        "masked_bpb": total_loss / (math.log(2) * total_bytes),
+        "masked_tokens": total_masked_tokens,
+        "bytes": total_bytes,
+    }
 
 
 def learning_rate(step: int, *, max_steps: int, warmup_steps: int, base_lr: float) -> float:
@@ -523,9 +561,10 @@ def main() -> None:
             last_log_time = time.time()
 
         if step == 0 or (args.eval_interval > 0 and (step + 1) % args.eval_interval == 0):
-            val_loss = estimate_loss(
+            eval_metrics = estimate_eval_metrics(
                 model,
                 val_data,
+                tokenizer,
                 batch_size=args.batch_size,
                 seq_len=args.seq_len,
                 mask_prob=args.mask_prob,
@@ -537,13 +576,16 @@ def main() -> None:
             log(
                 f"step {step + 1:05d} "
                 f"train_loss {step_loss:.4f} "
-                f"val_loss {val_loss:.4f} "
+                f"val_loss {eval_metrics['loss']:.4f} "
+                f"masked_bpb {eval_metrics['masked_bpb']:.4f} "
                 f"lr {lr:.2e}"
             )
             if wandb_run is not None:
                 wandb_run.log(
                     {
-                        "eval/loss": val_loss,
+                        "eval/loss": eval_metrics["loss"],
+                        "eval/masked_bpb": eval_metrics["masked_bpb"],
+                        "eval/masked_tokens": eval_metrics["masked_tokens"],
                         "eval/train_loss_at_eval": step_loss,
                         "train/lr": lr,
                     },
