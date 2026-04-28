@@ -47,6 +47,7 @@ class LLaDA21Tokenizer:
             model_path,
             trust_remote_code=True,
         )
+        tokenizer.model_max_length = int(1e12)
         return cls(tokenizer)
 
     @property
@@ -93,4 +94,5 @@ class LLaDA21Tokenizer:
             path,
             trust_remote_code=True,
         )
+        tokenizer.model_max_length = int(1e12)
         return cls(tokenizer)
