@@ -40,6 +40,54 @@ from utils import (
 )
 
 
+INTERNAL_DEFAULTS: dict[str, Any] = {
+    "tokenizer": "nanochat",
+    "tokenizer_local_files_only": False,
+    "nanochat_tokenizer_vocab_size": 32_768,
+    "nanochat_tokenizer_train_chars": 2_000_000_000,
+    "nanochat_tokenizer_doc_cap": 10_000,
+    "mask_prob": 0.30,
+    "weight_decay": 0.1,
+    "warmup_steps": 50,
+    "dropout": 0.1,
+    "eval_interval": 500,
+    "eval_batches": 20,
+    "log_interval": 10,
+    "sample_interval": 1000,
+    "save_interval": 1000,
+    "sample_prompt": "The ",
+    "sample_length": 128,
+    "sample_block_length": 32,
+    "sample_steps": 8,
+    "sample_threshold": 0.5,
+    "sample_temperature": 0.0,
+    "sample_top_k": None,
+    "sample_top_p": None,
+    "compile_mode": "default",
+    "fused_adamw": True,
+    "matrix_lr": 0.02,
+    "embedding_lr": 0.3,
+    "unembedding_lr": 0.008,
+    "scalar_lr": 0.5,
+    "muon_momentum": 0.95,
+    "muon_ns_steps": 5,
+    "pin_memory": True,
+    "seed": 0,
+    "wandb_project": "text-diffusion",
+    "wandb_entity": None,
+    "wandb_name": None,
+    "wandb_group": None,
+    "wandb_tags": None,
+    "wandb_dir": Path("runs/wandb"),
+}
+
+
+def with_internal_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    for name, value in INTERNAL_DEFAULTS.items():
+        setattr(args, name, value)
+    return args
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the tiny text diffusion model.")
 
@@ -50,12 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-chars", type=int, default=5_000_000)
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
 
-    parser.add_argument("--tokenizer", choices=["nanochat"], default="nanochat")
-    parser.add_argument("--tokenizer-local-files-only", action="store_true")
     parser.add_argument("--nanochat-tokenizer-cache-dir", type=Path, default=Path("data/nanochat_tokenizer_32k"))
-    parser.add_argument("--nanochat-tokenizer-vocab-size", type=int, default=32_768)
-    parser.add_argument("--nanochat-tokenizer-train-chars", type=int, default=2_000_000_000)
-    parser.add_argument("--nanochat-tokenizer-doc-cap", type=int, default=10_000)
 
     parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-nanochat"))
     parser.add_argument("--seq-len", type=int, default=128)
@@ -63,53 +106,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1000)
 
-    parser.add_argument("--mask-prob", type=float, default=0.30)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=0.1)
-    parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--n-layers", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.1)
-
-    parser.add_argument("--eval-interval", type=int, default=100)
-    parser.add_argument("--eval-batches", type=int, default=10)
-    parser.add_argument("--log-interval", type=int, default=10)
-    parser.add_argument("--sample-interval", type=int, default=200)
-    parser.add_argument("--save-interval", type=int, default=500)
-
-    parser.add_argument("--sample-prompt", type=str, default="The ")
-    parser.add_argument("--sample-length", type=int, default=128)
-    parser.add_argument("--sample-block-length", type=int, default=32)
-    parser.add_argument("--sample-steps", type=int, default=8)
-    parser.add_argument("--sample-threshold", type=float, default=0.5)
-    parser.add_argument("--sample-temperature", type=float, default=0.0)
-    parser.add_argument("--sample-top-k", type=int, default=None)
-    parser.add_argument("--sample-top-p", type=float, default=None)
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
-    parser.add_argument("--compile-mode", type=str, default="default")
-    parser.add_argument("--fused-adamw", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw")
-    parser.add_argument("--matrix-lr", type=float, default=0.02)
-    parser.add_argument("--embedding-lr", type=float, default=0.3)
-    parser.add_argument("--unembedding-lr", type=float, default=0.008)
-    parser.add_argument("--scalar-lr", type=float, default=0.5)
-    parser.add_argument("--muon-momentum", type=float, default=0.95)
-    parser.add_argument("--muon-ns-steps", type=int, default=5)
-    parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--seed", type=int, default=0)
 
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="text-diffusion")
-    parser.add_argument("--wandb-entity", type=str, default=None)
-    parser.add_argument("--wandb-name", type=str, default=None)
-    parser.add_argument("--wandb-group", type=str, default=None)
-    parser.add_argument("--wandb-tags", type=str, nargs="*", default=None)
-    parser.add_argument("--wandb-dir", type=Path, default=Path("runs/wandb"))
 
-    return parser.parse_args()
+    return with_internal_defaults(parser.parse_args())
 
 
 def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusionConfig:

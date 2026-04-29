@@ -51,14 +51,12 @@ def train_h100_8gpu(
     batch_size: int = 32,
     seq_len: int = 128,
     grad_accum_steps: int = 1,
-    tokenizer: str = "nanochat",
     optimizer: str = "adamw",
     d_model: int = 256,
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     compile: bool = False,
-    compile_mode: str = "default",
     wandb: bool = False,
 ) -> None:
     command = [
@@ -75,8 +73,6 @@ def train_h100_8gpu(
         str(max_train_chars),
         "--max-val-chars",
         str(max_val_chars),
-        "--tokenizer",
-        tokenizer,
         "--nanochat-tokenizer-cache-dir",
         "/data/nanochat_tokenizer_32k",
         "--seq-len",
@@ -89,14 +85,6 @@ def train_h100_8gpu(
         optimizer,
         "--max-steps",
         str(max_steps),
-        "--eval-interval",
-        "500",
-        "--eval-batches",
-        "20",
-        "--save-interval",
-        "1000",
-        "--sample-interval",
-        "1000",
         "--d-model",
         str(d_model),
         "--n-heads",
@@ -109,7 +97,7 @@ def train_h100_8gpu(
         out_dir,
     ]
     if compile:
-        command.extend(["--compile", "--compile-mode", compile_mode])
+        command.append("--compile")
     if wandb:
         command.append("--wandb")
 
@@ -132,14 +120,12 @@ def main(
     batch_size: int = 32,
     seq_len: int = 128,
     grad_accum_steps: int = 1,
-    tokenizer: str = "nanochat",
     optimizer: str = "adamw",
     d_model: int = 256,
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     compile: bool = False,
-    compile_mode: str = "default",
     wandb: bool = False,
 ) -> None:
     train_h100_8gpu.remote(
@@ -150,13 +136,11 @@ def main(
         batch_size=batch_size,
         seq_len=seq_len,
         grad_accum_steps=grad_accum_steps,
-        tokenizer=tokenizer,
         optimizer=optimizer,
         d_model=d_model,
         n_heads=n_heads,
         n_layers=n_layers,
         out_dir=out_dir,
         compile=compile,
-        compile_mode=compile_mode,
         wandb=wandb,
     )
