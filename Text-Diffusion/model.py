@@ -159,8 +159,7 @@ class TextDiffusionModel(nn.Module):
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-        self.lm_head.weight = self.token_emb.weight
+        self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
         cos, sin = self._precompute_rotary_embeddings(config.max_seq_len, config.d_model // config.n_heads)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
@@ -194,7 +193,8 @@ class TextDiffusionModel(nn.Module):
 
     @torch.no_grad()
     def init_weights(self) -> None:
-        nn.init.normal_(self.token_emb.weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.token_emb.weight, mean=0.0, std=0.8)
+        nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
 
         scale = 3**0.5 * self.config.d_model**-0.5
         for block in self.blocks:

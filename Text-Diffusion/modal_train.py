@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -113,7 +114,10 @@ def train_h100_8gpu(
         command.append("--wandb")
 
     try:
-        subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+        env = os.environ.copy()
+        if compile:
+            env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
+        subprocess.run(command, cwd=WORKDIR, env=env, stdout=sys.stdout, stderr=sys.stderr, check=True)
     finally:
         data_volume.commit()
         runs_volume.commit()

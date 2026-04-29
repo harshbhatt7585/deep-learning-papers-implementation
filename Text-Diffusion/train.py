@@ -18,6 +18,7 @@ from model import (
     generate,
     make_masked_inputs,
 )
+from nanochat_optim import NanochatMuonAdamW
 from utils import (
     Runtime,
     TokenData,
@@ -37,101 +38,6 @@ from utils import (
     unwrap_model,
     world_size,
 )
-
-
-class HybridOptimizer(torch.optim.Optimizer):
-    def __init__(self, optimizers: list[torch.optim.Optimizer]) -> None:
-        self.optimizers = optimizers
-        self.param_groups = [group for optimizer in optimizers for group in optimizer.param_groups]
-        self.state = {}
-        for optimizer in optimizers:
-            self.state.update(optimizer.state)
-
-    def step(self, closure=None):
-        loss = None
-        for optimizer in self.optimizers:
-            maybe_loss = optimizer.step(closure=closure)
-            if maybe_loss is not None:
-                loss = maybe_loss
-        return loss
-
-    def zero_grad(self, set_to_none: bool = True) -> None:
-        for optimizer in self.optimizers:
-            optimizer.zero_grad(set_to_none=set_to_none)
-
-    def state_dict(self):
-        return {"optimizers": [optimizer.state_dict() for optimizer in self.optimizers]}
-
-    def load_state_dict(self, state_dict) -> None:
-        for optimizer, child_state in zip(self.optimizers, state_dict["optimizers"], strict=True):
-            optimizer.load_state_dict(child_state)
-
-
-def build_native_muon_optimizer(
-    args: argparse.Namespace,
-    *,
-    matrix_params: list[torch.nn.Parameter],
-    adam_groups: list[dict[str, Any]],
-    runtime: Runtime,
-) -> torch.optim.Optimizer:
-    optimizers: list[torch.optim.Optimizer] = []
-    if matrix_params:
-        muon_optimizer = torch.optim.Muon(
-            matrix_params,
-            lr=args.matrix_lr,
-            momentum=args.muon_momentum,
-            ns_steps=args.muon_ns_steps,
-            weight_decay=args.weight_decay,
-            adjust_lr_fn="match_rms_adamw",
-        )
-        for group in muon_optimizer.param_groups:
-            group["lr_multiplier"] = args.matrix_lr / args.lr
-        optimizers.append(muon_optimizer)
-
-    adam_kwargs: dict[str, Any] = {}
-    if args.fused_adamw and runtime.device.type == "cuda":
-        adam_kwargs["fused"] = True
-    optimizers.append(torch.optim.AdamW(adam_groups, **adam_kwargs))
-    return HybridOptimizer(optimizers)
-
-
-def build_packaged_muon_optimizer(
-    args: argparse.Namespace,
-    *,
-    matrix_params: list[torch.nn.Parameter],
-    adam_groups: list[dict[str, Any]],
-) -> torch.optim.Optimizer:
-    try:
-        from muon import MuonWithAuxAdam, SingleDeviceMuonWithAuxAdam
-    except ImportError as exc:
-        raise ImportError(
-            "torch.optim.Muon is unavailable in this PyTorch build. "
-            "Install muon-optimizer or use --optimizer adamw."
-        ) from exc
-
-    param_groups: list[dict[str, Any]] = []
-    if matrix_params:
-        param_groups.append(
-            {
-                "params": matrix_params,
-                "lr": args.matrix_lr,
-                "momentum": args.muon_momentum,
-                "weight_decay": args.weight_decay,
-                "use_muon": True,
-            }
-        )
-    for group in adam_groups:
-        group = dict(group)
-        group.pop("lr_multiplier", None)
-        group.setdefault("eps", 1e-10)
-        group["use_muon"] = False
-        param_groups.append(group)
-
-    optimizer_cls = MuonWithAuxAdam if is_dist() else SingleDeviceMuonWithAuxAdam
-    optimizer = optimizer_cls(param_groups)
-    for group in optimizer.param_groups:
-        group["lr_multiplier"] = group["lr"] / args.lr
-    return optimizer
 
 
 def parse_args() -> argparse.Namespace:
@@ -189,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--matrix-lr", type=float, default=0.02)
     parser.add_argument("--embedding-lr", type=float, default=0.3)
     parser.add_argument("--unembedding-lr", type=float, default=0.008)
+    parser.add_argument("--scalar-lr", type=float, default=0.5)
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
@@ -233,61 +140,69 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
     source_model = unwrap_model(model)
     if args.optimizer == "muon":
-        embedding_params = [source_model.token_emb.weight]
-        embedding_param_ids = {id(param) for param in embedding_params}
-        matrix_params = [
-            param
-            for param in source_model.parameters()
-            if param.ndim == 2 and id(param) not in embedding_param_ids
-        ]
-        fallback_params = [
-            param
-            for param in source_model.parameters()
-            if param.ndim != 2 and id(param) not in embedding_param_ids
-        ]
+        model_dim = source_model.config.d_model
+        dmodel_lr_scale = (model_dim / 768) ** -0.5
+        embedding_params = list(source_model.token_emb.parameters())
+        lm_head_params = list(source_model.lm_head.parameters())
+        matrix_params = list(source_model.blocks.parameters())
+        seen_ids = {id(param) for param in embedding_params + lm_head_params + matrix_params}
+        scalar_params = [param for param in source_model.parameters() if id(param) not in seen_ids]
 
-        adam_groups: list[dict[str, Any]] = [
+        param_groups: list[dict[str, Any]] = [
             {
+                "kind": "adamw",
+                "params": lm_head_params,
+                "lr": args.unembedding_lr * dmodel_lr_scale,
+                "lr_multiplier": args.unembedding_lr * dmodel_lr_scale / args.lr,
+                "betas": (0.8, 0.96),
+                "eps": 1e-10,
+                "weight_decay": 0.01,
+            },
+            {
+                "kind": "adamw",
                 "params": embedding_params,
-                "lr": args.embedding_lr,
-                "lr_multiplier": args.embedding_lr / args.lr,
-                "betas": (0.9, 0.95),
-                "weight_decay": args.weight_decay,
-            }
+                "lr": args.embedding_lr * dmodel_lr_scale,
+                "lr_multiplier": args.embedding_lr * dmodel_lr_scale / args.lr,
+                "betas": (0.8, 0.995),
+                "eps": 1e-10,
+                "weight_decay": 0.001,
+            },
         ]
-        if fallback_params:
-            adam_groups.append(
+        if scalar_params:
+            param_groups.append(
                 {
-                    "params": fallback_params,
-                    "lr": args.lr,
-                    "lr_multiplier": 1.0,
-                    "betas": (0.9, 0.95),
+                    "kind": "adamw",
+                    "params": scalar_params,
+                    "lr": args.scalar_lr,
+                    "lr_multiplier": args.scalar_lr / args.lr,
+                    "betas": (0.8, 0.95),
+                    "eps": 1e-10,
+                    "weight_decay": 0.0,
+                }
+            )
+        for shape in sorted({param.shape for param in matrix_params}):
+            shape_params = [param for param in matrix_params if param.shape == shape]
+            param_groups.append(
+                {
+                    "kind": "muon",
+                    "params": shape_params,
+                    "lr": args.matrix_lr,
+                    "lr_multiplier": args.matrix_lr / args.lr,
+                    "momentum": args.muon_momentum,
+                    "ns_steps": args.muon_ns_steps,
+                    "beta2": 0.9,
                     "weight_decay": args.weight_decay,
                 }
             )
 
-        if hasattr(torch.optim, "Muon"):
-            optimizer = build_native_muon_optimizer(
-                args,
-                matrix_params=matrix_params,
-                adam_groups=adam_groups,
-                runtime=runtime,
-            )
-            optimizer_impl = "torch.optim.Muon"
-        else:
-            optimizer = build_packaged_muon_optimizer(
-                args,
-                matrix_params=matrix_params,
-                adam_groups=adam_groups,
-            )
-            optimizer_impl = "muon-optimizer"
-
         log(
-            f"optimizer: muon ({optimizer_impl}) "
+            "optimizer: nanochat-muon "
             f"matrix_params={sum(param.numel() for param in matrix_params):,} "
-            f"adamw_params={sum(param.numel() for group in adam_groups for param in group['params']):,}"
+            f"lm_head_params={sum(param.numel() for param in lm_head_params):,} "
+            f"embedding_params={sum(param.numel() for param in embedding_params):,} "
+            f"scalar_params={sum(param.numel() for param in scalar_params):,}"
         )
-        return optimizer
+        return NanochatMuonAdamW(param_groups)
 
     kwargs: dict[str, Any] = {
         "lr": args.lr,
