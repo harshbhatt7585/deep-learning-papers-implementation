@@ -39,6 +39,34 @@ from utils import (
 )
 
 
+class HybridOptimizer(torch.optim.Optimizer):
+    def __init__(self, optimizers: list[torch.optim.Optimizer]) -> None:
+        self.optimizers = optimizers
+        self.param_groups = [group for optimizer in optimizers for group in optimizer.param_groups]
+        self.state = {}
+        for optimizer in optimizers:
+            self.state.update(optimizer.state)
+
+    def step(self, closure=None):
+        loss = None
+        for optimizer in self.optimizers:
+            maybe_loss = optimizer.step(closure=closure)
+            if maybe_loss is not None:
+                loss = maybe_loss
+        return loss
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        for optimizer in self.optimizers:
+            optimizer.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {"optimizers": [optimizer.state_dict() for optimizer in self.optimizers]}
+
+    def load_state_dict(self, state_dict) -> None:
+        for optimizer, child_state in zip(self.optimizers, state_dict["optimizers"], strict=True):
+            optimizer.load_state_dict(child_state)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the tiny text diffusion model.")
 
@@ -90,6 +118,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--compile-mode", type=str, default="default")
     parser.add_argument("--fused-adamw", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw")
+    parser.add_argument("--matrix-lr", type=float, default=0.02)
+    parser.add_argument("--embedding-lr", type=float, default=0.3)
+    parser.add_argument("--unembedding-lr", type=float, default=0.008)
+    parser.add_argument("--muon-momentum", type=float, default=0.95)
+    parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=0)
 
@@ -130,6 +164,67 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
 
 
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
+    source_model = unwrap_model(model)
+    if args.optimizer == "muon":
+        embedding_params = [source_model.token_emb.weight]
+        embedding_param_ids = {id(param) for param in embedding_params}
+        matrix_params = [
+            param
+            for param in source_model.parameters()
+            if param.ndim == 2 and id(param) not in embedding_param_ids
+        ]
+        fallback_params = [
+            param
+            for param in source_model.parameters()
+            if param.ndim != 2 and id(param) not in embedding_param_ids
+        ]
+
+        optimizers: list[torch.optim.Optimizer] = []
+        if matrix_params:
+            muon_optimizer = torch.optim.Muon(
+                matrix_params,
+                lr=args.matrix_lr,
+                momentum=args.muon_momentum,
+                ns_steps=args.muon_ns_steps,
+                weight_decay=args.weight_decay,
+                adjust_lr_fn="match_rms_adamw",
+            )
+            for group in muon_optimizer.param_groups:
+                group["lr_multiplier"] = args.matrix_lr / args.lr
+            optimizers.append(muon_optimizer)
+
+        adam_groups: list[dict[str, Any]] = [
+            {
+                "params": embedding_params,
+                "lr": args.embedding_lr,
+                "lr_multiplier": args.embedding_lr / args.lr,
+                "betas": (0.9, 0.95),
+                "weight_decay": args.weight_decay,
+            }
+        ]
+        if fallback_params:
+            adam_groups.append(
+                {
+                    "params": fallback_params,
+                    "lr": args.lr,
+                    "lr_multiplier": 1.0,
+                    "betas": (0.9, 0.95),
+                    "weight_decay": args.weight_decay,
+                }
+            )
+
+        adam_kwargs: dict[str, Any] = {}
+        if args.fused_adamw and runtime.device.type == "cuda":
+            adam_kwargs["fused"] = True
+        optimizers.append(torch.optim.AdamW(adam_groups, **adam_kwargs))
+
+        log(
+            "optimizer: muon "
+            f"matrix_params={sum(param.numel() for param in matrix_params):,} "
+            f"adamw_params={sum(param.numel() for group in adam_groups for param in group['params']):,}"
+        )
+        return HybridOptimizer(optimizers)
+
     kwargs: dict[str, Any] = {
         "lr": args.lr,
         "weight_decay": args.weight_decay,

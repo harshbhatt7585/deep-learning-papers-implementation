@@ -162,7 +162,7 @@ def learning_rate(step: int, *, max_steps: int, warmup_steps: int, base_lr: floa
 
 def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
-        group["lr"] = lr
+        group["lr"] = lr * group.get("lr_multiplier", 1.0)
 
 
 def get_batch(
