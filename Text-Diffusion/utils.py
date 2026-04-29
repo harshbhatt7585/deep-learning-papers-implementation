@@ -15,12 +15,12 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model import TextDiffusionModel
-from tokenizer import LLaDA21Tokenizer, NanochatTokenizer
+from tokenizer import NanochatTokenizer
 
 
 NANOCHAT_BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 NANOCHAT_MAX_SHARD = 6542
-Tokenizer = LLaDA21Tokenizer | NanochatTokenizer
+Tokenizer = NanochatTokenizer
 
 
 @dataclass
@@ -283,10 +283,6 @@ def load_raw_text(args: argparse.Namespace) -> tuple[str, str | None]:
 
 
 def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | None) -> Tokenizer:
-    if args.tokenizer == "llada21":
-        return LLaDA21Tokenizer.from_pretrained(
-            local_files_only=args.tokenizer_local_files_only,
-        )
     if args.tokenizer == "nanochat":
         if is_dist():
             tokenizer = None
@@ -314,7 +310,7 @@ def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | N
             doc_cap=args.nanochat_tokenizer_doc_cap,
             local_files_only=args.tokenizer_local_files_only,
         )
-    raise ValueError(f"unsupported tokenizer {args.tokenizer!r}")
+    raise ValueError(f"unsupported tokenizer {args.tokenizer!r}; only nanochat is supported")
 
 
 def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:

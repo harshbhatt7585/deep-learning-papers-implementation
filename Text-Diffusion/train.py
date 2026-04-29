@@ -50,14 +50,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-chars", type=int, default=5_000_000)
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
 
-    parser.add_argument("--tokenizer", choices=["llada21", "nanochat"], default="llada21")
+    parser.add_argument("--tokenizer", choices=["nanochat"], default="nanochat")
     parser.add_argument("--tokenizer-local-files-only", action="store_true")
     parser.add_argument("--nanochat-tokenizer-cache-dir", type=Path, default=Path("data/nanochat_tokenizer_32k"))
     parser.add_argument("--nanochat-tokenizer-vocab-size", type=int, default=32_768)
     parser.add_argument("--nanochat-tokenizer-train-chars", type=int, default=2_000_000_000)
     parser.add_argument("--nanochat-tokenizer-doc-cap", type=int, default=10_000)
 
-    parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-llada21"))
+    parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-nanochat"))
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
