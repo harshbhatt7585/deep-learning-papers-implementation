@@ -26,11 +26,12 @@ image = (
 )
 
 app = modal.App(APP_NAME)
+GPU_COUNT = 8
 
 
 @app.function(
     image=image,
-    gpu="A100:4",
+    gpu="H100:8",
     timeout=24 * 60 * 60,
     secrets=[
         modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
@@ -40,7 +41,7 @@ app = modal.App(APP_NAME)
         "/runs": runs_volume,
     },
 )
-def train_4gpu(
+def train_h100_8gpu(
     *,
     max_steps: int = 10_000,
     train_shards: int = 8,
@@ -62,7 +63,7 @@ def train_4gpu(
     command = [
         "torchrun",
         "--standalone",
-        "--nproc_per_node=4",
+        f"--nproc_per_node={GPU_COUNT}",
         str(WORKDIR / "train.py"),
         "--nanochat",
         "--nanochat-cache-dir",
@@ -137,7 +138,7 @@ def main(
     compile_mode: str = "default",
     wandb: bool = False,
 ) -> None:
-    train_4gpu.remote(
+    train_h100_8gpu.remote(
         max_steps=max_steps,
         train_shards=train_shards,
         max_train_chars=max_train_chars,

@@ -60,15 +60,28 @@ def log(message: str) -> None:
         print(message, flush=True)
 
 
+def barrier(local_rank: int | None = None) -> None:
+    if not is_dist():
+        return
+    if torch.cuda.is_available():
+        if local_rank is None:
+            local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        dist.barrier(device_ids=[local_rank])
+    else:
+        dist.barrier()
+
+
 def setup_distributed() -> int:
     if "RANK" not in os.environ:
         return 0
 
     backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(backend=backend)
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend=backend, device_id=torch.device("cuda", local_rank))
+    else:
+        dist.init_process_group(backend=backend)
     return local_rank
 
 
@@ -286,7 +299,7 @@ def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | N
                     doc_cap=args.nanochat_tokenizer_doc_cap,
                     local_files_only=args.tokenizer_local_files_only,
                 )
-            dist.barrier()
+            barrier()
             if tokenizer is None:
                 tokenizer = NanochatTokenizer.from_pretrained(
                     args.nanochat_tokenizer_cache_dir,

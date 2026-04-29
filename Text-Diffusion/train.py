@@ -67,6 +67,73 @@ class HybridOptimizer(torch.optim.Optimizer):
             optimizer.load_state_dict(child_state)
 
 
+def build_native_muon_optimizer(
+    args: argparse.Namespace,
+    *,
+    matrix_params: list[torch.nn.Parameter],
+    adam_groups: list[dict[str, Any]],
+    runtime: Runtime,
+) -> torch.optim.Optimizer:
+    optimizers: list[torch.optim.Optimizer] = []
+    if matrix_params:
+        muon_optimizer = torch.optim.Muon(
+            matrix_params,
+            lr=args.matrix_lr,
+            momentum=args.muon_momentum,
+            ns_steps=args.muon_ns_steps,
+            weight_decay=args.weight_decay,
+            adjust_lr_fn="match_rms_adamw",
+        )
+        for group in muon_optimizer.param_groups:
+            group["lr_multiplier"] = args.matrix_lr / args.lr
+        optimizers.append(muon_optimizer)
+
+    adam_kwargs: dict[str, Any] = {}
+    if args.fused_adamw and runtime.device.type == "cuda":
+        adam_kwargs["fused"] = True
+    optimizers.append(torch.optim.AdamW(adam_groups, **adam_kwargs))
+    return HybridOptimizer(optimizers)
+
+
+def build_packaged_muon_optimizer(
+    args: argparse.Namespace,
+    *,
+    matrix_params: list[torch.nn.Parameter],
+    adam_groups: list[dict[str, Any]],
+) -> torch.optim.Optimizer:
+    try:
+        from muon import MuonWithAuxAdam, SingleDeviceMuonWithAuxAdam
+    except ImportError as exc:
+        raise ImportError(
+            "torch.optim.Muon is unavailable in this PyTorch build. "
+            "Install muon-optimizer or use --optimizer adamw."
+        ) from exc
+
+    param_groups: list[dict[str, Any]] = []
+    if matrix_params:
+        param_groups.append(
+            {
+                "params": matrix_params,
+                "lr": args.matrix_lr,
+                "momentum": args.muon_momentum,
+                "weight_decay": args.weight_decay,
+                "use_muon": True,
+            }
+        )
+    for group in adam_groups:
+        group = dict(group)
+        group.pop("lr_multiplier", None)
+        group.setdefault("eps", 1e-10)
+        group["use_muon"] = False
+        param_groups.append(group)
+
+    optimizer_cls = MuonWithAuxAdam if is_dist() else SingleDeviceMuonWithAuxAdam
+    optimizer = optimizer_cls(param_groups)
+    for group in optimizer.param_groups:
+        group["lr_multiplier"] = group["lr"] / args.lr
+    return optimizer
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the tiny text diffusion model.")
 
@@ -179,20 +246,6 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
             if param.ndim != 2 and id(param) not in embedding_param_ids
         ]
 
-        optimizers: list[torch.optim.Optimizer] = []
-        if matrix_params:
-            muon_optimizer = torch.optim.Muon(
-                matrix_params,
-                lr=args.matrix_lr,
-                momentum=args.muon_momentum,
-                ns_steps=args.muon_ns_steps,
-                weight_decay=args.weight_decay,
-                adjust_lr_fn="match_rms_adamw",
-            )
-            for group in muon_optimizer.param_groups:
-                group["lr_multiplier"] = args.matrix_lr / args.lr
-            optimizers.append(muon_optimizer)
-
         adam_groups: list[dict[str, Any]] = [
             {
                 "params": embedding_params,
@@ -213,17 +266,28 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
                 }
             )
 
-        adam_kwargs: dict[str, Any] = {}
-        if args.fused_adamw and runtime.device.type == "cuda":
-            adam_kwargs["fused"] = True
-        optimizers.append(torch.optim.AdamW(adam_groups, **adam_kwargs))
+        if hasattr(torch.optim, "Muon"):
+            optimizer = build_native_muon_optimizer(
+                args,
+                matrix_params=matrix_params,
+                adam_groups=adam_groups,
+                runtime=runtime,
+            )
+            optimizer_impl = "torch.optim.Muon"
+        else:
+            optimizer = build_packaged_muon_optimizer(
+                args,
+                matrix_params=matrix_params,
+                adam_groups=adam_groups,
+            )
+            optimizer_impl = "muon-optimizer"
 
         log(
-            "optimizer: muon "
+            f"optimizer: muon ({optimizer_impl}) "
             f"matrix_params={sum(param.numel() for param in matrix_params):,} "
             f"adamw_params={sum(param.numel() for group in adam_groups for param in group['params']):,}"
         )
-        return HybridOptimizer(optimizers)
+        return optimizer
 
     kwargs: dict[str, Any] = {
         "lr": args.lr,
