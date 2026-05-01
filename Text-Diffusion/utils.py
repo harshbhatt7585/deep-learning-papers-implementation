@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import time
@@ -10,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -24,6 +26,20 @@ Tokenizer = NanochatTokenizer
 
 
 @dataclass
+class TokenStore:
+    shards: list[torch.Tensor]
+    names: list[str]
+    sample_weights: torch.Tensor
+    total_tokens: int
+
+    def numel(self) -> int:
+        return self.total_tokens
+
+
+TokenSource = torch.Tensor | TokenStore
+
+
+@dataclass
 class Runtime:
     device: torch.device
     local_rank: int
@@ -35,8 +51,10 @@ class TokenData:
     tokenizer: Tokenizer
     train_text: str
     val_text: str | None
-    train_tokens: torch.Tensor
-    val_tokens: torch.Tensor
+    train_tokens: TokenSource
+    val_tokens: TokenSource
+    train_chars: int | None = None
+    val_chars: int | None = None
 
 
 def is_dist() -> bool:
@@ -179,14 +197,24 @@ def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
 
 
 def get_batch(
-    data: torch.Tensor,
+    data: TokenSource,
     *,
     batch_size: int,
     seq_len: int,
     runtime: Runtime,
 ) -> torch.Tensor:
-    starts = torch.randint(0, data.numel() - seq_len, (batch_size,))
-    batch = torch.stack([data[start:start + seq_len] for start in starts])
+    if isinstance(data, TokenStore):
+        shard_ids = torch.multinomial(data.sample_weights, batch_size, replacement=True)
+        rows = []
+        for shard_id in shard_ids.tolist():
+            shard = data.shards[shard_id]
+            start = torch.randint(0, shard.numel() - seq_len + 1, (1,)).item()
+            rows.append(shard[start:start + seq_len])
+        batch = torch.stack(rows).to(dtype=torch.long)
+        return batch.to(runtime.device, non_blocking=False)
+
+    starts = torch.randint(0, data.numel() - seq_len + 1, (batch_size,))
+    batch = torch.stack([data[start:start + seq_len] for start in starts]).to(dtype=torch.long)
     return batch.to(runtime.device, non_blocking=runtime.non_blocking)
 
 
@@ -313,7 +341,77 @@ def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | N
     raise ValueError(f"unsupported tokenizer {args.tokenizer!r}; only nanochat is supported")
 
 
+def load_token_array(path: Path) -> torch.Tensor:
+    array = np.load(path, mmap_mode="r+")
+    return torch.from_numpy(array)
+
+
+def load_token_store(paths: list[Path], *, seq_len: int) -> TokenStore:
+    shards = []
+    names = []
+    weights = []
+    total_tokens = 0
+
+    for path in paths:
+        shard = load_token_array(path)
+        if shard.numel() <= seq_len:
+            log(f"skipping token shard shorter than seq_len: {path.name}")
+            continue
+        shards.append(shard)
+        names.append(path.name)
+        weights.append(float(shard.numel() - seq_len + 1))
+        total_tokens += int(shard.numel())
+
+    if not shards:
+        raise ValueError(f"No token shards in {paths[0].parent if paths else '<empty>'} are long enough for --seq-len.")
+
+    sample_weights = torch.tensor(weights, dtype=torch.float64)
+    sample_weights /= sample_weights.sum()
+    return TokenStore(
+        shards=shards,
+        names=names,
+        sample_weights=sample_weights,
+        total_tokens=total_tokens,
+    )
+
+
+def load_pretokenized_data(args: argparse.Namespace) -> TokenData:
+    token_dir = args.token_shards_dir
+    metadata_path = token_dir / "metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Missing pretokenized metadata: {metadata_path}. Run pretokenization first.")
+
+    metadata = json.loads(metadata_path.read_text())
+    train_paths = sorted(token_dir.glob("train_*.npy"))
+    val_path = token_dir / "val.npy"
+    if not train_paths:
+        raise FileNotFoundError(f"No train_*.npy token shards found in {token_dir}")
+    if not val_path.exists():
+        raise FileNotFoundError(f"Missing validation token shard: {val_path}")
+
+    tokenizer = NanochatTokenizer.load(args.nanochat_tokenizer_cache_dir)
+    train_tokens = load_token_store(train_paths, seq_len=args.seq_len)
+    val_tokens = load_token_array(val_path)
+    if val_tokens.numel() <= args.seq_len:
+        raise ValueError("Pretokenized validation data is too small for --seq-len.")
+
+    log(f"loaded pretokenized train shards: {len(train_tokens.shards)}")
+    log(f"loaded pretokenized val shard: {val_path.name}")
+    return TokenData(
+        tokenizer=tokenizer,
+        train_text="",
+        val_text="",
+        train_tokens=train_tokens,
+        val_tokens=val_tokens,
+        train_chars=metadata.get("train_chars"),
+        val_chars=metadata.get("val_chars"),
+    )
+
+
 def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
+    if args.token_shards_dir is not None:
+        return load_pretokenized_data(args)
+
     train_text, val_text = load_raw_text(args)
     log(f"loading tokenizer: {args.tokenizer}")
     tokenizer = build_tokenizer(args, train_text, val_text)
@@ -344,6 +442,8 @@ def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
         val_text=val_text,
         train_tokens=train_tokens,
         val_tokens=val_tokens,
+        train_chars=len(train_text),
+        val_chars=len(val_text) if val_text is not None else None,
     )
 
 

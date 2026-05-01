@@ -32,6 +32,48 @@ GPU_COUNT = 8
 
 @app.function(
     image=image,
+    cpu=16,
+    memory=65536,
+    timeout=24 * 60 * 60,
+    volumes={
+        "/data": data_volume,
+    },
+)
+def pretokenize_nanochat(
+    *,
+    train_shards: int = 170,
+    max_train_chars: int = 17_000_000_000,
+    max_val_chars: int = 2_000_000,
+    token_shards_dir: str = "/data/nanochat_tokens_32k",
+    overwrite_tokens: bool = False,
+) -> None:
+    command = [
+        "python",
+        str(WORKDIR / "pretokenize.py"),
+        "--nanochat-cache-dir",
+        "/data/nanochat_climbmix",
+        "--nanochat-tokenizer-cache-dir",
+        "/data/nanochat_tokenizer_32k",
+        "--token-shards-dir",
+        token_shards_dir,
+        "--train-shards",
+        str(train_shards),
+        "--max-train-chars",
+        str(max_train_chars),
+        "--max-val-chars",
+        str(max_val_chars),
+    ]
+    if overwrite_tokens:
+        command.append("--overwrite")
+
+    try:
+        subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        data_volume.commit()
+
+
+@app.function(
+    image=image,
     gpu="H100:8",
     timeout=24 * 60 * 60,
     secrets=[
@@ -56,6 +98,7 @@ def train_h100_8gpu(
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
+    token_shards_dir: str = "/data/nanochat_tokens_32k",
     compile: bool = False,
     wandb: bool = False,
 ) -> None:
@@ -64,15 +107,6 @@ def train_h100_8gpu(
         "--standalone",
         f"--nproc_per_node={GPU_COUNT}",
         str(WORKDIR / "train.py"),
-        "--nanochat",
-        "--nanochat-cache-dir",
-        "/data/nanochat_climbmix",
-        "--nanochat-train-shards",
-        str(train_shards),
-        "--max-train-chars",
-        str(max_train_chars),
-        "--max-val-chars",
-        str(max_val_chars),
         "--nanochat-tokenizer-cache-dir",
         "/data/nanochat_tokenizer_32k",
         "--seq-len",
@@ -96,6 +130,22 @@ def train_h100_8gpu(
         "--out-dir",
         out_dir,
     ]
+    if token_shards_dir:
+        command.extend(["--token-shards-dir", token_shards_dir])
+    else:
+        command.extend(
+            [
+                "--nanochat",
+                "--nanochat-cache-dir",
+                "/data/nanochat_climbmix",
+                "--nanochat-train-shards",
+                str(train_shards),
+                "--max-train-chars",
+                str(max_train_chars),
+                "--max-val-chars",
+                str(max_val_chars),
+            ]
+        )
     if compile:
         command.append("--compile")
     if wandb:
@@ -125,9 +175,22 @@ def main(
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
+    token_shards_dir: str = "/data/nanochat_tokens_32k",
     compile: bool = False,
     wandb: bool = False,
+    pretokenize: bool = False,
+    overwrite_tokens: bool = False,
 ) -> None:
+    if pretokenize:
+        pretokenize_nanochat.remote(
+            train_shards=train_shards,
+            max_train_chars=max_train_chars,
+            max_val_chars=max_val_chars,
+            token_shards_dir=token_shards_dir,
+            overwrite_tokens=overwrite_tokens,
+        )
+        return
+
     train_h100_8gpu.remote(
         max_steps=max_steps,
         train_shards=train_shards,
@@ -141,6 +204,7 @@ def main(
         n_heads=n_heads,
         n_layers=n_layers,
         out_dir=out_dir,
+        token_shards_dir=token_shards_dir,
         compile=compile,
         wandb=wandb,
     )
