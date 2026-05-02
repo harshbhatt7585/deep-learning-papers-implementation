@@ -65,6 +65,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "sample_top_p": None,
     "compile_mode": "default",
     "fused_adamw": True,
+    "fp8_recipe": "tensorwise",
     "matrix_lr": 0.02,
     "embedding_lr": 0.3,
     "unembedding_lr": 0.008,
@@ -114,6 +115,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--fp8", action="store_true")
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw")
 
     parser.add_argument("--wandb", action="store_true")
@@ -136,8 +138,53 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
     )
 
 
+def fp8_module_filter(module: torch.nn.Module, fqn: str) -> bool:
+    if not isinstance(module, torch.nn.Linear):
+        return False
+    if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+        return False
+    if min(module.in_features, module.out_features) < 128:
+        return False
+    return True
+
+
+def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime: Runtime) -> torch.nn.Module:
+    if not args.fp8:
+        return model
+    if runtime.device.type != "cuda":
+        raise ValueError("--fp8 requires a CUDA GPU with FP8 support, such as H100/H200.")
+    if args.amp_dtype != "bfloat16":
+        raise ValueError("--fp8 expects --amp-dtype bfloat16.")
+
+    try:
+        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
+        from torchao.float8.float8_linear import Float8Linear
+    except ImportError as exc:
+        raise ImportError("Install torchao or remove --fp8.") from exc
+
+    candidates = [
+        name
+        for name, module in model.named_modules()
+        if fp8_module_filter(module, name)
+    ]
+    config = Float8LinearConfig.from_recipe_name(args.fp8_recipe)
+    model = model.to(dtype=torch.bfloat16)
+    model = convert_to_float8_training(
+        model,
+        config=config,
+        module_filter_fn=fp8_module_filter,
+    )
+    converted = sum(1 for module in model.modules() if isinstance(module, Float8Linear))
+    log(f"fp8: recipe={args.fp8_recipe} converted_linear_layers={converted}/{len(candidates)}")
+    return model
+
+
 def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: Runtime) -> torch.nn.Module:
     model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
+    model = apply_fp8_training(model, args, runtime)
+    if args.fp8 and args.compile:
+        log("fp8: disabling torch.compile; TorchAO FP8 compile is not stable on the current Torch stack")
+        args.compile = False
     if args.compile:
         model = torch.compile(model, mode=args.compile_mode)
     if is_dist():
@@ -336,6 +383,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"tokens_per_step: {args.batch_size * args.seq_len * args.grad_accum_steps * world_size():,}")
     log(f"amp_dtype: {args.amp_dtype}")
     log(f"compile: {args.compile}")
+    log(f"fp8: {args.fp8}")
 
 
 def log_train_metrics(wandb_run, step: int, metrics: dict[str, float]) -> None:

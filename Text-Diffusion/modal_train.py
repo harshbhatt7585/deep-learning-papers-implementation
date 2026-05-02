@@ -100,6 +100,7 @@ def train_h100_8gpu(
     out_dir: str = "/runs/text-diffusion-4gpu",
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     compile: bool = False,
+    fp8: bool = False,
     wandb: bool = False,
 ) -> None:
     command = [
@@ -148,6 +149,8 @@ def train_h100_8gpu(
         )
     if compile:
         command.append("--compile")
+    if fp8:
+        command.append("--fp8")
     if wandb:
         command.append("--wandb")
 
@@ -177,6 +180,7 @@ def main(
     out_dir: str = "/runs/text-diffusion-4gpu",
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     compile: bool = False,
+    fp8: bool = False,
     wandb: bool = False,
     pretokenize: bool = False,
     overwrite_tokens: bool = False,
@@ -206,5 +210,6 @@ def main(
         out_dir=out_dir,
         token_shards_dir=token_shards_dir,
         compile=compile,
+        fp8=fp8,
         wandb=wandb,
     )

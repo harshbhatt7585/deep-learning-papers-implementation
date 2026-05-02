@@ -21,13 +21,17 @@ N_LAYERS="${N_LAYERS:-12}"
 RUN_NAME="${RUN_NAME:-text-diffusion-adamw-170shards}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 
-COMPILE="${COMPILE:-1}"
+FP8="${FP8:-1}"
+COMPILE="${COMPILE:-$([[ "${FP8}" == "1" ]] && echo 0 || echo 1)}"
 WANDB="${WANDB:-1}"
 OVERWRITE_TOKENS="${OVERWRITE_TOKENS:-0}"
 
 modal_flags=()
 if [[ "${COMPILE}" == "1" ]]; then
   modal_flags+=(--compile)
+fi
+if [[ "${FP8}" == "1" ]]; then
+  modal_flags+=(--fp8)
 fi
 if [[ "${WANDB}" == "1" ]]; then
   modal_flags+=(--wandb)
