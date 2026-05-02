@@ -164,6 +164,40 @@ def train_h100_8gpu(
         runs_volume.commit()
 
 
+@app.function(
+    image=image,
+    gpu="H100:8",
+    timeout=24 * 60 * 60,
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def core_eval_h100_8gpu(
+    *,
+    checkpoint_dir: str,
+    eval_cache_dir: str = "/data/core_eval",
+    max_per_task: int = -1,
+) -> None:
+    command = [
+        "torchrun",
+        "--standalone",
+        f"--nproc_per_node={GPU_COUNT}",
+        str(WORKDIR / "eval_core.py"),
+        "--checkpoint-dir",
+        checkpoint_dir,
+        "--eval-cache-dir",
+        eval_cache_dir,
+        "--max-per-task",
+        str(max_per_task),
+    ]
+    try:
+        subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        data_volume.commit()
+        runs_volume.commit()
+
+
 @app.local_entrypoint()
 def main(
     max_steps: int = 10_000,
@@ -184,6 +218,10 @@ def main(
     wandb: bool = False,
     pretokenize: bool = False,
     overwrite_tokens: bool = False,
+    core_eval: bool = False,
+    checkpoint_dir: str | None = None,
+    eval_cache_dir: str = "/data/core_eval",
+    max_per_task: int = -1,
 ) -> None:
     if pretokenize:
         pretokenize_nanochat.remote(
@@ -192,6 +230,14 @@ def main(
             max_val_chars=max_val_chars,
             token_shards_dir=token_shards_dir,
             overwrite_tokens=overwrite_tokens,
+        )
+        return
+
+    if core_eval:
+        core_eval_h100_8gpu.remote(
+            checkpoint_dir=checkpoint_dir or out_dir,
+            eval_cache_dir=eval_cache_dir,
+            max_per_task=max_per_task,
         )
         return
 

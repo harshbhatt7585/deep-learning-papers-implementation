@@ -9,6 +9,7 @@ dependencies = [
     "modal>=1.1",
     "numpy>=1.26",
     "pyarrow>=15",
+    "pyyaml>=6",
     "safetensors>=0.4",
     "setuptools>=70",
     "tokenizers>=0.19",
