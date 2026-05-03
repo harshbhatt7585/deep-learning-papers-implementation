@@ -23,22 +23,22 @@ N_HEADS="${N_HEADS:-12}"
 N_LAYERS="${N_LAYERS:-12}"
 
 case "${RUN_CONFIG}" in
-  1gpu|1)
+  1gpu|1GPU|1)
     GPU_COUNT=1
     DEFAULT_GRAD_ACCUM_STEPS=64
     RUN_CONFIG_NAME="1gpu"
     ;;
-  2gpu|2)
+  2gpu|2GPU|2)
     GPU_COUNT=2
     DEFAULT_GRAD_ACCUM_STEPS=32
     RUN_CONFIG_NAME="2gpu"
     ;;
-  4gpu|4)
+  4gpu|4GPU|4)
     GPU_COUNT=4
     DEFAULT_GRAD_ACCUM_STEPS=16
     RUN_CONFIG_NAME="4gpu"
     ;;
-  8gpu|8)
+  8gpu|8GPU|8)
     GPU_COUNT=8
     DEFAULT_GRAD_ACCUM_STEPS=8
     RUN_CONFIG_NAME="8gpu"
