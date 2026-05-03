@@ -54,7 +54,6 @@ image = (
 )
 
 app = modal.App(APP_NAME)
-GPU_COUNT = 8
 
 
 @app.function(
@@ -114,20 +113,9 @@ def pretokenize_nanochat(
         data_volume.commit()
 
 
-@app.function(
-    image=image,
-    gpu="H100:8",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_h100_8gpu(
+def run_train(
     *,
+    gpu_count: int,
     max_steps: int = 10_000,
     train_shards: int = 8,
     max_train_chars: int = 100_000_000,
@@ -149,7 +137,7 @@ def train_h100_8gpu(
     command = [
         "torchrun",
         "--standalone",
-        f"--nproc_per_node={GPU_COUNT}",
+        f"--nproc_per_node={gpu_count}",
         str(WORKDIR / "train.py"),
         "--nanochat-tokenizer-cache-dir",
         "/data/nanochat_tokenizer_32k",
@@ -219,8 +207,73 @@ def train_h100_8gpu(
         runs_volume.commit()
 
 
+@app.function(
+    image=image,
+    gpu="H100",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_h100_1gpu(**kwargs) -> None:
+    run_train(gpu_count=1, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:2",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_h100_2gpu(**kwargs) -> None:
+    run_train(gpu_count=2, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:4",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_h100_4gpu(**kwargs) -> None:
+    run_train(gpu_count=4, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:8",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_h100_8gpu(**kwargs) -> None:
+    run_train(gpu_count=8, **kwargs)
+
+
 @app.local_entrypoint()
 def main(
+    gpu_count: int = 8,
     max_steps: int = 10_000,
     train_shards: int = 8,
     max_train_chars: int = 100_000_000,
@@ -261,7 +314,17 @@ def main(
         )
         return
 
-    train_h100_8gpu.remote(
+    train_functions = {
+        1: train_h100_1gpu,
+        2: train_h100_2gpu,
+        4: train_h100_4gpu,
+        8: train_h100_8gpu,
+    }
+    train_function = train_functions.get(gpu_count)
+    if train_function is None:
+        raise ValueError("--gpu-count must be one of: 1, 2, 4, 8")
+
+    train_function.remote(
         max_steps=max_steps,
         train_shards=train_shards,
         max_train_chars=max_train_chars,

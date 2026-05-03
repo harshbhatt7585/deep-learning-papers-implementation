@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODE="${1:-train}"
+RUN_CONFIG="${RUN_CONFIG:-${2:-8gpu}}"
 
 TRAIN_SHARDS="${TRAIN_SHARDS:-170}"
 MAX_TRAIN_CHARS="${MAX_TRAIN_CHARS:-17000000000}"
@@ -15,14 +16,43 @@ STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
 MAX_STEPS="${MAX_STEPS:-100000}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 SEQ_LEN="${SEQ_LEN:-2048}"
-GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
 OPTIMIZER="${OPTIMIZER:-muon}"
 
 D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-12}"
 N_LAYERS="${N_LAYERS:-12}"
 
-RUN_NAME="${RUN_NAME:-text-diffusion-adamw-170shards}"
+case "${RUN_CONFIG}" in
+  1gpu|1)
+    GPU_COUNT=1
+    DEFAULT_GRAD_ACCUM_STEPS=64
+    RUN_CONFIG_NAME="1gpu"
+    ;;
+  2gpu|2)
+    GPU_COUNT=2
+    DEFAULT_GRAD_ACCUM_STEPS=32
+    RUN_CONFIG_NAME="2gpu"
+    ;;
+  4gpu|4)
+    GPU_COUNT=4
+    DEFAULT_GRAD_ACCUM_STEPS=16
+    RUN_CONFIG_NAME="4gpu"
+    ;;
+  8gpu|8)
+    GPU_COUNT=8
+    DEFAULT_GRAD_ACCUM_STEPS=8
+    RUN_CONFIG_NAME="8gpu"
+    ;;
+  *)
+    echo "unknown run config: ${RUN_CONFIG}" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|all] [1gpu|2gpu|4gpu|8gpu]" >&2
+    exit 2
+    ;;
+esac
+
+GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-${DEFAULT_GRAD_ACCUM_STEPS}}"
+
+RUN_NAME="${RUN_NAME:-text-diffusion-muon-${RUN_CONFIG_NAME}-170shards}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 
 FP8="${FP8:-1}"
@@ -99,6 +129,7 @@ train() {
   fi
 
   modal run modal_train.py \
+    --gpu-count "${GPU_COUNT}" \
     --max-steps "${MAX_STEPS}" \
     --batch-size "${BATCH_SIZE}" \
     --seq-len "${SEQ_LEN}" \
