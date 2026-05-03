@@ -28,12 +28,20 @@ PROJECT_FILES = [
 ]
 
 
+def ignore_local_source(path: Path) -> bool:
+    ignored_dirs = {".git", ".venv", "__pycache__", "data", "runs", "exercise", ".codex"}
+    if any(part in ignored_dirs for part in path.parts):
+        return True
+    if path.is_dir():
+        return False
+    return path.name not in PROJECT_FILES
+
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_sync(frozen=False)
+    .add_local_dir(".", remote_path=str(WORKDIR), ignore=ignore_local_source)
 )
-for project_file in PROJECT_FILES:
-    image = image.add_local_file(project_file, remote_path=str(WORKDIR / project_file))
 
 app = modal.App(APP_NAME)
 GPU_COUNT = 8
