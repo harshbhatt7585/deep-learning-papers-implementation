@@ -55,7 +55,8 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "dropout": 0.1,
     "eval_interval": 200,
     "eval_batches": 20,
-    "core_eval_max_per_task": -1,
+    "core_metric_every": 2000,
+    "core_eval_max_per_task": 500,
     "core_eval_cache_dir": Path("data/core_eval"),
     "log_interval": 10,
     "sample_interval": 200,
@@ -361,7 +362,7 @@ def estimate_core_metrics(
     args: argparse.Namespace,
     runtime: Runtime,
 ) -> dict[str, float]:
-    if args.eval_interval <= 0:
+    if args.core_metric_every <= 0:
         return {}
 
     model.eval()
@@ -645,6 +646,9 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 },
             )
 
+        if args.core_metric_every > 0 and (
+            step_id == args.max_steps or step_id % args.core_metric_every == 0
+        ):
             core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
             latest_eval_metrics = {
                 **(latest_eval_metrics or {}),
