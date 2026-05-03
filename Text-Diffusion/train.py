@@ -70,7 +70,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "core_metric_every": 2000,
     "core_eval_max_per_task": 500,
     "core_eval_cache_dir": Path("data/core_eval"),
-    "log_interval": 10,
+    "log_interval": 1,
     "sample_interval": 2000,
     "save_interval": 1000,
     "sample_prompt": "The ",
