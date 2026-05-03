@@ -42,6 +42,17 @@ from utils import (
 )
 
 
+SAMPLE_PROMPTS = [
+    "The capital of France is",
+    "The chemical symbol of gold is",
+    "If yesterday was Friday, then tomorrow will be",
+    "The opposite of hot is",
+    "The planets of the solar system are:",
+    "My favorite color is",
+    "If 5*x + 3 = 13, then x is",
+]
+
+
 INTERNAL_DEFAULTS: dict[str, Any] = {
     "tokenizer": "nanochat",
     "tokenizer_local_files_only": False,
@@ -60,15 +71,15 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "core_eval_max_per_task": 500,
     "core_eval_cache_dir": Path("data/core_eval"),
     "log_interval": 10,
-    "sample_interval": 200,
+    "sample_interval": 2000,
     "save_interval": 1000,
     "sample_prompt": "The ",
     "sample_length": 128,
     "sample_block_length": 32,
-    "sample_steps": 8,
+    "sample_steps": 32,
     "sample_threshold": 0.5,
-    "sample_temperature": 0.0,
-    "sample_top_k": None,
+    "sample_temperature": 0.6,
+    "sample_top_k": 50,
     "sample_top_p": None,
     "compile_mode": "default",
     "fused_adamw": True,
@@ -138,7 +149,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusionConfig:
-    sample_len = len(tokenizer.encode(args.sample_prompt)) + args.sample_length
+    sample_prompt_len = max(
+        len(tokenizer.encode(prompt))
+        for prompt in [args.sample_prompt, *SAMPLE_PROMPTS]
+    )
+    sample_len = sample_prompt_len + args.sample_length
     max_seq_len = max(args.seq_len, sample_len + args.sample_block_length)
     return TextDiffusionConfig(
         vocab_size=tokenizer.vocab_size,
@@ -393,27 +408,31 @@ def sample_text(
     runtime: Runtime,
 ) -> str:
     source_model = unwrap_model(model)
-    prompt_ids = torch.tensor(
-        tokenizer.encode(args.sample_prompt),
-        dtype=torch.long,
-        device=runtime.device,
-    )
-    with disable_fp8(source_model):
-        output = generate(
-            source_model,
-            prompt_ids,
-            gen_length=args.sample_length,
-            block_length=args.sample_block_length,
-            steps=args.sample_steps,
-            threshold=args.sample_threshold,
-            editing_threshold=None,
-            temperature=args.sample_temperature,
-            top_k=args.sample_top_k,
-            top_p=args.sample_top_p,
-            eos_token_id=tokenizer.eos_token_id,
+    samples = []
+    for prompt in SAMPLE_PROMPTS:
+        prompt_ids = torch.tensor(
+            tokenizer.encode(prompt, add_bos=True),
+            dtype=torch.long,
+            device=runtime.device,
         )
-    sample = tokenizer.decode(output.detach().cpu())
-    log(f"sample: {sample!r}")
+        with disable_fp8(source_model):
+            output = generate(
+                source_model,
+                prompt_ids,
+                gen_length=args.sample_length,
+                block_length=args.sample_block_length,
+                steps=args.sample_steps,
+                threshold=args.sample_threshold,
+                editing_threshold=None,
+                temperature=args.sample_temperature,
+                top_k=args.sample_top_k,
+                top_p=args.sample_top_p,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        samples.append(tokenizer.decode(output.detach().cpu(), skip_special=False))
+
+    sample = "\n".join(samples)
+    log("samples:\n" + sample)
     model.train()
     return sample
 
@@ -441,6 +460,14 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"compile: {args.compile}")
     log(f"fp8: {args.fp8}")
     log(f"eval_interval: {args.eval_interval}")
+    log(
+        "sample: "
+        f"interval={args.sample_interval} "
+        f"steps={args.sample_steps} "
+        f"temperature={args.sample_temperature} "
+        f"top_k={args.sample_top_k} "
+        f"top_p={args.sample_top_p}"
+    )
 
 
 def log_train_metrics(wandb_run, step: int, metrics: dict[str, float]) -> None:
