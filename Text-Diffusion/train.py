@@ -12,6 +12,7 @@ import torch.distributed as dist
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from core_eval import ensure_eval_bundle, evaluate_core
 from model import (
     TextDiffusionConfig,
     TextDiffusionModel,
@@ -52,6 +53,8 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "dropout": 0.1,
     "eval_interval": 200,
     "eval_batches": 20,
+    "core_eval_max_per_task": -1,
+    "core_eval_cache_dir": Path("data/core_eval"),
     "log_interval": 10,
     "sample_interval": 200,
     "save_interval": 1000,
@@ -117,10 +120,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--fp8", action="store_true")
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw")
+    parser.add_argument("--eval-interval", type=int, default=None)
 
     parser.add_argument("--wandb", action="store_true")
 
-    return with_internal_defaults(parser.parse_args())
+    parsed = parser.parse_args()
+    eval_interval = parsed.eval_interval
+    args = with_internal_defaults(parsed)
+    if eval_interval is not None:
+        args.eval_interval = eval_interval
+    return args
 
 
 def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusionConfig:
@@ -343,6 +352,40 @@ def estimate_eval_metrics(
 
 
 @torch.no_grad()
+def estimate_core_metrics(
+    model: torch.nn.Module,
+    tokenizer: Tokenizer,
+    args: argparse.Namespace,
+    runtime: Runtime,
+) -> dict[str, float]:
+    if args.eval_interval <= 0:
+        return {}
+
+    model.eval()
+    source_model = unwrap_model(model)
+    if is_dist():
+        if is_main_process():
+            ensure_eval_bundle(args.core_eval_cache_dir)
+        dist.barrier()
+
+    results = evaluate_core(
+        source_model,
+        tokenizer,
+        runtime.device,
+        cache_dir=args.core_eval_cache_dir,
+        max_per_task=args.core_eval_max_per_task,
+    )
+    model.train()
+    return {
+        "core": float(results["core_metric"]),
+        **{
+            f"core/{label}": float(value)
+            for label, value in results["centered_results"].items()
+        },
+    }
+
+
+@torch.no_grad()
 def sample_text(
     model: torch.nn.Module,
     tokenizer: Tokenizer,
@@ -392,6 +435,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"amp_dtype: {args.amp_dtype}")
     log(f"compile: {args.compile}")
     log(f"fp8: {args.fp8}")
+    log(f"eval_interval: {args.eval_interval}")
 
 
 def log_train_metrics(wandb_run, step: int, metrics: dict[str, float]) -> None:
@@ -593,6 +637,26 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     "train/lr": lr,
                 },
             )
+
+            core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
+            latest_eval_metrics = {
+                **(latest_eval_metrics or {}),
+                **core_metrics,
+            }
+            if core_metrics:
+                log(f"step {step_id:05d} core {core_metrics['core']:.4f}")
+                log_train_metrics(
+                    wandb_run,
+                    step_id,
+                    {
+                        "eval/core": core_metrics["core"],
+                        **{
+                            f"eval/{key}": value
+                            for key, value in core_metrics.items()
+                            if key != "core"
+                        },
+                    },
+                )
 
         if is_main_process() and args.sample_interval > 0 and step_id % args.sample_interval == 0:
             sample = sample_text(model, data.tokenizer, args, runtime)
