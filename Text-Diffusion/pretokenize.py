@@ -23,6 +23,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
     parser.add_argument("--tokenizer-threads", type=int, default=max(1, os.cpu_count() or 1))
     parser.add_argument("--doc-batch-size", type=int, default=2048)
+    parser.add_argument("--tokenizer-only", action="store_true")
+    parser.add_argument("--download-only", action="store_true")
+    parser.add_argument("--tokenizer-train-shards", type=int, default=8)
+    parser.add_argument("--tokenizer-train-chars", type=int, default=2_000_000_000)
+    parser.add_argument("--tokenizer-vocab-size", type=int, default=32_768)
+    parser.add_argument("--tokenizer-doc-cap", type=int, default=10_000)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -35,6 +41,48 @@ def load_or_train_tokenizer(tokenizer_dir: Path, train_text: str) -> NanochatTok
 
     print(f"training tokenizer: {tokenizer_dir}", flush=True)
     return NanochatTokenizer.from_pretrained(tokenizer_dir, train_text=train_text)
+
+
+def train_tokenizer(args: argparse.Namespace) -> None:
+    tokenizer_path = args.nanochat_tokenizer_cache_dir / "tokenizer.json"
+    if tokenizer_path.exists() and not args.overwrite:
+        print(f"using cached tokenizer: {args.nanochat_tokenizer_cache_dir}", flush=True)
+        return
+
+    pieces: list[str] = []
+    remaining_chars = args.tokenizer_train_chars
+    for shard_index in range(args.tokenizer_train_shards):
+        if remaining_chars <= 0:
+            break
+        parquet_path = download_nanochat_shard(shard_index, args.nanochat_cache_dir)
+        print(
+            f"reading tokenizer shard {shard_index + 1}/{args.tokenizer_train_shards}: {parquet_path.name}",
+            flush=True,
+        )
+        text = read_parquet_text(parquet_path, max_chars=remaining_chars)
+        pieces.append(text)
+        remaining_chars -= len(text)
+
+    train_text = "\n".join(pieces)
+    print(
+        f"training tokenizer from {len(train_text):,} chars into {args.nanochat_tokenizer_cache_dir}",
+        flush=True,
+    )
+    tokenizer = NanochatTokenizer.train_from_text(
+        train_text,
+        vocab_size=args.tokenizer_vocab_size,
+        train_chars=args.tokenizer_train_chars,
+        doc_cap=args.tokenizer_doc_cap,
+    )
+    tokenizer.save(args.nanochat_tokenizer_cache_dir)
+
+
+def download_nanochat(args: argparse.Namespace) -> None:
+    for shard_index in range(args.train_shards):
+        path = download_nanochat_shard(shard_index, args.nanochat_cache_dir)
+        print(f"cached train shard {shard_index + 1}/{args.train_shards}: {path.name}", flush=True)
+    val_path = download_nanochat_shard(NANOCHAT_MAX_SHARD, args.nanochat_cache_dir)
+    print(f"cached val shard: {val_path.name}", flush=True)
 
 
 def configure_tokenizer_parallelism(args: argparse.Namespace) -> None:
@@ -232,7 +280,11 @@ def write_metadata(token_dir: Path, metadata: dict[str, Any]) -> None:
 def main() -> None:
     args = parse_args()
     configure_tokenizer_parallelism(args)
-    if args.data is not None:
+    if args.tokenizer_only:
+        train_tokenizer(args)
+    elif args.download_only:
+        download_nanochat(args)
+    elif args.data is not None:
         pretokenize_local_file(args)
     else:
         pretokenize_nanochat(args)

@@ -25,6 +25,20 @@ NANOCHAT_MAX_SHARD = 6542
 Tokenizer = NanochatTokenizer
 
 
+def iter_text_documents(text: str):
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        if end == -1:
+            end = len(text)
+        line = text[start:end]
+        if line.endswith("\r"):
+            line = line[:-1]
+        if line:
+            yield line
+        start = end + 1
+
+
 @dataclass
 class TokenStore:
     shards: list[torch.Tensor]
@@ -36,7 +50,82 @@ class TokenStore:
         return self.total_tokens
 
 
-TokenSource = torch.Tensor | TokenStore
+class StreamingNanochatTokenStore:
+    def __init__(
+        self,
+        *,
+        tokenizer: Tokenizer,
+        cache_dir: Path,
+        train_shards: int,
+        seq_len: int,
+        batch_size: int,
+        runtime: Runtime,
+        tokenizer_batch_size: int,
+    ) -> None:
+        self.tokenizer = tokenizer
+        self.cache_dir = cache_dir
+        self.train_shards = train_shards
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.runtime = runtime
+        self.tokenizer_batch_size = tokenizer_batch_size
+        self.shard_indices = list(range(rank(), train_shards, world_size()))
+        if not self.shard_indices:
+            raise ValueError(f"rank {rank()} has no nanochat shards assigned")
+        self.position = 0
+        self.current_tokens = torch.empty(0, dtype=torch.long)
+        self.current_name = ""
+        self.batch_calls = 0
+        self.batches_per_shard = 1
+        self._load_current_shard()
+
+    def numel(self) -> int:
+        return int(self.current_tokens.numel())
+
+    def _encode_text(self, text: str) -> torch.Tensor:
+        ids = self.tokenizer.encode_documents(
+            iter_text_documents(text),
+            add_bos=True,
+            add_eos=False,
+            batch_size=self.tokenizer_batch_size,
+        )
+        if not ids:
+            ids = self.tokenizer.encode(text, add_eos=True)
+        return torch.tensor(ids, dtype=torch.long)
+
+    def _load_current_shard(self) -> None:
+        attempts = 0
+        while attempts < len(self.shard_indices):
+            shard_index = self.shard_indices[self.position % len(self.shard_indices)]
+            path = download_nanochat_shard(shard_index, self.cache_dir)
+            log(f"streaming train shard rank={rank()} shard={path.name}")
+            text = read_parquet_text(path, max_chars=None)
+            tokens = self._encode_text(text)
+            self.position += 1
+            attempts += 1
+            if tokens.numel() > self.seq_len:
+                self.current_tokens = tokens
+                self.current_name = path.name
+                self.batch_calls = 0
+                self.batches_per_shard = max(1, tokens.numel() // max(1, self.batch_size * self.seq_len))
+                log(
+                    f"streamed {path.name}: {tokens.numel():,} tokens "
+                    f"batches_per_shard={self.batches_per_shard}"
+                )
+                return
+            log(f"skipping streamed shard shorter than seq_len: {path.name}")
+        raise ValueError("No streamed nanochat shard is long enough for --seq-len.")
+
+    def get_batch(self, *, batch_size: int, seq_len: int, runtime: Runtime) -> torch.Tensor:
+        if self.batch_calls >= self.batches_per_shard:
+            self._load_current_shard()
+        self.batch_calls += 1
+        starts = torch.randint(0, self.current_tokens.numel() - seq_len + 1, (batch_size,))
+        batch = torch.stack([self.current_tokens[start:start + seq_len] for start in starts])
+        return batch.to(runtime.device, non_blocking=runtime.non_blocking)
+
+
+TokenSource = torch.Tensor | TokenStore | StreamingNanochatTokenStore
 
 
 @dataclass
@@ -203,6 +292,9 @@ def get_batch(
     seq_len: int,
     runtime: Runtime,
 ) -> torch.Tensor:
+    if isinstance(data, StreamingNanochatTokenStore):
+        return data.get_batch(batch_size=batch_size, seq_len=seq_len, runtime=runtime)
+
     if isinstance(data, TokenStore):
         shard_ids = torch.multinomial(data.sample_weights, batch_size, replacement=True)
         rows = []
@@ -341,6 +433,17 @@ def build_tokenizer(args: argparse.Namespace, train_text: str, val_text: str | N
     raise ValueError(f"unsupported tokenizer {args.tokenizer!r}; only nanochat is supported")
 
 
+def configure_tokenizer_parallelism(args: argparse.Namespace) -> None:
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+    os.environ.setdefault("RAYON_NUM_THREADS", str(args.nanochat_tokenizer_threads))
+    log(
+        "tokenizer parallelism: "
+        f"TOKENIZERS_PARALLELISM={os.environ['TOKENIZERS_PARALLELISM']} "
+        f"RAYON_NUM_THREADS={os.environ['RAYON_NUM_THREADS']} "
+        f"batch_size={args.nanochat_tokenizer_batch_size}"
+    )
+
+
 def load_token_array(path: Path) -> torch.Tensor:
     array = np.load(path, mmap_mode="r+")
     return torch.from_numpy(array)
@@ -408,7 +511,58 @@ def load_pretokenized_data(args: argparse.Namespace) -> TokenData:
     )
 
 
+def encode_text_documents(tokenizer: Tokenizer, text: str, *, batch_size: int) -> torch.Tensor:
+    ids = tokenizer.encode_documents(
+        iter_text_documents(text),
+        add_bos=True,
+        add_eos=False,
+        batch_size=batch_size,
+    )
+    if not ids:
+        ids = tokenizer.encode(text, add_eos=True)
+    return torch.tensor(ids, dtype=torch.long)
+
+
+def load_streaming_nanochat_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
+    configure_tokenizer_parallelism(args)
+    tokenizer = NanochatTokenizer.load(args.nanochat_tokenizer_cache_dir)
+    train_tokens = StreamingNanochatTokenStore(
+        tokenizer=tokenizer,
+        cache_dir=args.nanochat_cache_dir,
+        train_shards=args.nanochat_train_shards,
+        seq_len=args.seq_len,
+        batch_size=args.batch_size,
+        runtime=runtime,
+        tokenizer_batch_size=args.nanochat_tokenizer_batch_size,
+    )
+
+    val_path = download_nanochat_shard(NANOCHAT_MAX_SHARD, args.nanochat_cache_dir)
+    log(f"reading streaming val shard: {val_path.name}")
+    val_text = read_parquet_text(val_path, max_chars=args.max_val_chars)
+    val_tokens = encode_text_documents(
+        tokenizer,
+        val_text,
+        batch_size=args.nanochat_tokenizer_batch_size,
+    )
+    if val_tokens.numel() <= args.seq_len:
+        raise ValueError("Streaming validation data is too small for --seq-len.")
+    if runtime.non_blocking:
+        val_tokens = val_tokens.pin_memory()
+
+    return TokenData(
+        tokenizer=tokenizer,
+        train_text="",
+        val_text=val_text,
+        train_tokens=train_tokens,
+        val_tokens=val_tokens,
+        train_chars=None,
+        val_chars=len(val_text),
+    )
+
+
 def tokenize_data(args: argparse.Namespace, runtime: Runtime) -> TokenData:
+    if getattr(args, "stream_nanochat", False):
+        return load_streaming_nanochat_data(args, runtime)
     if args.token_shards_dir is not None:
         return load_pretokenized_data(args)
 

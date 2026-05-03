@@ -41,8 +41,8 @@ GPU_COUNT = 8
 
 @app.function(
     image=image,
-    cpu=32,
-    memory=131072,
+    cpu=64,
+    memory=262144,
     timeout=24 * 60 * 60,
     volumes={
         "/data": data_volume,
@@ -54,8 +54,11 @@ def pretokenize_nanochat(
     max_train_chars: int = 17_000_000_000,
     max_val_chars: int = 2_000_000,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
-    tokenizer_threads: int = 32,
-    doc_batch_size: int = 2048,
+    tokenizer_threads: int = 64,
+    doc_batch_size: int = 4096,
+    tokenizer_train_shards: int = 8,
+    tokenizer_only: bool = False,
+    download_only: bool = False,
     overwrite_tokens: bool = False,
 ) -> None:
     command = [
@@ -77,7 +80,13 @@ def pretokenize_nanochat(
         str(tokenizer_threads),
         "--doc-batch-size",
         str(doc_batch_size),
+        "--tokenizer-train-shards",
+        str(tokenizer_train_shards),
     ]
+    if tokenizer_only:
+        command.append("--tokenizer-only")
+    if download_only:
+        command.append("--download-only")
     if overwrite_tokens:
         command.append("--overwrite")
 
@@ -114,6 +123,7 @@ def train_h100_8gpu(
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     token_shards_dir: str = "/data/nanochat_tokens_32k",
+    stream_nanochat: bool = False,
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
@@ -146,7 +156,19 @@ def train_h100_8gpu(
         "--out-dir",
         out_dir,
     ]
-    if token_shards_dir:
+    if stream_nanochat:
+        command.extend(
+            [
+                "--stream-nanochat",
+                "--nanochat-cache-dir",
+                "/data/nanochat_climbmix",
+                "--nanochat-train-shards",
+                str(train_shards),
+                "--max-val-chars",
+                str(max_val_chars),
+            ]
+        )
+    elif token_shards_dir:
         command.extend(["--token-shards-dir", token_shards_dir])
     else:
         command.extend(
@@ -228,13 +250,17 @@ def main(
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     token_shards_dir: str = "/data/nanochat_tokens_32k",
-    tokenizer_threads: int = 32,
-    doc_batch_size: int = 2048,
+    tokenizer_threads: int = 64,
+    doc_batch_size: int = 4096,
+    tokenizer_train_shards: int = 8,
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
     pretokenize: bool = False,
+    tokenizer_only: bool = False,
+    download_only: bool = False,
     overwrite_tokens: bool = False,
+    stream_nanochat: bool = False,
     core_eval: bool = False,
     checkpoint_dir: str | None = None,
     eval_cache_dir: str = "/data/core_eval",
@@ -248,6 +274,9 @@ def main(
             token_shards_dir=token_shards_dir,
             tokenizer_threads=tokenizer_threads,
             doc_batch_size=doc_batch_size,
+            tokenizer_train_shards=tokenizer_train_shards,
+            tokenizer_only=tokenizer_only,
+            download_only=download_only,
             overwrite_tokens=overwrite_tokens,
         )
         return
@@ -274,6 +303,7 @@ def main(
         n_layers=n_layers,
         out_dir=out_dir,
         token_shards_dir=token_shards_dir,
+        stream_nanochat=stream_nanochat,
         compile=compile,
         fp8=fp8,
         wandb=wandb,

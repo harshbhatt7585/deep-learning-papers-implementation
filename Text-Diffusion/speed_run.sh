@@ -7,8 +7,10 @@ TRAIN_SHARDS="${TRAIN_SHARDS:-170}"
 MAX_TRAIN_CHARS="${MAX_TRAIN_CHARS:-17000000000}"
 MAX_VAL_CHARS="${MAX_VAL_CHARS:-2000000}"
 TOKEN_SHARDS_DIR="${TOKEN_SHARDS_DIR:-/data/nanochat_tokens_32k}"
-TOKENIZER_THREADS="${TOKENIZER_THREADS:-32}"
-DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-2048}"
+TOKENIZER_THREADS="${TOKENIZER_THREADS:-64}"
+DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-4096}"
+TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
+STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
 
 MAX_STEPS="${MAX_STEPS:-100000}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
@@ -55,10 +57,49 @@ pretokenize() {
     --token-shards-dir "${TOKEN_SHARDS_DIR}" \
     --tokenizer-threads "${TOKENIZER_THREADS}" \
     --doc-batch-size "${DOC_BATCH_SIZE}" \
+    --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}" \
     "${overwrite_flags[@]}"
 }
 
+train_tokenizer() {
+  local overwrite_flags=()
+  if [[ "${OVERWRITE_TOKENS}" == "1" ]]; then
+    overwrite_flags+=(--overwrite-tokens)
+  fi
+
+  modal run modal_train.py \
+    --pretokenize \
+    --tokenizer-only \
+    --train-shards "${TOKENIZER_TRAIN_SHARDS}" \
+    --max-train-chars "${MAX_TRAIN_CHARS}" \
+    --max-val-chars "${MAX_VAL_CHARS}" \
+    --token-shards-dir "${TOKEN_SHARDS_DIR}" \
+    --tokenizer-threads "${TOKENIZER_THREADS}" \
+    --doc-batch-size "${DOC_BATCH_SIZE}" \
+    --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}" \
+    "${overwrite_flags[@]}"
+}
+
+download_data() {
+  modal run modal_train.py \
+    --pretokenize \
+    --download-only \
+    --train-shards "${TRAIN_SHARDS}" \
+    --max-train-chars "${MAX_TRAIN_CHARS}" \
+    --max-val-chars "${MAX_VAL_CHARS}" \
+    --token-shards-dir "${TOKEN_SHARDS_DIR}" \
+    --tokenizer-threads "${TOKENIZER_THREADS}" \
+    --doc-batch-size "${DOC_BATCH_SIZE}"
+}
+
 train() {
+  local data_flags=()
+  if [[ "${STREAM_NANOCHAT}" == "1" ]]; then
+    data_flags+=(--stream-nanochat --train-shards "${TRAIN_SHARDS}" --max-val-chars "${MAX_VAL_CHARS}")
+  else
+    data_flags+=(--token-shards-dir "${TOKEN_SHARDS_DIR}")
+  fi
+
   modal run modal_train.py \
     --max-steps "${MAX_STEPS}" \
     --batch-size "${BATCH_SIZE}" \
@@ -68,8 +109,8 @@ train() {
     --d-model "${D_MODEL}" \
     --n-heads "${N_HEADS}" \
     --n-layers "${N_LAYERS}" \
-    --token-shards-dir "${TOKEN_SHARDS_DIR}" \
     --out-dir "${OUT_DIR}" \
+    "${data_flags[@]}" \
     "${modal_flags[@]}"
 }
 
@@ -82,6 +123,12 @@ core_eval() {
 }
 
 case "${MODE}" in
+  tokenizer|tok)
+    train_tokenizer
+    ;;
+  download|download-data)
+    download_data
+    ;;
   pretokenize|prep|data)
     pretokenize
     ;;
@@ -92,12 +139,13 @@ case "${MODE}" in
     core_eval
     ;;
   all)
-    pretokenize
+    train_tokenizer
+    download_data
     train
     core_eval
     ;;
   *)
-    echo "usage: $0 [pretokenize|train|core-eval|all]" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|core-eval|all]" >&2
     exit 2
     ;;
 esac

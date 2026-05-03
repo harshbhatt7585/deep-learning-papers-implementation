@@ -47,6 +47,8 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "nanochat_tokenizer_vocab_size": 32_768,
     "nanochat_tokenizer_train_chars": 2_000_000_000,
     "nanochat_tokenizer_doc_cap": 10_000,
+    "nanochat_tokenizer_threads": 4,
+    "nanochat_tokenizer_batch_size": 128,
     "mask_prob": 0.30,
     "weight_decay": 0.1,
     "warmup_steps": 50,
@@ -97,6 +99,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--data", type=Path, help="Plain text dataset path.")
     parser.add_argument("--nanochat", action="store_true", help="Use nanochat's ClimbMix parquet dataset.")
+    parser.add_argument("--stream-nanochat", action="store_true", help="Stream/tokenize nanochat parquet shards during training.")
     parser.add_argument("--nanochat-cache-dir", type=Path, default=Path("data/nanochat_climbmix"))
     parser.add_argument("--nanochat-train-shards", type=int, default=1)
     parser.add_argument("--max-train-chars", type=int, default=5_000_000)
@@ -422,7 +425,11 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     val_chars = data.val_chars if data.val_chars is not None else len(data.train_text) - int(0.95 * len(data.train_text))
     log(f"device: {runtime.device}")
     log(f"world_size: {world_size()}")
-    data_source = args.token_shards_dir or ("nanochat/climbmix-400b-shuffle" if args.nanochat else args.data)
+    data_source = (
+        "nanochat/climbmix-400b-shuffle streaming"
+        if args.stream_nanochat
+        else args.token_shards_dir or ("nanochat/climbmix-400b-shuffle" if args.nanochat else args.data)
+    )
     log(f"data_source: {data_source}")
     log(f"tokenizer: {args.tokenizer}")
     log(f"train chars: {train_chars:,}")
