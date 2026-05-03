@@ -29,8 +29,6 @@ FP8="${FP8:-1}"
 COMPILE="${COMPILE:-1}"
 WANDB="${WANDB:-1}"
 OVERWRITE_TOKENS="${OVERWRITE_TOKENS:-0}"
-CORE_MAX_PER_TASK="${CORE_MAX_PER_TASK:--1}"
-CORE_EVAL_CACHE_DIR="${CORE_EVAL_CACHE_DIR:-/data/core_eval}"
 
 modal_flags=()
 if [[ "${COMPILE}" == "1" ]]; then
@@ -114,14 +112,6 @@ train() {
     "${modal_flags[@]}"
 }
 
-core_eval() {
-  modal run modal_train.py \
-    --core-eval \
-    --checkpoint-dir "${OUT_DIR}" \
-    --eval-cache-dir "${CORE_EVAL_CACHE_DIR}" \
-    --max-per-task "${CORE_MAX_PER_TASK}"
-}
-
 case "${MODE}" in
   tokenizer|tok)
     train_tokenizer
@@ -135,17 +125,13 @@ case "${MODE}" in
   train)
     train
     ;;
-  core|core-eval|eval)
-    core_eval
-    ;;
   all)
     train_tokenizer
     download_data
     train
-    core_eval
     ;;
   *)
-    echo "usage: $0 [tokenizer|download|pretokenize|train|core-eval|all]" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|all]" >&2
     exit 2
     ;;
 esac
