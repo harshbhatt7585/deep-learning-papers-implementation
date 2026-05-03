@@ -1,6 +1,7 @@
 import os
 from sys import meta_path
-import reimport glob 
+import re 
+import glob 
 import json
 import logging
 import torch
@@ -9,6 +10,7 @@ from nanochat.common import get_base_dir
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.tokenizer import get_tokenizer
 from nanochat.common import setup_default_logging
+
 
 setup_default_logging()
 logger = logging.getLogger(__name__)
@@ -70,3 +72,37 @@ def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
         meta_data = json.load(f)
     return model_data, optimizer_data, meta_data
         
+    
+def build_model(checkpoint_dir, step, device, phase):
+    assert phase in ["train", "eval"], f"Invalid phase: {phase}"
+    model_data, otpimizer_data, meta_data = load_checkpoint(checkpoint_dir, step, device, load_optimizer=False)
+    if device.type in {"cpu", "mps"}:
+        model_data = {
+            k: v.float() if v.dtype == torch.bfloat16 else v
+            for k, v in model_data.items()
+        }
+    
+    model_data = {k.remove_prefix("_orig_mod"): v for k,v in model_data.items()}
+    model_config_kwargs = model_data["model_config"]
+    _patch_missing_config_keys(model_config_kwargs)
+    log0(f"Building model with config: {model_config_kwargs}")
+    model_config = GPTConfig(**model_config_kwargs)
+    _patch_missing_keys(model_data, model_config)
+    with torch.device("meta"):
+        model = GPT(model_config)
+    
+    model.to_empty(device=device)
+    model.init_weights()
+    model.load_state_dict(model_data, strict=True, assign=True)
+
+    if phase == "eval":
+        model.eval()
+    else:
+        model.train()
+
+    tokenizer = get_tokenizer()
+    
+    assert tokenizer.get_vocab_size() == model_config_kwargs["vocab_size"], f"Tokenzer vocab size {tokenizer.get_vocab_size()} does not match model config vocab size {model_config_kwargs["vocab_size"]}"
+    return model, tokenizer, meta_data
+
+
