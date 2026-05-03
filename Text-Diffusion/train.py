@@ -208,6 +208,7 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
     model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
+        log("compiling model with torch.compile(dynamic=False)")
         model = torch.compile(model, mode=args.compile_mode, dynamic=False)
     if is_dist() and args.optimizer == "muon":
         for param in model.parameters():
