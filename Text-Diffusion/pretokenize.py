@@ -46,7 +46,7 @@ def load_or_train_tokenizer(tokenizer_dir: Path, train_text: str) -> NanochatTok
 def train_tokenizer(args: argparse.Namespace) -> None:
     tokenizer_path = args.nanochat_tokenizer_cache_dir / "tokenizer.json"
     if tokenizer_path.exists() and not args.overwrite:
-        print(f"using cached tokenizer: {args.nanochat_tokenizer_cache_dir}", flush=True)
+        print(f"using cached tokenizer: {tokenizer_path}", flush=True)
         return
 
     pieces: list[str] = []
@@ -75,6 +75,8 @@ def train_tokenizer(args: argparse.Namespace) -> None:
         doc_cap=args.tokenizer_doc_cap,
     )
     tokenizer.save(args.nanochat_tokenizer_cache_dir)
+    print(f"saved tokenizer: {tokenizer_path}", flush=True)
+    print("tokenizer training completed", flush=True)
 
 
 def download_nanochat(args: argparse.Namespace) -> None:
