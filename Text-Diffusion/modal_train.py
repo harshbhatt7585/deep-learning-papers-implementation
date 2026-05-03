@@ -19,6 +19,7 @@ PROJECT_FILES = [
     "core_eval.py",
     "eval_core.py",
     "model.py",
+    "fp8.py",
     "nanochat_optim.py",
     "pretokenize.py",
     "sample.py",

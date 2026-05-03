@@ -13,7 +13,6 @@ dependencies = [
     "safetensors>=0.4",
     "setuptools>=70",
     "tokenizers>=0.19",
-    "torchao==0.12.0",
     "torch>=2.5",
     "transformers>=4.44",
     "wandb>=0.17",

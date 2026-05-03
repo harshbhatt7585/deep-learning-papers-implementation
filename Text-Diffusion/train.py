@@ -20,6 +20,7 @@ from model import (
     make_masked_inputs,
 )
 from nanochat_optim import DistMuonAdamW, MuonAdamW
+from fp8 import disable_fp8
 from utils import (
     Runtime,
     TokenData,
@@ -169,11 +170,7 @@ def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime
     if args.amp_dtype != "bfloat16":
         raise ValueError("--fp8 expects --amp-dtype bfloat16.")
 
-    try:
-        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
-        from torchao.float8.float8_linear import Float8Linear
-    except ImportError as exc:
-        raise ImportError("Install torchao or remove --fp8.") from exc
+    from fp8 import Float8Linear, Float8LinearConfig, convert_to_float8_training
 
     candidates = [
         name
@@ -195,11 +192,8 @@ def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime
 def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: Runtime) -> torch.nn.Module:
     model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
     model = apply_fp8_training(model, args, runtime)
-    if args.fp8 and args.compile:
-        log("fp8: disabling torch.compile; TorchAO FP8 compile is not stable on the current Torch stack")
-        args.compile = False
     if args.compile:
-        model = torch.compile(model, mode=args.compile_mode)
+        model = torch.compile(model, mode=args.compile_mode, dynamic=False)
     if is_dist() and args.optimizer == "muon":
         for param in model.parameters():
             dist.broadcast(param.data, src=0)
@@ -325,7 +319,8 @@ def estimate_eval_metrics(
         )
         attention_mask = noised != source_model.config.pad_token_id
         with autocast_context(runtime.device, args.amp_dtype):
-            logits = model(noised, attention_mask=attention_mask)
+            with disable_fp8(source_model):
+                logits = source_model(noised, attention_mask=attention_mask)
             loss_sum = masked_cross_entropy(logits, labels, reduction="sum")
 
         total_loss += float(loss_sum.item())
@@ -372,13 +367,14 @@ def estimate_core_metrics(
             ensure_eval_bundle(args.core_eval_cache_dir)
         dist.barrier()
 
-    results = evaluate_core(
-        source_model,
-        tokenizer,
-        runtime.device,
-        cache_dir=args.core_eval_cache_dir,
-        max_per_task=args.core_eval_max_per_task,
-    )
+    with disable_fp8(source_model):
+        results = evaluate_core(
+            source_model,
+            tokenizer,
+            runtime.device,
+            cache_dir=args.core_eval_cache_dir,
+            max_per_task=args.core_eval_max_per_task,
+        )
     model.train()
     return {
         "core": float(results["core_metric"]),
@@ -402,19 +398,20 @@ def sample_text(
         dtype=torch.long,
         device=runtime.device,
     )
-    output = generate(
-        source_model,
-        prompt_ids,
-        gen_length=args.sample_length,
-        block_length=args.sample_block_length,
-        steps=args.sample_steps,
-        threshold=args.sample_threshold,
-        editing_threshold=None,
-        temperature=args.sample_temperature,
-        top_k=args.sample_top_k,
-        top_p=args.sample_top_p,
-        eos_token_id=tokenizer.eos_token_id,
-    )
+    with disable_fp8(source_model):
+        output = generate(
+            source_model,
+            prompt_ids,
+            gen_length=args.sample_length,
+            block_length=args.sample_block_length,
+            steps=args.sample_steps,
+            threshold=args.sample_threshold,
+            editing_threshold=None,
+            temperature=args.sample_temperature,
+            top_k=args.sample_top_k,
+            top_p=args.sample_top_p,
+            eos_token_id=tokenizer.eos_token_id,
+        )
     sample = tokenizer.decode(output.detach().cpu())
     log(f"sample: {sample!r}")
     model.train()
@@ -646,9 +643,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 },
             )
 
-        if args.core_metric_every > 0 and (
-            step_id == args.max_steps or step_id % args.core_metric_every == 0
-        ):
+        if args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
             core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
             latest_eval_metrics = {
                 **(latest_eval_metrics or {}),

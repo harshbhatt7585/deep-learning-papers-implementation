@@ -25,7 +25,7 @@ N_LAYERS="${N_LAYERS:-12}"
 RUN_NAME="${RUN_NAME:-text-diffusion-adamw-170shards}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 
-FP8="${FP8:-0}"
+FP8="${FP8:-1}"
 COMPILE="${COMPILE:-1}"
 WANDB="${WANDB:-1}"
 OVERWRITE_TOKENS="${OVERWRITE_TOKENS:-0}"
