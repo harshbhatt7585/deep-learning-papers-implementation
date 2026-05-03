@@ -18,7 +18,7 @@ from model import (
     generate,
     make_masked_inputs,
 )
-from nanochat_optim import NanochatMuonAdamW
+from nanochat_optim import DistMuonAdamW, MuonAdamW
 from utils import (
     Runtime,
     TokenData,
@@ -187,6 +187,13 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
         args.compile = False
     if args.compile:
         model = torch.compile(model, mode=args.compile_mode)
+    if is_dist() and args.optimizer == "muon":
+        for param in model.parameters():
+            dist.broadcast(param.data, src=0)
+        for buffer in model.buffers():
+            dist.broadcast(buffer.data, src=0)
+        log("distributed model: using replicated model with DistMuonAdamW gradient sync")
+        return model
     if is_dist():
         ddp_kwargs = {"device_ids": [runtime.local_rank]} if runtime.device.type == "cuda" else {}
         model = DDP(model, **ddp_kwargs)
@@ -251,14 +258,15 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
                 }
             )
 
+        optimizer_cls = DistMuonAdamW if is_dist() else MuonAdamW
         log(
-            "optimizer: nanochat-muon "
+            f"optimizer: {optimizer_cls.__name__} "
             f"matrix_params={sum(param.numel() for param in matrix_params):,} "
             f"lm_head_params={sum(param.numel() for param in lm_head_params):,} "
             f"embedding_params={sum(param.numel() for param in embedding_params):,} "
             f"scalar_params={sum(param.numel() for param in scalar_params):,}"
         )
-        return NanochatMuonAdamW(param_groups)
+        return optimizer_cls(param_groups)
 
     kwargs: dict[str, Any] = {
         "lr": args.lr,
