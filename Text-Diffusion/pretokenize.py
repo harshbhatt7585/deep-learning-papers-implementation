@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-shards", type=int, default=170)
     parser.add_argument("--max-train-chars", type=int, default=None)
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
+    parser.add_argument("--tokenizer-threads", type=int, default=max(1, os.cpu_count() or 1))
+    parser.add_argument("--doc-batch-size", type=int, default=2048)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -32,6 +35,44 @@ def load_or_train_tokenizer(tokenizer_dir: Path, train_text: str) -> NanochatTok
 
     print(f"training tokenizer: {tokenizer_dir}", flush=True)
     return NanochatTokenizer.from_pretrained(tokenizer_dir, train_text=train_text)
+
+
+def configure_tokenizer_parallelism(args: argparse.Namespace) -> None:
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+    os.environ.setdefault("RAYON_NUM_THREADS", str(args.tokenizer_threads))
+    print(
+        "tokenizer parallelism: "
+        f"TOKENIZERS_PARALLELISM={os.environ['TOKENIZERS_PARALLELISM']} "
+        f"RAYON_NUM_THREADS={os.environ['RAYON_NUM_THREADS']} "
+        f"doc_batch_size={args.doc_batch_size}",
+        flush=True,
+    )
+
+
+def text_documents(text: str):
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        if end == -1:
+            end = len(text)
+        line = text[start:end]
+        if line.endswith("\r"):
+            line = line[:-1]
+        if line:
+            yield line
+        start = end + 1
+
+
+def encode_text(tokenizer: NanochatTokenizer, text: str, args: argparse.Namespace) -> list[int]:
+    ids = tokenizer.encode_documents(
+        text_documents(text),
+        add_bos=True,
+        add_eos=False,
+        batch_size=args.doc_batch_size,
+    )
+    if ids:
+        return ids
+    return tokenizer.encode(text, add_eos=True)
 
 
 def token_dtype(ids: list[int]) -> np.dtype:
@@ -62,7 +103,7 @@ def pretokenize_local_file(args: argparse.Namespace) -> None:
     if args.max_train_chars is not None:
         text = text[: args.max_train_chars]
     tokenizer = load_or_train_tokenizer(args.nanochat_tokenizer_cache_dir, text)
-    ids = tokenizer.encode(text, add_eos=True)
+    ids = encode_text(tokenizer, text, args)
     split = int(0.95 * len(ids))
 
     train_entry = write_tokens(
@@ -85,6 +126,9 @@ def pretokenize_local_file(args: argparse.Namespace) -> None:
         "val_tokens": val_entry["tokens"],
         "train_files": [train_entry],
         "val_file": val_entry,
+        "document_bos": True,
+        "tokenizer_threads": args.tokenizer_threads,
+        "doc_batch_size": args.doc_batch_size,
     }
     write_metadata(args.token_shards_dir, metadata)
 
@@ -128,7 +172,8 @@ def pretokenize_nanochat(args: argparse.Namespace) -> None:
         text = read_parquet_text(parquet_path, max_chars=remaining_chars)
         if tokenizer is None:
             tokenizer = load_or_train_tokenizer(args.nanochat_tokenizer_cache_dir, text)
-        ids = tokenizer.encode(text, add_eos=True)
+        print(f"tokenizing train shard {shard_index + 1}/{args.train_shards}", flush=True)
+        ids = encode_text(tokenizer, text, args)
         entry = write_tokens(out_path, ids, overwrite=args.overwrite)
         entry["chars"] = len(text)
         train_entries.append(entry)
@@ -151,7 +196,8 @@ def pretokenize_nanochat(args: argparse.Namespace) -> None:
         print(f"reading val shard: {parquet_path.name}", flush=True)
         val_text = read_parquet_text(parquet_path, max_chars=args.max_val_chars)
         val_chars = len(val_text)
-        val_ids = tokenizer.encode(val_text, add_eos=True)
+        print("tokenizing val shard", flush=True)
+        val_ids = encode_text(tokenizer, val_text, args)
         val_entry = write_tokens(val_path, val_ids, overwrite=args.overwrite)
         val_entry["chars"] = val_chars
 
@@ -168,6 +214,9 @@ def pretokenize_nanochat(args: argparse.Namespace) -> None:
         "val_tokens": val_entry["tokens"],
         "train_files": train_entries,
         "val_file": val_entry,
+        "document_bos": True,
+        "tokenizer_threads": args.tokenizer_threads,
+        "doc_batch_size": args.doc_batch_size,
     }
     write_metadata(args.token_shards_dir, metadata)
 
@@ -182,6 +231,7 @@ def write_metadata(token_dir: Path, metadata: dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
+    configure_tokenizer_parallelism(args)
     if args.data is not None:
         pretokenize_local_file(args)
     else:

@@ -32,8 +32,8 @@ GPU_COUNT = 8
 
 @app.function(
     image=image,
-    cpu=16,
-    memory=65536,
+    cpu=32,
+    memory=131072,
     timeout=24 * 60 * 60,
     volumes={
         "/data": data_volume,
@@ -45,6 +45,8 @@ def pretokenize_nanochat(
     max_train_chars: int = 17_000_000_000,
     max_val_chars: int = 2_000_000,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
+    tokenizer_threads: int = 32,
+    doc_batch_size: int = 2048,
     overwrite_tokens: bool = False,
 ) -> None:
     command = [
@@ -62,6 +64,10 @@ def pretokenize_nanochat(
         str(max_train_chars),
         "--max-val-chars",
         str(max_val_chars),
+        "--tokenizer-threads",
+        str(tokenizer_threads),
+        "--doc-batch-size",
+        str(doc_batch_size),
     ]
     if overwrite_tokens:
         command.append("--overwrite")
@@ -213,6 +219,8 @@ def main(
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     token_shards_dir: str = "/data/nanochat_tokens_32k",
+    tokenizer_threads: int = 32,
+    doc_batch_size: int = 2048,
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
@@ -229,6 +237,8 @@ def main(
             max_train_chars=max_train_chars,
             max_val_chars=max_val_chars,
             token_shards_dir=token_shards_dir,
+            tokenizer_threads=tokenizer_threads,
+            doc_batch_size=doc_batch_size,
             overwrite_tokens=overwrite_tokens,
         )
         return

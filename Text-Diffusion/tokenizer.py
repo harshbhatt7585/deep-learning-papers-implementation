@@ -147,6 +147,38 @@ class NanochatTokenizer:
             ids.append(self.eos_token_id)
         return ids
 
+    def encode_documents(
+        self,
+        documents: Iterable[str],
+        *,
+        add_bos: bool = True,
+        add_eos: bool = False,
+        batch_size: int = 1024,
+    ) -> list[int]:
+        ids: list[int] = []
+        batch: list[str] = []
+
+        def flush() -> None:
+            if not batch:
+                return
+            encodings = self.tokenizer.encode_batch(batch, add_special_tokens=False)
+            for encoding in encodings:
+                if add_bos:
+                    ids.append(self.bos_token_id)
+                ids.extend(encoding.ids)
+                if add_eos:
+                    ids.append(self.eos_token_id)
+            batch.clear()
+
+        for document in documents:
+            if not document:
+                continue
+            batch.append(document)
+            if len(batch) >= batch_size:
+                flush()
+        flush()
+        return ids
+
     def decode(self, ids: Iterable[int], *, skip_special: bool = True) -> str:
         return self.tokenizer.decode(list(ids), skip_special_tokens=skip_special)
 

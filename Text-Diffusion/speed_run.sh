@@ -7,6 +7,8 @@ TRAIN_SHARDS="${TRAIN_SHARDS:-170}"
 MAX_TRAIN_CHARS="${MAX_TRAIN_CHARS:-17000000000}"
 MAX_VAL_CHARS="${MAX_VAL_CHARS:-2000000}"
 TOKEN_SHARDS_DIR="${TOKEN_SHARDS_DIR:-/data/nanochat_tokens_32k}"
+TOKENIZER_THREADS="${TOKENIZER_THREADS:-32}"
+DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-2048}"
 
 MAX_STEPS="${MAX_STEPS:-100000}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
@@ -51,6 +53,8 @@ pretokenize() {
     --max-train-chars "${MAX_TRAIN_CHARS}" \
     --max-val-chars "${MAX_VAL_CHARS}" \
     --token-shards-dir "${TOKEN_SHARDS_DIR}" \
+    --tokenizer-threads "${TOKENIZER_THREADS}" \
+    --doc-batch-size "${DOC_BATCH_SIZE}" \
     "${overwrite_flags[@]}"
 }
 
