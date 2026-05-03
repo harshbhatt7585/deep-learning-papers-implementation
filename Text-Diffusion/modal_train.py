@@ -30,7 +30,16 @@ PROJECT_FILES = [
 
 
 def ignore_local_source(path: Path) -> bool:
-    ignored_dirs = {".git", ".venv", "__pycache__", "data", "runs", "exercise", ".codex"}
+    ignored_dirs = {
+        ".git",
+        ".venv",
+        "__pycache__",
+        "data",
+        "runs",
+        "exercise",
+        ".codex",
+        "nanochat",
+    }
     if any(part in ignored_dirs for part in path.parts):
         return True
     if path.is_dir():
