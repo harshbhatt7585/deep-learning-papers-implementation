@@ -125,3 +125,11 @@ def find_largest_model(checkpoints_dir):
     model_tags.sort(key=lambda x: os.path.getmtime(os.path.join(checkpoints_dir, x)), reverse=True)
     return model_tags[0]
     
+
+def find_last_step(checkpoint_dir):
+    # Look into checkpoint_dir and find model_<step>.pt with the highest step
+    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "model_*.pt"))
+    if not checkpoint_files:
+        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+    last_step = int(max(os.path.basename(f).split("_")[-1].split(".")[0] for f in checkpoint_files))
+    return last_step
