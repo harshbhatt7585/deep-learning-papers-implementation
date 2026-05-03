@@ -5,6 +5,7 @@ import glob
 import json
 import logging
 import torch
+from torch.utils import checkpoint
 
 from nanochat.common import get_base_dir
 from nanochat.gpt import GPT, GPTConfig
@@ -133,3 +134,33 @@ def find_last_step(checkpoint_dir):
         raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
     last_step = int(max(os.path.basename(f).split("_")[-1].split(".")[0] for f in checkpoint_files))
     return last_step
+
+
+
+def load_model_from_dir(checkpoints_dir, device, phase, model_tag=None, step=None):
+    if model_tag is None:
+        model_tag = find_largest_model(checkpoints_dir)
+        log0(f"No model tag provided, guessing model tag: {model_tag}")
+    
+    checkpoint_dir = os.path.join(checkpoints_dir, model_tag)
+    if step is None:
+        step = find_last_step(checkpoint_dir)
+    
+    assert step is not None, f"No checkpoints found in {checkpoint_dir}"
+
+    log0(f"Loading model from {checkpoint_dir} with step {step}")
+    model, tokenizer, meta_data = build_model(checkpoint_dir, step, device, phase)
+    return model, tokenizer, meta_data
+
+
+
+def load_model(source, *args, **kwargs):
+    model_dir = {
+        "base": "base_checkpoints",
+        "sft": "chatsft_checkpoints",
+        "rl": "chatrl_checkpoints"
+    }[source]
+
+    base_dir = get_base_dir()
+    checkpoints_dir = os.path.join(base_dir, model_dir)
+    return load_model_from_dir(checkpoints_dir, *args, **kwargs)
