@@ -602,6 +602,9 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     last_log_time = time.time()
     latest_eval_metrics: dict[str, float] | None = None
     wandb_sample_table = create_wandb_sample_table(wandb_run)
+    log("starting training loop")
+    if args.compile:
+        log("first compiled step can take several minutes")
 
     for step in range(args.max_steps):
         step_id = step + 1
