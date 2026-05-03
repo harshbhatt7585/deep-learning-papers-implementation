@@ -15,16 +15,25 @@ data_volume = modal.Volume.from_name("text-diffusion-data", create_if_missing=Tr
 runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=True)
 
 
-def ignore_local_files(path: Path) -> bool:
-    ignored = {".git", ".venv", "__pycache__", "data", "runs"}
-    return any(part in ignored for part in path.parts)
+PROJECT_FILES = [
+    "core_eval.py",
+    "eval_core.py",
+    "model.py",
+    "nanochat_optim.py",
+    "pretokenize.py",
+    "sample.py",
+    "tokenizer.py",
+    "train.py",
+    "utils.py",
+]
 
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_sync(frozen=False)
-    .add_local_dir(".", remote_path=str(WORKDIR), ignore=ignore_local_files)
 )
+for project_file in PROJECT_FILES:
+    image = image.add_local_file(project_file, remote_path=str(WORKDIR / project_file))
 
 app = modal.App(APP_NAME)
 GPU_COUNT = 8
