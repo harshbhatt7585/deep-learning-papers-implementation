@@ -18,6 +18,7 @@ def _load_flash_attention_3():
         if major != 9:
             return None
         os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        os.environ.setdefault("HF_HUB_VERBOSITY", "error")
         from kernels import get_kernel
 
         return get_kernel("kernels-community/flash-attn3")
@@ -29,6 +30,10 @@ _fa3 = _load_flash_attention_3()
 HAS_FA3 = _fa3 is not None
 _override_impl = os.environ.get("TEXT_DIFFUSION_ATTENTION_IMPL")
 _logged_attention_impl = False
+
+
+def _is_rank_zero() -> bool:
+    return os.environ.get("RANK", "0") == "0"
 
 
 def _disable_dynamo(fn):
@@ -43,7 +48,8 @@ def _log_attention_impl(impl: str, reason: str) -> None:
     global _logged_attention_impl
     if _logged_attention_impl:
         return
-    print(f"[flash_attention] using {impl}: {reason}", file=sys.stderr, flush=True)
+    if _is_rank_zero():
+        print(f"[flash_attention] using {impl}: {reason}", file=sys.stderr, flush=True)
     _logged_attention_impl = True
 
 
