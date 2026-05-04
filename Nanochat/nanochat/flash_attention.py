@@ -25,3 +25,20 @@ HAS_FA3 = _fa3 is not None
 _override_impl = None
 
 
+def _resolve_use_fa3():
+    if _override_impl == "fa3":
+        assert HAS_FA3, "Cannot override to FA3: not avialble on this hardware"
+        return True
+    if _override_impl == "sdpa":
+        return False
+    
+    if HAS_FA3:
+        from nanochat.common import COMPUTE_DTYPE
+        if COMPUTE_DTYPE == torch.bfloat16:
+            return True
+        return False
+        
+    return False
+
+
+USE_FA3 = _resolve_use_fa3()
