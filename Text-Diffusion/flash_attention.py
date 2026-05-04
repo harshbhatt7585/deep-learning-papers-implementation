@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib
 from types import SimpleNamespace
 
 import torch
@@ -30,12 +31,35 @@ _override_impl = os.environ.get("TEXT_DIFFUSION_ATTENTION_IMPL")
 _logged_attention_impl = False
 
 
+def _disable_dynamo(fn):
+    compiler = getattr(torch, "compiler", None)
+    if compiler is not None and hasattr(compiler, "disable"):
+        return compiler.disable(fn)
+    dynamo = importlib.import_module("torch._dynamo")
+    return dynamo.disable(fn)
+
+
 def _log_attention_impl(impl: str, reason: str) -> None:
     global _logged_attention_impl
     if _logged_attention_impl:
         return
     print(f"[flash_attention] using {impl}: {reason}", file=sys.stderr, flush=True)
     _logged_attention_impl = True
+
+
+def describe_attention_backend(*, masked: bool, dtype: torch.dtype | None = None) -> str:
+    if masked:
+        fa3_status = "available" if HAS_FA3 else "unavailable"
+        return f"SDPA (masked attention path; FA3 {fa3_status})"
+    if _override_impl == "sdpa":
+        return "SDPA (TEXT_DIFFUSION_ATTENTION_IMPL=sdpa)"
+    if _override_impl == "fa3":
+        return "FA3 (TEXT_DIFFUSION_ATTENTION_IMPL=fa3)"
+    if not HAS_FA3:
+        return "SDPA (FA3 unavailable)"
+    if dtype in (None, torch.bfloat16):
+        return "FA3 (Hopper GPU with bf16 tensors)"
+    return f"SDPA (FA3 requires bf16 tensors, got {str(dtype).replace('torch.', '')})"
 
 
 def _use_fa3(*tensors: torch.Tensor) -> bool:
@@ -62,6 +86,44 @@ def _unpack_fa3_output(output):
     if isinstance(output, tuple):
         return output[0]
     return output
+
+
+@_disable_dynamo
+def _call_fa3_flash_attn_func(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    causal: bool,
+    window_size: tuple[int, int],
+) -> torch.Tensor:
+    return _unpack_fa3_output(_fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size))
+
+
+@_disable_dynamo
+def _call_fa3_flash_attn_with_kvcache(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    *,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_seqlens: torch.Tensor | int | None,
+    causal: bool,
+    window_size: tuple[int, int],
+) -> torch.Tensor:
+    return _unpack_fa3_output(
+        _fa3.flash_attn_with_kvcache(
+            q,
+            k_cache,
+            v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            causal=causal,
+            window_size=window_size,
+        )
+    )
 
 
 def _sdpa_attention(
@@ -112,7 +174,7 @@ def flash_attn_func(
 ) -> torch.Tensor:
     """FA3-compatible attention for training tensors in (B, T, H, D) layout."""
     if _use_fa3(q, k, v):
-        return _unpack_fa3_output(_fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size))
+        return _call_fa3_flash_attn_func(q, k, v, causal=causal, window_size=window_size)
 
     q_sdpa = q.transpose(1, 2)
     k_sdpa = k.transpose(1, 2)
@@ -141,17 +203,15 @@ def flash_attn_with_kvcache(
 ) -> torch.Tensor:
     """FA3-compatible KV-cache attention with SDPA fallback."""
     if _use_fa3(q, k_cache, v_cache):
-        return _unpack_fa3_output(
-            _fa3.flash_attn_with_kvcache(
-                q,
-                k_cache,
-                v_cache,
-                k=k,
-                v=v,
-                cache_seqlens=cache_seqlens,
-                causal=causal,
-                window_size=window_size,
-            )
+        return _call_fa3_flash_attn_with_kvcache(
+            q,
+            k_cache,
+            v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            causal=causal,
+            window_size=window_size,
         )
 
     if cache_seqlens is None:

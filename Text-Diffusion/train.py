@@ -13,6 +13,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from core_eval import ensure_eval_bundle, evaluate_core
+from flash_attention import describe_attention_backend
 from model import (
     TextDiffusionConfig,
     TextDiffusionModel,
@@ -333,10 +334,9 @@ def estimate_eval_metrics(
             pad_token_id=source_model.config.pad_token_id,
             mask_prob=args.mask_prob,
         )
-        attention_mask = noised != source_model.config.pad_token_id
         with autocast_context(runtime.device, args.amp_dtype):
             with disable_fp8(source_model):
-                logits = source_model(noised, attention_mask=attention_mask)
+                logits = source_model(noised, attention_mask=None)
             loss_sum = masked_cross_entropy(logits, labels, reduction="sum")
 
         total_loss += float(loss_sum.item())
@@ -458,6 +458,8 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
     log(f"tokens_per_step: {args.batch_size * args.seq_len * args.grad_accum_steps * world_size():,}")
     log(f"amp_dtype: {args.amp_dtype}")
+    amp_dtype = torch.bfloat16 if args.amp_dtype == "bfloat16" else torch.float16 if args.amp_dtype == "float16" else torch.float32
+    log(f"attention_backend: {describe_attention_backend(masked=False, dtype=amp_dtype)}")
     log(f"compile: {args.compile}")
     log(f"fp8: {args.fp8}")
     log(f"eval_interval: {args.eval_interval}")
@@ -564,11 +566,9 @@ def train_one_step(
             pad_token_id=config.pad_token_id,
             mask_prob=args.mask_prob,
         )
-        attention_mask = noised != config.pad_token_id
-
         with sync_context:
             with autocast_context(runtime.device, args.amp_dtype):
-                logits = model(noised, attention_mask=attention_mask)
+                logits = model(noised, attention_mask=None)
                 loss = masked_cross_entropy(logits, labels)
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
