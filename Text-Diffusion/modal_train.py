@@ -18,6 +18,7 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 PROJECT_FILES = [
     "core_eval.py",
     "eval_core.py",
+    "flash_attention.py",
     "model.py",
     "fp8.py",
     "nanochat_optim.py",
