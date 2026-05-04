@@ -42,3 +42,40 @@ def _resolve_use_fa3():
 
 
 USE_FA3 = _resolve_use_fa3()
+
+
+
+def _sdpa_attention(q, k, v, window_size, enable_gqa):
+    """
+    SDPA attention with sliding window support.
+    q, k, v are (B, H, T, D) format.
+    """
+
+    Tq = q.size(2)
+    Tk = k.size(2)
+    window = window_size[0]
+
+    if (window < 0 or window >= Tq) and Tq == Tk:
+        return F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+
+    if Tq == q:
+        if window >= 0 and window < Tk:
+            start = max(0, Tk - (window + 1))
+            k = k[:, :, start:, :]
+            v = v[:, :, start:, :]
+        
+        return F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
+    
+    device = q.device
+    # For chunk unference (Tq != Tk) is causal is not aligned to cache positon => build an explicit bool mask
+    row_idx = (Tk - Tq) + torch.arange(Tq, device=device).unsqueeze(1)
+    col_idx = torch.arange(Tk, device=device).unsqueeze(0)
+    mask = col_idx <= row_idx
+
+    if window >= 0 and window < Tk:
+        mask = mask & ((row_idx - col_idx) <= window)
+    
+    return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=enable_gqa)
+
+
+
