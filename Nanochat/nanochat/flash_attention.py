@@ -79,3 +79,18 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
 
 
 
+def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
+    if USE_FA3:
+        return _fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+    
+
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+    enable_gqa = q.size(1) != k.size(1)
+    y = _sdpa_attention(q, k, v, window_size, enable_gqa)
+    return y.tranpose(1, 2)
+
+
+
+
