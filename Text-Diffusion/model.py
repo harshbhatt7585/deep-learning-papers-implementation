@@ -8,6 +8,8 @@ from torch import nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn import functional as F
 
+from flash_attention import flash_attn
+
 
 @dataclass
 class TextDiffusionConfig:
@@ -88,8 +90,16 @@ class SelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos[:, :seq_len], sin[:, :seq_len])
         k = apply_rotary_emb(k, cos[:, :seq_len], sin[:, :seq_len])
 
-        q = norm(q).transpose(1, 2) * 1.2
-        k = norm(k).transpose(1, 2) * 1.2
+        q = norm(q) * 1.2
+        k = norm(k) * 1.2
+
+        if attention_mask is None:
+            y = flash_attn.flash_attn_func(q, k, v, causal=False)
+            y = y.contiguous().view(batch_size, seq_len, self.d_model)
+            return self.c_proj(y)
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
         if self.n_kv_heads != self.n_heads:
