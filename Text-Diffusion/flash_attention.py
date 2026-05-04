@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from types import SimpleNamespace
 
 import torch
@@ -26,18 +27,35 @@ def _load_flash_attention_3():
 _fa3 = _load_flash_attention_3()
 HAS_FA3 = _fa3 is not None
 _override_impl = os.environ.get("TEXT_DIFFUSION_ATTENTION_IMPL")
+_logged_attention_impl = False
+
+
+def _log_attention_impl(impl: str, reason: str) -> None:
+    global _logged_attention_impl
+    if _logged_attention_impl:
+        return
+    print(f"[flash_attention] using {impl}: {reason}", file=sys.stderr, flush=True)
+    _logged_attention_impl = True
 
 
 def _use_fa3(*tensors: torch.Tensor) -> bool:
     if _override_impl == "sdpa":
+        _log_attention_impl("SDPA", "TEXT_DIFFUSION_ATTENTION_IMPL=sdpa")
         return False
     if _override_impl == "fa3":
         if not HAS_FA3:
             raise RuntimeError("TEXT_DIFFUSION_ATTENTION_IMPL=fa3, but FA3 is not available")
+        _log_attention_impl("FA3", "TEXT_DIFFUSION_ATTENTION_IMPL=fa3")
         return True
     if not HAS_FA3:
+        _log_attention_impl("SDPA", "FA3 is unavailable on this device or kernels could not be loaded")
         return False
-    return all(t.dtype == torch.bfloat16 for t in tensors)
+    if all(t.dtype == torch.bfloat16 for t in tensors):
+        _log_attention_impl("FA3", "Hopper GPU with bf16 tensors")
+        return True
+    dtypes = ", ".join(str(t.dtype).replace("torch.", "") for t in tensors)
+    _log_attention_impl("SDPA", f"FA3 requires bf16 tensors, got {dtypes}")
+    return False
 
 
 def _unpack_fa3_output(output):
