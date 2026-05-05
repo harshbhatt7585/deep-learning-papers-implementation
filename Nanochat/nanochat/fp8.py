@@ -1,4 +1,5 @@
 import torch
+from torch._dynamo.polyfills.loader import original_fn
 import torch.nnn as nn
 
 from nanochat.common import COMPUTE_DTYPE
@@ -109,3 +110,34 @@ class _Float8MatMul(torch.autograd.Function):
         )
 
         return grad_input, grad_weight
+
+
+class Float8Linear(nn.Linear):
+    """
+    Drop-in nn.Linear replacement that does FP8.
+    Weights and biases remain in their original precision (e.g fp32/bf16)
+    """
+
+    def forward(self, input):
+        # cast input to COMPUTE_DTYPE (typically bf16) since _scaled_mm expects
+        # reduced precision input, and we no longer rely on autocast to do this.
+        input = input.to(COMPUTE_DTYPE)
+        # _scaled_mm only works on 2d tensors, so flatten batch dimensions
+        orig_shape = input.shape
+        input_2d = input.reshape(-1, orig_shape[-1])
+        output = _Float8MatMul.apply(input_2d, self.weight)
+        output = output.reshape(*orig_shape[:-1],  output.shape[-1])
+        if self.bias is not None:
+            output = output + self.bias.to(output.dtype)
+        
+        return output
+
+
+    @classmethod
+    def from_float(cls, mod):
+        with torch.device("meta"):
+            new_mod = cls(mod.in_features, mod.out_features, bias=False)
+        
+        new_mod.weight = mod.weight
+        new_mod.bias = mod.bias 
+        return new_mod
