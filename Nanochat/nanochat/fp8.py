@@ -35,5 +35,10 @@ def _to_fp8(x, fp8_dtype):
     # convert FP8 values back to the original range during the matmul)
     inv_scale = scale.reciprocal()
     return x_fp8, inv_scale
-    
 
+
+
+def _to_col_major(x):
+    """Rearange a 2D tensor's memory to column-major layout."""
+    
+    return x.t().contigious().t()
