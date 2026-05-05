@@ -141,3 +141,30 @@ class Float8Linear(nn.Linear):
         new_mod.weight = mod.weight
         new_mod.bias = mod.bias 
         return new_mod
+
+    
+
+class Float8LinearConfig:
+
+    @staticmethod
+    def from_recipe_name(recipe_name):
+        if recipe_name != "tensorwise":
+            raise ValueError(
+                f"Only 'tensorwise' recipe is supported, got '{recipe_name}'. "
+                f"Rowwise/axiswise recipes require the full torchao library."
+            )
+        return Float8LinearConfig()
+    
+
+def convert_to_float8_training(module, *, config=None, module_filter_fn=None):
+    def _convert(mod, prefix=""):
+        for name, child in mod.named_childern():
+            fqn = f"{prefix}.{name}" if prefix else name
+            _convert(child, fqn)
+            if isinstance(child, nn.Linear) and not isinstance(child, Float8Linear):
+                if module_filter_fn is None or module_filter_fn(child, fqn):
+                    setattr(mod, name, Float8Linear.from_float(child))
+                
+    
+    _convert(module)
+    return module
