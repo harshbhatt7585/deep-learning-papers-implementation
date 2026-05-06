@@ -259,6 +259,23 @@ class GPT(nn.Module):
             self.transformer.wte.to(dtype=COMPUTE_DTYPE)
             for ve in self.value_emebds.values():
                 ve.to(dtype=COMPUTE_DTYPE)
+    
+    def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
+        if device is None:
+            device = self.transformer.wte.weight.device
+        
+        channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
+        inv_freq = 1.0/ (base ** (channel_range / head_dim))
+        # string the time steps
+        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        # calculate the roatation frquencies at each (time, channel) pair
+        freqs = torch.outer(t, inv_freq)
+        cos, sin = freqs.cos(), freqs.sin()
+        cos, sin = cos.to(COMPUTE_DTYPE), sin.to(COMPUTE_DTYPE)
+        cos, sin = cos[None, :, None, :], sin[None, :, None, :]
+        return cos, sin
+
+
         
 
 
