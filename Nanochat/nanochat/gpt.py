@@ -192,5 +192,74 @@ class GPT(nn.Module):
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
+    
+
+    @torch.no_grad()
+    def init_weights(self):
+        """
+        Initialize the full model in this one function for maximum clarity.
+
+        wte (embedding): normal, std=1.0
+        lm_head: norm, std=0.001
+        for each block:
+            attn.c_q: unifrom, std=1/sqrt(n_emebd)
+            attn.c_k: uniform, std=1/sqrt(n_emebd)
+            attn.c_v: uniform, std=1/sqrt(n_emebd)
+            attn.c_proj: zeros
+            mlp.c_fc: uniform, std=1/sqrt(n_embd)
+            mlp.c_proj: zeros
+
+        """
+        torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=0.8)
+        torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
+
+        # Transformer blocks: uniform init with bound = sqrt(3) * std
+        n_emebd = self.config.n_emdb
+        s = 3**0.5 * n_emebd**-0.5
+        for block in self.transformer.h:
+            torch.nn.init.uniform_(block.attn.c_q.weight, -s, s)
+            torch.nn.init.uniform_(block.attn.c_k.weight, -s, s)
+            torch.nn.init.uniform_(block.attn.c_v.weight, -s, s)
+            torch.nn.init.zeros_(block.attn.c_proj.weight) # projections are zeros
+            torch.nn.init.uniform_(block.mlp.c_fc.weight, -s * 0.4, s * 0.4)
+            torch.nn.init.zeros_(block.mlp.c_proj.weight)
         
+        # per-layer scalars
+        # per-layer resid init: stronger residual at early layers, weaker at deep layers
+        n_layer = self.config.n_layer
+        for i in range(n_layer):
+            self.resid_lambdas.data[i] = 1.15 - (1.10 * i / max(n_layer - 1, 1))
+        # Decaying x0 init: earlier layers get more input embedding blending
+        for i in range(n_layer):
+            self.x0_lambdas.data[i] = 0.20 - (0.15 * i / max(n_layer - 1, 1))
+        
+        # Smean/backout scalars and smear gate must be explicitly initalized
+        torch.nn.init.zeros_(self.smear_lambda)
+        torch.nn.init.constant_(self.backout_lambda, 0.2)
+        torch.nn.init.uniform_(self.smear_gate.weight, 0.0, 0.02)
+
+        # Value embeddings (init like c_v: uniform with same std)
+        for ve in self.value_emebds.values():
+            torch.nn.init.uniform_(ve.weight, -s, s)
+        
+        # Gate weights init with samll positive values so gates start strictly above neurtal
+        for block in self.transformer.h:
+            if block.attn.ve_gate is not None:
+                torch.nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
+        
+        # Rotary Embeddings
+        head_dim = self.config.n_embd // self.config.n_head
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        self.cos, self.sin = cos, sin
+
+        # Cast embeddings to COMPUTE_DTYPE: optimizer can tolerate reduced-precision
+        # embeddings and it saves memory. Exception: fp16 requires fp32 embeddings
+        # because GradScalar cannot unscale fp16 gradients.
+        if COMPUTE_DTYPE != torch.float16:
+            self.transformer.wte.to(dtype=COMPUTE_DTYPE)
+            for ve in self.value_emebds.values():
+                ve.to(dtype=COMPUTE_DTYPE)
+        
+
+
 
