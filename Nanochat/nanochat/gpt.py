@@ -308,6 +308,34 @@ class GPT(nn.Module):
     
     def get_device(self):
         return self.transformer.wte.weight.device
+    
+    def estimate_flops(self):
+        """
+            Return the estimated FLOPs per token for the model (forward + backward)
+            Each matmul weight parameter contributes 2 FLOPs (multiply *, accumulate +) in forward,
+            and 2X that in backward => 2+4=6.
+            On top of that, 12 * h * q * effective_seq_len accounts for key @ query matmul flops inside attention.
+            with sliding windows, effective_seq_len valries per layer (capped by window size).        
+        """
+        
+        nparams = sum(p.numel() for p in self.parameters())
+        # Exclude non-matmul params: embeddings and per-layer scalars
+        value_emebds_numel = sum(ve.weight.numel() for ve in self.value_emebds.values())
+        nparams_exclude = (self.transformer.wte.weight.numel() + value_emebds_numel +
+                            self.resid_lambdas.numel() + self.x0_lambdas.numel() + 
+                            self.smear_gate.weight.numel() + self.smear_lambda.numel() + self.backout_lambda.numel())
+        
+        h, q, t = self.config.n_head, self.config.n_embd // self.config.n_head, self.config.sequence_len
+        # Sum attention FLOPs per layer, accounting for sliding window
+        attn_fops = 0
+        for window_size in self.window_size:
+            window = window_size[0]
+            effective_seq = t if window < 0 else min(window, t)
+            attn_flops += 12 * h * q * effective_seq
+        num_flops_per_token = 6 * (nparams - nparams_exclude) + attn_flops
+        return num_flops_per_token
+        
+
         
 
 
