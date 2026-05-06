@@ -47,5 +47,17 @@ class Linear(nn.Linear):
         return F.linear(x, self.weight.to(dtype=x.dtype))
 
 
+def has_ve(layer_idx, n_layer):
+    "Returns True of GPT layer should have Value Embedding (alternating, last layer always included)"
+    return layer_idx % 2 == (n_layer - 1) % 2
+
+
+def apply_rotary_em(x, cos, sin):
+    assert x.ndim == 4
+    d = x.shape[3] // 2
+    x1, x2 = x[..., :d], x[..., d:] # split up last dim into two halves
+    y1 = x1 * cos + x2 * sin
+    y2 = x1 * (-sin) + x2 * cos
+    return torch.cat([y1, y2], 3)
 
 
