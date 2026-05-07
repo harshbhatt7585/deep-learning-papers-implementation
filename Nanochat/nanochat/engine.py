@@ -275,4 +275,29 @@ class Engine:
         
     
 
+    def generate_batch(self, tokens, num_samples=1, **kwargs):
+        """
+        Non-streaming batch generation that just returns the final token sequence.
+        Returns a list of token sequence (list of lists of ints).
+        Terminal tokens (assistant_end, bos) are not included in the results.
+        """
+
+        assistant_end = self.tokenizer.encode_special("<|assistant_end|>")
+        bos = self.tokenizer.get_bos_token_id()
+        results = [tokens.copy() for _ in range(num_samples)]
+        masks = [[0] * len(tokens) for _ in range(num_samples)]
+        completed = [False] * num_samples
+        for token_column, token_masks in self.generate(tokens, num_samples, **kwargs):
+            for i, (token, mask) in enumerate(zip(token_column, token_masks)):
+                if not completed[i]:
+                    if token == assistant_end or token == bos:
+                        completed[i] = True
+                    else:
+                        results[i].append(token)
+                        masks[i].append(mask)
             
+            # stop if all rows are completed 
+            if all(completed):
+                break
+        
+        return results, masks
