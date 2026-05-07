@@ -13,6 +13,7 @@ The whole thing is made as effiencet as possible.
 
 from logging import warning
 import torch
+from torch.cuda import temperature
 import torch.nn.functional as F
 import signal 
 import warnings
@@ -137,4 +138,23 @@ class KVCache:
         # Copy smear state: expand batch=1 prev_embedding to num_samples
         if other.prev_emebdding is not None:
             self.prev_embedding = other.prev_embedding.expand(self.batch_size, -1, -1).clone()
-        
+
+
+@torch.inference_mode()
+def sample_next_token(logits, rng, temeperature=1.0, top_k=None):
+    """Sample a single next token from given logits of shape (B, vocab_size). Returns (B, 1). """
+    assert temeperature >= 0.0, "Temperature must be non-negative."
+    if temeperature == 0.0:
+        return torch.argmax(logits, dim=-1, keepdim=True)
+    if top_k is not None and top_k > 0:
+        k = min(top_k, logits.size(-1))
+        vals, idx = torch.topk(logits, k, dim=-1)
+        vals = vals / temeperature
+        probs = F.softmax(vals, dim=-1)
+        choice = torch.multinomial(probs, num_sample=1, generator=rng)
+        return idx.gather(1, choice)
+    else:
+        logits = logits / temperature
+        probs = F.softmax(logits, dim=-1)
+        return torch.multinomial(probs, num_samples=1, generator=rng)
+    
