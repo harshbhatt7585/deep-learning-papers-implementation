@@ -158,3 +158,13 @@ def sample_next_token(logits, rng, temeperature=1.0, top_k=None):
         probs = F.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1, generator=rng)
     
+
+class RowState:
+    # per-row state tracking during generation
+    def __init__(self, current_tokens=None):
+        self.current_tokens = current_tokens or []
+        self.forced_tokens = deque()
+        self.in_python_block = False
+        self.python_expr_tokens = []
+        self.completed = False
+    
