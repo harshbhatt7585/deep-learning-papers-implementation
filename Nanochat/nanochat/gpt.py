@@ -344,7 +344,7 @@ class GPT(nn.Module):
 
         # Seperate out all parameters into groups
         matrix_params = list(self.transformer.h.parameters())
-        value_emebds_params = list(self.value_emebds.parameters())
+        value_embeds_params = list(self.value_emebds.parameters())
         embedding_params = list(self.transformer.wte.parameters())
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
