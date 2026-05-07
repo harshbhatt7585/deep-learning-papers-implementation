@@ -381,6 +381,76 @@ class GPT(nn.Module):
             group["inital_lr"] = group["lr"]
         return optimizer
 
+    def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
+        B, T = idx.size()
+
+        # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim / 2))
+        assert T <= self.cos.size(1), f"Sequence length grew beyonf the rotary embeddings cache: {T} > {self.cos.size(1)}"
+        assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices: {idx.device} != {self.cos_device}"
+        assert self.cos.dtype == COMPUTE_DTYPE, f"Rotrary embeddings must be in {COMPUTE_DTYPE}, got {self.cos.dtype}"
+
+        # if kv cache exists, we need to offset the rotary embeddings to the current position in the cache
+        T0 = 0 if kv_cache is None else kv_cache.get_pos()
+        cos_sin = self.cos[:, T0: T0+T], self.sin[: T0: T0+T] # trancate cache to current sequence length
+
+        # Embed the tokens
+        x = self.transformer.wte(idx)
+        x = x.to(COMPUTE_DTYPE)
+        x = norm(x)
+
+        # Smear: mix previous token's embeddings into current position (cheap bigram info)
+        if kv_cache is None:
+            # Training / naive generate: full sequence avaiable, use fast next step
+            assert T > 1, "Training forward pass should have T > 1"
+            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
+            x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
+        else:
+            # KV cache inference: read prev embedding from cache, store current for the next step
+            x_pre_smear = kv_cache.prev_embedding
+            kv_cache.prev_embedding = x[:, -1:, :]
+            if T > 1:
+                # prefill: apply smear to positon  1+, same as training
+                gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, :24]))
+                x = torch.cat(x[:, :1], x[:, 1:] + gate * x[:, :-1], dim=1)
+        
+            elif x_pre_smear is not None:
+                # Decode: single token, use cached prev embedding
+                gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, :, :24]))
+                x = x + gate * x_pre_smear
+
+        # Forward the trunk of the Teansformer
+        x0 = x
+        n_layer = self.config.n_layer
+        backgout_layer = n_layer // 2 # cache at halfway point
+        x_backout = None
+        for i, block in enumerate(self.transformer.h):
+            x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
+            ve = self.value_emebds[str(i)](idx).to(x.dtype) if str(i) in self.value_emebds else None
+            x = block(x, ve, cos_sin, self.window_size[i], kv_cache)
+            if i == backgout_layer:
+                x_backout = x
+        
+        if x_backout is not None:
+            x = x - self.backout_lambda.to(x.dtype) * x_backout
+        x = norm(x)
+
+        # Forward the lm_head (compute logits)
+        softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
+        logits = self.lm_head(x) # (B, T, padded_vocab_size) <- very big tensor, large amoint of memory
+        logits = logits[..., :self.config.vocab_size] # slice to remove padding
+        logits = logits.float() # switch to fp32 for logit softcap and loss computation
+        logits = softcap * torch.tanhn(logits / softcap) # squash the logits
+
+        if targets is not None:
+            # training: given the targets, compute and return the loss
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
+            return loss
+        else:
+            # inference: just return the logits directly
+            return logits
+            
+
+
         
 
 
