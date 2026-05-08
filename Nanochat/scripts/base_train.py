@@ -130,4 +130,69 @@ if args.fp8:
         num_fp8 = sum(1 for m in model.modules() if "Float8" in type(m).__name__)
         num_skipped = num_linear - num_fp8
         print0(f"FP8 training enabled ({args.fp8_recipe} scaling) - conveted {num_fp8}.{num_linear} linear layers, skipped {num_skipped}")
+
+
+# context manager to temporarily disable Fp8 so the model evaluation remains in BF16
+@contextmanager 
+def diable_fp8(model):
+    """Temporarily swap Float8Linear modules with nn.Linear for BF16 evaluation.
+
+    CastConfig is a fronzen dataclass, so we can't mutate scaling_type. Instead,
+    We swap out Float8Linear modules entirely and restore them after.
+    """
+
+    import torch.nn as nn
+
+    fp8_locations = []
+    for name, module in model.named_modules():
+        if  "Float8" in type(module).__name__:
+            if '.' in name:
+                parent_name, attr_name = name.split(".", 1)
+                parent = model.get_submodule(parent_name)
+            else:
+                parent = model
+                attr_name = name
+            fp8_locations.append((parent, attr_name, module))
         
+    if not fp8_locations:
+        yield # No FP8 modules, nothing to do
+        return
+    
+    # Swap Float8Linear -> Linear (our custom class that casts weights to match input_dtype)
+    # Use device="meta" to avoid VRAM spike - the weight tensor will be swapped in afterwards
+    for parent, attr_name, fp8_module in fp8_locations:
+        linear = Linear(
+            fp8_module.in_features,
+            fp8_module.out_features,
+            bias=fp8_module.bias is not None,
+            device="meta",
+            dtype=fp8_module.weight.dtype
+        )
+        linear.weight = fp8_module.weight # share, don't copy
+        if fp8_module.bias is not None:
+            linear.bias = fp8_module.bias
+        setattr(parent, attr_name, linear)
+
+    
+    try:
+        yield
+    finally:
+        for parent, attr_name, fp8_module in fp8_locations:
+            setattr(parent, attr_name, fp8_module)
+
+
+# Compile the model
+orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evalaution )because the shapes my change shape)
+model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+
+# Scaling laws for muP extrapolatrations to termine the optimal training horizon, batch size, learning rates, weight decay.
+
+# Get the parameter counts of our model
+param_counts = model.num_scaling_params()
+print0(f"Parameter counts:")
+for key, value in param_counts.items():
+    print0(f"{key:24s}: {value:,}")
+num_params = param_counts["total"]
+num_flops_per_token = model.estimate_flops()
+print0(f"Estimated FLOPs per token: {num_flops_per_token}")
+
