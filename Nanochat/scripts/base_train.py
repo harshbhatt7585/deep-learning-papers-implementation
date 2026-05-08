@@ -221,3 +221,32 @@ if total_batch_size == -1:
     total_batch_size = 2 ** round(math.log2(predicted_batch_size)) # clamp to nearest power of 2 for efficiency
     print0(f"Auto-computed optimal batch size: {total_batch_size:, } tokens")
 
+
+# kmowing the batch size, we can now calculate a learning rate correction (bigger batch size allow higher learning rate)
+batch_lr_scale = 1.0
+batch_ratio = total_batch_size / B_REF
+if batch_ratio != 1.0:
+    # SGD: linear scaling with batch size is standard (not used in nanochat)
+    # AdamW: sqrt scaling is standard: η ∝ √(B/B_ref)
+    # Muon: we will use the same scaling for Muon as for AdamW: η ∝ √(B/B_ref) (not studied carefully, assumption!)
+    batch_lr_scale = batch_ratio ** 0.5
+    print0(f"Scaling LRs by {batch_lr_scale:.4g}")
+
+weight_decay_scaled = args.weight_decay * math.sqrt(total_batch_size / B_REF) * (D_REF / target_tokens)
+if weight_decay_scaled != args.weight_decay:
+    print0(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {args.depth}")
+
+
+# Initalize the optimizer (compined MounAdamW: Moun for matrix params, AdamW for rest)
+optimizer = model.setup_optimizer(
+    unembedding_lr=args.enmbedding_lr * batch_lr_scale,
+    embedding_lr=args.embedding_lr * batch_lr_scale,
+    scalar_lr=args.scalar_lr * batch_lr_scale,
+    # Moun hyperparamters
+    matrix_lr=args.matrix_lr * batch_lr_scale,
+    weight_decay=weight_decay_scaled
+)
+
+if resuming:
+    optimzier.load_state_dict(optimizer_data)
+    del optimizer_data
