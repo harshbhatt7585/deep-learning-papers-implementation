@@ -212,3 +212,12 @@ target_tokens = int(args.target_param_data_ratio * num_scaling_params) # Optimal
 # Our reference model is d12, this is where a lot of hyperparamters are tuned and then transfered to higher depths (muP style)
 d12_ref = build_model_meta(12)
 D_REF = args.target_param_data_ratio * get_scaling_params(d12_ref)  # optimal tokens for the model we are about to train
+B_REF = 2**19 # optimal batch size at f12 ~= 524,288 tokens (measured empircally)
+
+total_batch_size = args.total_batch_size # user-provided ovveride is possible
+if total_batch_size == -1:
+    batch_size_ratio = target_tokens / D_REF
+    predicted_batch_size = B_REF * batch_size_ratio ** 0.383
+    total_batch_size = 2 ** round(math.log2(predicted_batch_size)) # clamp to nearest power of 2 for efficiency
+    print0(f"Auto-computed optimal batch size: {total_batch_size:, } tokens")
+
