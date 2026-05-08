@@ -196,3 +196,19 @@ num_params = param_counts["total"]
 num_flops_per_token = model.estimate_flops()
 print0(f"Estimated FLOPs per token: {num_flops_per_token}")
 
+
+# 1) Use scaling laws to termine the optimal training horizon in tokens
+# THE compute-optimal models satisfy the Tokens:Params ratio of --target-param-data-ratio (derived experimentally via scaling laws analysis)
+# We have already initalized the model so we have Params. Optimal Tokens is now simply target-param-data-ratio * Params
+def get_scaling_params(m):
+    # AS for which params to use externally, transformer matrices + lm_head gives cleanest scaling laws
+    params_counts = m.num_scaling_params()
+    scaling_params = params_counts["transformer_matrics"] + params_counts["lm_head"]
+    return scaling_params
+
+num_scaling_params = get_scaling_params(model)
+target_tokens = int(args.target_param_data_ratio * num_scaling_params) # Optimal tokens for the model we are about to train
+
+# Our reference model is d12, this is where a lot of hyperparamters are tuned and then transfered to higher depths (muP style)
+d12_ref = build_model_meta(12)
+D_REF = args.target_param_data_ratio * get_scaling_params(d12_ref)  # optimal tokens for the model we are about to train
