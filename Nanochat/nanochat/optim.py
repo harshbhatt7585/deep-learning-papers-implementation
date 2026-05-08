@@ -39,4 +39,4 @@ def adamw_step_fused(
     denom = (exp_avg_sq / bias2).sqrt() + eps_t
     step_size = lr_t / bias1
     p.add(exp_avg / denom, alpha=step_size)
-    
+
