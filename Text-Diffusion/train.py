@@ -123,6 +123,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-val-chars", type=int, default=1_000_000)
 
     parser.add_argument("--nanochat-tokenizer-cache-dir", type=Path, default=Path("data/nanochat_tokenizer_32k"))
+    parser.add_argument("--nanochat-tokenizer-vocab-size", type=int, default=None)
     parser.add_argument("--token-shards-dir", type=Path, default=None)
 
     parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-nanochat"))
@@ -149,9 +150,12 @@ def parse_args() -> argparse.Namespace:
 
     parsed = parser.parse_args()
     eval_interval = parsed.eval_interval
+    nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
     args = with_internal_defaults(parsed)
     if eval_interval is not None:
         args.eval_interval = eval_interval
+    if nanochat_tokenizer_vocab_size is not None:
+        args.nanochat_tokenizer_vocab_size = nanochat_tokenizer_vocab_size
     return args
 
 

@@ -8,6 +8,8 @@ TRAIN_SHARDS="${TRAIN_SHARDS:-170}"
 MAX_TRAIN_CHARS="${MAX_TRAIN_CHARS:-17000000000}"
 MAX_VAL_CHARS="${MAX_VAL_CHARS:-2000000}"
 TOKEN_SHARDS_DIR="${TOKEN_SHARDS_DIR:-/data/nanochat_tokens_32k}"
+NANOCHAT_TOKENIZER_CACHE_DIR="${NANOCHAT_TOKENIZER_CACHE_DIR:-/data/nanochat_tokenizer_32k}"
+NANOCHAT_TOKENIZER_VOCAB_SIZE="${NANOCHAT_TOKENIZER_VOCAB_SIZE:-32768}"
 TOKENIZER_THREADS="${TOKENIZER_THREADS:-64}"
 DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-4096}"
 TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
@@ -99,6 +101,8 @@ pretokenize() {
     --max-train-chars "${MAX_TRAIN_CHARS}" \
     --max-val-chars "${MAX_VAL_CHARS}" \
     --token-shards-dir "${TOKEN_SHARDS_DIR}" \
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
     --tokenizer-threads "${TOKENIZER_THREADS}" \
     --doc-batch-size "${DOC_BATCH_SIZE}" \
     --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}" \
@@ -118,6 +122,8 @@ train_tokenizer() {
     --max-train-chars "${MAX_TRAIN_CHARS}" \
     --max-val-chars "${MAX_VAL_CHARS}" \
     --token-shards-dir "${TOKEN_SHARDS_DIR}" \
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
     --tokenizer-threads "${TOKENIZER_THREADS}" \
     --doc-batch-size "${DOC_BATCH_SIZE}" \
     --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}" \
@@ -132,6 +138,8 @@ download_data() {
     --max-train-chars "${MAX_TRAIN_CHARS}" \
     --max-val-chars "${MAX_VAL_CHARS}" \
     --token-shards-dir "${TOKEN_SHARDS_DIR}" \
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
     --tokenizer-threads "${TOKENIZER_THREADS}" \
     --doc-batch-size "${DOC_BATCH_SIZE}"
 }
@@ -162,6 +170,8 @@ train() {
     --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}" \
     --target-tokens "${TARGET_TOKENS}" \
     --out-dir "${OUT_DIR}" \
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
     "${resume_flags[@]}" \
     "${data_flags[@]}" \
     "${modal_flags[@]}"
