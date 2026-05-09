@@ -179,9 +179,7 @@ def tokens_per_step(args: argparse.Namespace) -> int:
 
 def count_scaling_params(model: torch.nn.Module) -> int:
     source_model = unwrap_model(model)
-    return sum(p.numel() for p in source_model.blocks.parameters()) + sum(
-        p.numel() for p in source_model.lm_head.parameters()
-    )
+    return sum(p.numel() for p in source_model.parameters())
 
 
 def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -> None:
