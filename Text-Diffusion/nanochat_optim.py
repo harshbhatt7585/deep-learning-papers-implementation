@@ -1,6 +1,7 @@
 """
 A nice and efficient mixed AdamW/Muon Combined Optimizer.
-Usually the embeddings and scalars go into AdamW, and the matrix parameters go into Muon.
+Usually the embeddings and scalars go into AdamW, and the matrix parameters go into Muon
+or Aurora.
 Two versions are provided (MuonAdamW, DistMuonAdamW), for single GPU and distributed.
 
 Addapted from: https://github.com/KellerJordan/modded-nanogpt
@@ -94,6 +95,24 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
+def simple_quintic_polar(G: Tensor, steps: int) -> Tensor:
+    """Polar factor via the simple-quintic Newton-Schulz iteration used by Aurora."""
+    X = G.bfloat16() if COMPUTE_DTYPE == torch.bfloat16 else G
+    transposed = G.size(-2) > G.size(-1)
+    if transposed:
+        X = X.mT
+
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+    a, b, c = 2.0, -1.5, 0.5
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+
+    if transposed:
+        X = X.mT
+    return X
+
 @torch.compile(dynamic=False, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
@@ -153,6 +172,61 @@ def muon_step_fused(
     mask = (g * stacked_params) >= 0
     stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
 
+@torch.compile(dynamic=False, fullgraph=True)
+def aurora_step_fused(
+    stacked_grads: Tensor,          # (K, M, N) - stacked gradients
+    stacked_params: Tensor,         # (K, M, N) - stacked parameters
+    momentum_buffer: Tensor,        # (K, M, N) - first moment buffer
+    momentum_t: Tensor,             # () - 0-D CPU tensor, momentum coefficient
+    lr_t: Tensor,                   # () - 0-D CPU tensor, learning rate
+    wd_t: Tensor,                   # () - 0-D CPU tensor, weight decay
+    pp_beta_t: Tensor,              # () - 0-D CPU tensor, Aurora damping exponent
+    pp_iterations: int,             # refinement iterations
+    polar_steps: int,               # simple-quintic polar iterations
+) -> None:
+    """
+    Fused Aurora step: Nesterov momentum -> leverage-uniform polar -> decoupled update.
+
+    Aurora is Muon for square matrices. For rectangular matrices it refines a diagonal
+    row preconditioner so the polar update is closer to row-leverage uniform.
+    """
+
+    momentum = momentum_t.to(stacked_grads.dtype)
+    momentum_buffer.lerp_(stacked_grads, 1 - momentum)
+    g = stacked_grads.lerp_(momentum_buffer, momentum)
+
+    rows = g.size(-2)
+    cols = g.size(-1)
+    if rows == cols:
+        update = simple_quintic_polar(g, polar_steps)
+    else:
+        transposed = rows < cols
+        if transposed:
+            g_work = g.mT
+            tall_rows = cols
+            tall_cols = rows
+        else:
+            g_work = g
+            tall_rows = rows
+            tall_cols = cols
+
+        g32 = g_work.float()
+        target_row_sq = tall_cols / tall_rows
+        D = g32.norm(dim=-1, keepdim=True).clamp_min(1e-7).reciprocal()
+        pp_beta = pp_beta_t.to(g32.dtype)
+        U = simple_quintic_polar(D * g32, polar_steps)
+        for _ in range(pp_iterations - 1):
+            row_sq = U.float().square().sum(dim=-1, keepdim=True).clamp_min(1e-14)
+            D = D * (target_row_sq / row_sq).pow(pp_beta)
+            U = simple_quintic_polar(D * g32, polar_steps)
+        update = U.mT if transposed else U
+
+    update = update * max(1.0, rows / cols) ** 0.5
+    lr = lr_t.to(stacked_params.dtype)
+    wd = wd_t.to(stacked_params.dtype)
+    stacked_params.mul_(1 - lr * wd)
+    stacked_params.add_(update.to(stacked_params.dtype), alpha=-lr)
+
 # -----------------------------------------------------------------------------
 # Single GPU version of the MuonAdamW optimizer.
 # Used mostly for reference, debugging and testing.
@@ -198,6 +272,7 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        self._aurora_pp_beta_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
 
     def _step_adamw(self, group: dict) -> None:
         """
@@ -288,6 +363,45 @@ class MuonAdamW(torch.optim.Optimizer):
         # Copy back to original params
         torch._foreach_copy_(params, list(stacked_params.unbind(0)))
 
+    def _step_aurora(self, group: dict) -> None:
+        """
+        Aurora update for all params in the group (stacked for efficiency).
+        """
+        params: list[Tensor] = group['params']
+        if not params:
+            return
+
+        p = params[0]
+        state = self.state[p]
+        num_params = len(params)
+        shape, device, dtype = p.shape, p.device, p.dtype
+
+        if "momentum_buffer" not in state:
+            state["momentum_buffer"] = torch.zeros(num_params, *shape, dtype=dtype, device=device)
+        momentum_buffer = state["momentum_buffer"]
+
+        stacked_grads = torch.stack([p.grad for p in params])
+        stacked_params = torch.stack(params)
+
+        self._muon_momentum_t.fill_(group["momentum"])
+        self._muon_lr_t.fill_(group["lr"])
+        self._muon_wd_t.fill_(group["weight_decay"])
+        self._aurora_pp_beta_t.fill_(group["pp_beta"])
+
+        aurora_step_fused(
+            stacked_grads,
+            stacked_params,
+            momentum_buffer,
+            self._muon_momentum_t,
+            self._muon_lr_t,
+            self._muon_wd_t,
+            self._aurora_pp_beta_t,
+            group["pp_iterations"],
+            group["polar_steps"],
+        )
+
+        torch._foreach_copy_(params, list(stacked_params.unbind(0)))
+
     @torch.no_grad()
     def step(self):
         for group in self.param_groups:
@@ -295,6 +409,8 @@ class MuonAdamW(torch.optim.Optimizer):
                 self._step_adamw(group)
             elif group['kind'] == 'muon':
                 self._step_muon(group)
+            elif group['kind'] == 'aurora':
+                self._step_aurora(group)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
 
@@ -373,6 +489,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        self._aurora_pp_beta_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
 
     def _reduce_adamw(self, group: dict, world_size: int) -> dict:
         """Launch async reduce ops for AdamW group. Returns info dict with per-param infos."""
@@ -504,6 +621,52 @@ class DistMuonAdamW(torch.optim.Optimizer):
         future = dist.all_gather_into_tensor(stacked_params, updated_params, async_op=True).get_future()
         gather_list.append(dict(future=future, stacked_params=stacked_params, params=params))
 
+    def _compute_aurora(self, group: dict, info: dict, gather_list: list, rank: int) -> None:
+        """Wait for reduce, compute Aurora updates, launch gather."""
+        info['future'].wait()
+        params = group['params']
+        chunk_size = info['chunk_size']
+        grad_chunk = info['grad_chunk']
+        p = params[0]
+        shape, device, dtype = p.shape, p.device, p.dtype
+
+        start_idx = rank * chunk_size
+        num_owned = min(chunk_size, max(0, len(params) - start_idx))
+
+        state = self.state[p]
+        if "momentum_buffer" not in state:
+            state["momentum_buffer"] = torch.zeros(chunk_size, *shape, dtype=dtype, device=device)
+
+        updated_params = torch.empty(chunk_size, *shape, dtype=dtype, device=device)
+
+        if num_owned > 0:
+            owned_params = [params[start_idx + i] for i in range(num_owned)]
+            stacked_owned = torch.stack(owned_params)
+
+            self._muon_momentum_t.fill_(group["momentum"])
+            self._muon_lr_t.fill_(group["lr"])
+            self._muon_wd_t.fill_(group["weight_decay"])
+            self._aurora_pp_beta_t.fill_(group["pp_beta"])
+            aurora_step_fused(
+                grad_chunk[:num_owned],
+                stacked_owned,
+                state["momentum_buffer"][:num_owned],
+                self._muon_momentum_t,
+                self._muon_lr_t,
+                self._muon_wd_t,
+                self._aurora_pp_beta_t,
+                group["pp_iterations"],
+                group["polar_steps"],
+            )
+            updated_params[:num_owned].copy_(stacked_owned)
+
+        if num_owned < chunk_size:
+            updated_params[num_owned:].zero_()
+
+        stacked_params = info["stacked_grads"]
+        future = dist.all_gather_into_tensor(stacked_params, updated_params, async_op=True).get_future()
+        gather_list.append(dict(future=future, stacked_params=stacked_params, params=params))
+
     def _finish_gathers(self, gather_list: list) -> None:
         """Wait for all gathers and copy Muon params back."""
         for info in gather_list:
@@ -522,7 +685,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
         for group in self.param_groups:
             if group['kind'] == 'adamw':
                 reduce_infos.append(self._reduce_adamw(group, world_size))
-            elif group['kind'] == 'muon':
+            elif group['kind'] in {'muon', 'aurora'}:
                 reduce_infos.append(self._reduce_muon(group, world_size))
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
@@ -534,6 +697,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
                 self._compute_adamw(group, info, gather_list, rank, world_size)
             elif group['kind'] == 'muon':
                 self._compute_muon(group, info, gather_list, rank)
+            elif group['kind'] == 'aurora':
+                self._compute_aurora(group, info, gather_list, rank)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
 

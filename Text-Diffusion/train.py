@@ -91,6 +91,9 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "scalar_lr": 0.5,
     "muon_momentum": 0.95,
     "muon_ns_steps": 5,
+    "aurora_pp_iterations": 2,
+    "aurora_pp_beta": 0.5,
+    "aurora_polar_steps": 12,
     "pin_memory": True,
     "seed": 0,
     "wandb_project": "text-diffusion",
@@ -136,7 +139,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--fp8", action="store_true")
-    parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw")
+    parser.add_argument("--optimizer", choices=["adamw", "muon", "aurora"], default="adamw")
     parser.add_argument("--eval-interval", type=int, default=None)
 
     parser.add_argument("--wandb", action="store_true")
@@ -211,12 +214,12 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
     if args.compile:
         log("compiling model with torch.compile(dynamic=False)")
         model = torch.compile(model, mode=args.compile_mode, dynamic=False)
-    if is_dist() and args.optimizer == "muon":
+    if is_dist() and args.optimizer in {"muon", "aurora"}:
         for param in model.parameters():
             dist.broadcast(param.data, src=0)
         for buffer in model.buffers():
             dist.broadcast(buffer.data, src=0)
-        log("distributed model: using replicated model with DistMuonAdamW gradient sync")
+        log(f"distributed model: using replicated model with DistMuonAdamW {args.optimizer} gradient sync")
         return model
     if is_dist():
         ddp_kwargs = {"device_ids": [runtime.local_rank]} if runtime.device.type == "cuda" else {}
@@ -226,7 +229,7 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
 
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
     source_model = unwrap_model(model)
-    if args.optimizer == "muon":
+    if args.optimizer in {"muon", "aurora"}:
         model_dim = source_model.config.d_model
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         embedding_params = list(source_model.token_emb.parameters())
@@ -267,24 +270,37 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
                     "weight_decay": 0.0,
                 }
             )
+        matrix_kind = args.optimizer
         for shape in sorted({param.shape for param in matrix_params}):
             shape_params = [param for param in matrix_params if param.shape == shape]
-            param_groups.append(
-                {
-                    "kind": "muon",
-                    "params": shape_params,
-                    "lr": args.matrix_lr,
-                    "lr_multiplier": args.matrix_lr / args.lr,
-                    "momentum": args.muon_momentum,
-                    "ns_steps": args.muon_ns_steps,
-                    "beta2": 0.9,
-                    "weight_decay": args.weight_decay,
-                }
-            )
+            group = {
+                "kind": matrix_kind,
+                "params": shape_params,
+                "lr": args.matrix_lr,
+                "lr_multiplier": args.matrix_lr / args.lr,
+                "momentum": args.muon_momentum,
+                "weight_decay": args.weight_decay,
+            }
+            if matrix_kind == "muon":
+                group.update(
+                    {
+                        "ns_steps": args.muon_ns_steps,
+                        "beta2": 0.9,
+                    }
+                )
+            else:
+                group.update(
+                    {
+                        "pp_iterations": args.aurora_pp_iterations,
+                        "pp_beta": args.aurora_pp_beta,
+                        "polar_steps": args.aurora_polar_steps,
+                    }
+                )
+            param_groups.append(group)
 
         optimizer_cls = DistMuonAdamW if is_dist() else MuonAdamW
         log(
-            f"optimizer: {optimizer_cls.__name__} "
+            f"optimizer: {optimizer_cls.__name__} matrix_kind={matrix_kind} "
             f"matrix_params={sum(param.numel() for param in matrix_params):,} "
             f"lm_head_params={sum(param.numel() for param in lm_head_params):,} "
             f"embedding_params={sum(param.numel() for param in embedding_params):,} "
