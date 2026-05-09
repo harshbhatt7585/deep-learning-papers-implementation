@@ -68,7 +68,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "dropout": 0.1,
     "eval_interval": 200,
     "eval_batches": 20,
-    "core_metric_every": 2000,
+    "core_metric_every": 400,
     "core_eval_max_per_task": 500,
     "core_eval_cache_dir": Path("data/core_eval"),
     "log_interval": 1,
