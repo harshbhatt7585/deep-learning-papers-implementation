@@ -90,44 +90,44 @@ if [[ "${WANDB}" == "1" ]]; then
 fi
 
 pretokenize() {
-  local overwrite_flags=()
+  local command=(
+    modal run modal_train.py
+    --pretokenize
+    --train-shards "${TRAIN_SHARDS}"
+    --max-train-chars "${MAX_TRAIN_CHARS}"
+    --max-val-chars "${MAX_VAL_CHARS}"
+    --token-shards-dir "${TOKEN_SHARDS_DIR}"
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
+    --tokenizer-threads "${TOKENIZER_THREADS}"
+    --doc-batch-size "${DOC_BATCH_SIZE}"
+    --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}"
+  )
   if [[ "${OVERWRITE_TOKENS}" == "1" ]]; then
-    overwrite_flags+=(--overwrite-tokens)
+    command+=(--overwrite-tokens)
   fi
-
-  modal run modal_train.py \
-    --pretokenize \
-    --train-shards "${TRAIN_SHARDS}" \
-    --max-train-chars "${MAX_TRAIN_CHARS}" \
-    --max-val-chars "${MAX_VAL_CHARS}" \
-    --token-shards-dir "${TOKEN_SHARDS_DIR}" \
-    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
-    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
-    --tokenizer-threads "${TOKENIZER_THREADS}" \
-    --doc-batch-size "${DOC_BATCH_SIZE}" \
-    --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}" \
-    "${overwrite_flags[@]}"
+  "${command[@]}"
 }
 
 train_tokenizer() {
-  local overwrite_flags=()
+  local command=(
+    modal run modal_train.py
+    --pretokenize
+    --tokenizer-only
+    --train-shards "${TOKENIZER_TRAIN_SHARDS}"
+    --max-train-chars "${MAX_TRAIN_CHARS}"
+    --max-val-chars "${MAX_VAL_CHARS}"
+    --token-shards-dir "${TOKEN_SHARDS_DIR}"
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
+    --tokenizer-threads "${TOKENIZER_THREADS}"
+    --doc-batch-size "${DOC_BATCH_SIZE}"
+    --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}"
+  )
   if [[ "${OVERWRITE_TOKENS}" == "1" ]]; then
-    overwrite_flags+=(--overwrite-tokens)
+    command+=(--overwrite-tokens)
   fi
-
-  modal run modal_train.py \
-    --pretokenize \
-    --tokenizer-only \
-    --train-shards "${TOKENIZER_TRAIN_SHARDS}" \
-    --max-train-chars "${MAX_TRAIN_CHARS}" \
-    --max-val-chars "${MAX_VAL_CHARS}" \
-    --token-shards-dir "${TOKEN_SHARDS_DIR}" \
-    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
-    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
-    --tokenizer-threads "${TOKENIZER_THREADS}" \
-    --doc-batch-size "${DOC_BATCH_SIZE}" \
-    --tokenizer-train-shards "${TOKENIZER_TRAIN_SHARDS}" \
-    "${overwrite_flags[@]}"
+  "${command[@]}"
 }
 
 download_data() {
