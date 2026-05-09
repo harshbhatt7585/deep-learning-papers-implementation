@@ -13,6 +13,7 @@ DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-4096}"
 TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
 STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
 GPU_TYPE="${GPU_TYPE:-H100}"
+GPU_TYPE_UPPER="$(printf "%s" "${GPU_TYPE}" | tr '[:lower:]' '[:upper:]')"
 
 MAX_STEPS="${MAX_STEPS:--1}"
 TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-8}"
@@ -60,11 +61,15 @@ RUN_NAME="${RUN_NAME:-text-diffusion-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 
 if [[ -z "${FP8+x}" ]]; then
-  if [[ "${GPU_TYPE^^}" == "H100" ]]; then
+  if [[ "${GPU_TYPE_UPPER}" == "H100" ]]; then
     FP8=1
   else
     FP8=0
   fi
+fi
+if [[ "${GPU_TYPE_UPPER}" != "H100" && "${FP8}" == "1" ]]; then
+  echo "warning: disabling FP8 because GPU_TYPE=${GPU_TYPE} is not H100" >&2
+  FP8=0
 fi
 COMPILE="${COMPILE:-1}"
 WANDB="${WANDB:-1}"

@@ -373,6 +373,10 @@ def main(
     overwrite_tokens: bool = False,
     stream_nanochat: bool = False,
 ) -> None:
+    gpu_type = gpu_type.upper()
+    if gpu_type != "H100" and fp8:
+        raise ValueError("--fp8 is only supported for H100/Hopper in this training path; disable FP8 for A100.")
+
     if pretokenize:
         pretokenize_nanochat.remote(
             train_shards=train_shards,
