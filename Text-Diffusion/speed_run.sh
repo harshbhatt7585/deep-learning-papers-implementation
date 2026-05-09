@@ -146,35 +146,36 @@ download_data() {
 
 train() {
   local data_flags=()
-  local resume_flags=()
   if [[ "${STREAM_NANOCHAT}" == "1" ]]; then
     data_flags+=(--stream-nanochat --train-shards "${TRAIN_SHARDS}" --max-val-chars "${MAX_VAL_CHARS}")
   else
     data_flags+=(--token-shards-dir "${TOKEN_SHARDS_DIR}")
   fi
-  if [[ -n "${RESUME}" ]]; then
-    resume_flags+=(--resume "${RESUME}")
-  fi
 
-  modal run modal_train.py \
-    --gpu-count "${GPU_COUNT}" \
-    --max-steps "${MAX_STEPS}" \
-    --batch-size "${BATCH_SIZE}" \
-    --seq-len "${SEQ_LEN}" \
-    --grad-accum-steps "${GRAD_ACCUM_STEPS}" \
-    --optimizer "${OPTIMIZER}" \
-    --gpu-type "${GPU_TYPE}" \
-    --d-model "${D_MODEL}" \
-    --n-heads "${N_HEADS}" \
-    --n-layers "${N_LAYERS}" \
-    --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}" \
-    --target-tokens "${TARGET_TOKENS}" \
-    --out-dir "${OUT_DIR}" \
-    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}" \
-    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}" \
-    "${resume_flags[@]}" \
-    "${data_flags[@]}" \
-    "${modal_flags[@]}"
+  local command=(
+    modal run modal_train.py
+    --gpu-count "${GPU_COUNT}"
+    --max-steps "${MAX_STEPS}"
+    --batch-size "${BATCH_SIZE}"
+    --seq-len "${SEQ_LEN}"
+    --grad-accum-steps "${GRAD_ACCUM_STEPS}"
+    --optimizer "${OPTIMIZER}"
+    --gpu-type "${GPU_TYPE}"
+    --d-model "${D_MODEL}"
+    --n-heads "${N_HEADS}"
+    --n-layers "${N_LAYERS}"
+    --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}"
+    --target-tokens "${TARGET_TOKENS}"
+    --out-dir "${OUT_DIR}"
+    --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
+    --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
+  )
+  if [[ -n "${RESUME}" ]]; then
+    command+=(--resume "${RESUME}")
+  fi
+  command+=("${data_flags[@]}")
+  command+=("${modal_flags[@]}")
+  "${command[@]}"
 }
 
 case "${MODE}" in
