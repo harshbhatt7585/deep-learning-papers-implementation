@@ -13,34 +13,36 @@ DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-4096}"
 TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
 STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
 
-MAX_STEPS="${MAX_STEPS:-100000}"
+MAX_STEPS="${MAX_STEPS:--1}"
+TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-8}"
+TARGET_TOKENS="${TARGET_TOKENS:--1}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 SEQ_LEN="${SEQ_LEN:-2048}"
 OPTIMIZER="${OPTIMIZER:-muon}"
 
 D_MODEL="${D_MODEL:-768}"
-N_HEADS="${N_HEADS:-12}"
+N_HEADS="${N_HEADS:-6}"
 N_LAYERS="${N_LAYERS:-12}"
 
 case "${RUN_CONFIG}" in
   1gpu|1GPU|1)
     GPU_COUNT=1
-    DEFAULT_GRAD_ACCUM_STEPS=64
+    DEFAULT_GRAD_ACCUM_STEPS=8
     RUN_CONFIG_NAME="1gpu"
     ;;
   2gpu|2GPU|2)
     GPU_COUNT=2
-    DEFAULT_GRAD_ACCUM_STEPS=32
+    DEFAULT_GRAD_ACCUM_STEPS=4
     RUN_CONFIG_NAME="2gpu"
     ;;
   4gpu|4GPU|4)
     GPU_COUNT=4
-    DEFAULT_GRAD_ACCUM_STEPS=16
+    DEFAULT_GRAD_ACCUM_STEPS=2
     RUN_CONFIG_NAME="4gpu"
     ;;
   8gpu|8GPU|8)
     GPU_COUNT=8
-    DEFAULT_GRAD_ACCUM_STEPS=8
+    DEFAULT_GRAD_ACCUM_STEPS=1
     RUN_CONFIG_NAME="8gpu"
     ;;
   *)
@@ -138,6 +140,8 @@ train() {
     --d-model "${D_MODEL}" \
     --n-heads "${N_HEADS}" \
     --n-layers "${N_LAYERS}" \
+    --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}" \
+    --target-tokens "${TARGET_TOKENS}" \
     --out-dir "${OUT_DIR}" \
     "${data_flags[@]}" \
     "${modal_flags[@]}"

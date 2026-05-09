@@ -72,7 +72,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "core_eval_max_per_task": 500,
     "core_eval_cache_dir": Path("data/core_eval"),
     "log_interval": 1,
-    "sample_interval": 2000,
+    "sample_interval": 200,
     "save_interval": 1000,
     "sample_prompt": "The ",
     "sample_length": 128,
@@ -129,7 +129,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
-    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=-1)
+    parser.add_argument("--target-tokens", type=int, default=-1)
+    parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
 
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--d-model", type=int, default=256)
@@ -168,6 +170,51 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         n_heads=args.n_heads,
         n_layers=args.n_layers,
         dropout=args.dropout,
+    )
+
+
+def tokens_per_step(args: argparse.Namespace) -> int:
+    return args.batch_size * args.seq_len * args.grad_accum_steps * world_size()
+
+
+def count_scaling_params(model: torch.nn.Module) -> int:
+    source_model = unwrap_model(model)
+    return sum(p.numel() for p in source_model.blocks.parameters()) + sum(
+        p.numel() for p in source_model.lm_head.parameters()
+    )
+
+
+def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -> None:
+    step_tokens = tokens_per_step(args)
+    scaling_params = count_scaling_params(model)
+
+    if args.max_steps > 0:
+        total_tokens = args.max_steps * step_tokens
+        horizon = f"max_steps={args.max_steps:,}"
+    elif args.target_tokens > 0:
+        args.max_steps = max(1, args.target_tokens // step_tokens)
+        total_tokens = args.max_steps * step_tokens
+        horizon = f"target_tokens={args.target_tokens:,}"
+    elif args.target_param_data_ratio > 0:
+        target_tokens = int(args.target_param_data_ratio * scaling_params)
+        args.max_steps = max(1, target_tokens // step_tokens)
+        total_tokens = args.max_steps * step_tokens
+        horizon = f"target_param_data_ratio={args.target_param_data_ratio:g}"
+        args.target_tokens = target_tokens
+    else:
+        raise ValueError("Set --max-steps, --target-tokens, or --target-param-data-ratio.")
+
+    args.scaling_params = scaling_params
+    args.tokens_per_step = step_tokens
+    args.total_training_tokens = total_tokens
+    log(
+        "training_horizon: "
+        f"{horizon} "
+        f"scaling_params={scaling_params:,} "
+        f"tokens_per_step={step_tokens:,} "
+        f"max_steps={args.max_steps:,} "
+        f"total_tokens={total_tokens:,} "
+        f"tokens_per_scaling_param={total_tokens / scaling_params:.2f}"
     )
 
 
@@ -472,7 +519,10 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"val tokens: {data.val_tokens.numel():,}")
     log(f"vocab_size: {config.vocab_size:,}")
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
-    log(f"tokens_per_step: {args.batch_size * args.seq_len * args.grad_accum_steps * world_size():,}")
+    log(f"scaling_params: {args.scaling_params:,}")
+    log(f"tokens_per_step: {args.tokens_per_step:,}")
+    log(f"max_steps: {args.max_steps:,}")
+    log(f"total_training_tokens: {args.total_training_tokens:,}")
     log(f"amp_dtype: {args.amp_dtype}")
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bfloat16" else torch.float16 if args.amp_dtype == "float16" else torch.float32
     log(f"attention_backend: {describe_attention_backend(masked=False, dtype=amp_dtype)}")
@@ -601,6 +651,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     data = tokenize_data(args, runtime)
     config = build_config(args, data.tokenizer)
     model = build_model(args, config, runtime)
+    resolve_training_horizon(args, model)
     optimizer = build_optimizer(args, model, runtime)
     scaler = torch.amp.GradScaler(
         "cuda",
@@ -645,7 +696,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
 
         if args.log_interval > 0 and step_id % args.log_interval == 0:
             elapsed = time.time() - last_log_time
-            tokens = args.batch_size * args.seq_len * args.grad_accum_steps * args.log_interval * world_size()
+            tokens = args.tokens_per_step * args.log_interval
             tokens_per_second = tokens / max(elapsed, 1e-9)
             train_loss = running_loss / args.log_interval
             log(f"step {step_id:05d} train_loss {train_loss:.4f} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
@@ -656,7 +707,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     "train/loss": train_loss,
                     "train/lr": lr,
                     "train/tokens_per_second": tokens_per_second,
-                    "train/tokens": step_id * args.batch_size * args.seq_len * args.grad_accum_steps * world_size(),
+                    "train/tokens": step_id * args.tokens_per_step,
                 },
             )
             running_loss = 0.0
