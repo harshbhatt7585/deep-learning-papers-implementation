@@ -12,6 +12,7 @@ TOKENIZER_THREADS="${TOKENIZER_THREADS:-64}"
 DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-4096}"
 TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
 STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
+GPU_TYPE="${GPU_TYPE:-H100}"
 
 MAX_STEPS="${MAX_STEPS:--1}"
 TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-8}"
@@ -58,7 +59,13 @@ DEFAULT_RUN_TIME="$(date +"%Y-%m-%d--%I-%M%p" | tr '[:upper:]' '[:lower:]')"
 RUN_NAME="${RUN_NAME:-text-diffusion-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 
-FP8="${FP8:-1}"
+if [[ -z "${FP8+x}" ]]; then
+  if [[ "${GPU_TYPE^^}" == "H100" ]]; then
+    FP8=1
+  else
+    FP8=0
+  fi
+fi
 COMPILE="${COMPILE:-1}"
 WANDB="${WANDB:-1}"
 OVERWRITE_TOKENS="${OVERWRITE_TOKENS:-0}"
@@ -138,6 +145,7 @@ train() {
     --seq-len "${SEQ_LEN}" \
     --grad-accum-steps "${GRAD_ACCUM_STEPS}" \
     --optimizer "${OPTIMIZER}" \
+    --gpu-type "${GPU_TYPE}" \
     --d-model "${D_MODEL}" \
     --n-heads "${N_HEADS}" \
     --n-layers "${N_LAYERS}" \

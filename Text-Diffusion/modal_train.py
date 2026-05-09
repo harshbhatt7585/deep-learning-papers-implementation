@@ -216,6 +216,70 @@ def run_train(
 
 @app.function(
     image=image,
+    gpu="A100",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_a100_1gpu(**kwargs) -> None:
+    run_train(gpu_count=1, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100:2",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_a100_2gpu(**kwargs) -> None:
+    run_train(gpu_count=2, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100:4",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_a100_4gpu(**kwargs) -> None:
+    run_train(gpu_count=4, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100:8",
+    timeout=24 * 60 * 60,
+    secrets=[
+        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
+    ],
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def train_a100_8gpu(**kwargs) -> None:
+    run_train(gpu_count=8, **kwargs)
+
+
+@app.function(
+    image=image,
     gpu="H100",
     timeout=24 * 60 * 60,
     secrets=[
@@ -291,6 +355,7 @@ def main(
     seq_len: int = 128,
     grad_accum_steps: int = 1,
     optimizer: str = "adamw",
+    gpu_type: str = "H100",
     d_model: int = 256,
     n_heads: int = 4,
     n_layers: int = 4,
@@ -323,15 +388,20 @@ def main(
         )
         return
 
+    gpu_type = gpu_type.upper()
     train_functions = {
-        1: train_h100_1gpu,
-        2: train_h100_2gpu,
-        4: train_h100_4gpu,
-        8: train_h100_8gpu,
+        ("A100", 1): train_a100_1gpu,
+        ("A100", 2): train_a100_2gpu,
+        ("A100", 4): train_a100_4gpu,
+        ("A100", 8): train_a100_8gpu,
+        ("H100", 1): train_h100_1gpu,
+        ("H100", 2): train_h100_2gpu,
+        ("H100", 4): train_h100_4gpu,
+        ("H100", 8): train_h100_8gpu,
     }
-    train_function = train_functions.get(gpu_count)
+    train_function = train_functions.get((gpu_type, gpu_count))
     if train_function is None:
-        raise ValueError("--gpu-count must be one of: 1, 2, 4, 8")
+        raise ValueError("--gpu-type must be A100 or H100, and --gpu-count must be one of: 1, 2, 4, 8")
 
     train_function.remote(
         max_steps=max_steps,
