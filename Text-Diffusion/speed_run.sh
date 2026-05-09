@@ -54,7 +54,7 @@ esac
 
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-${DEFAULT_GRAD_ACCUM_STEPS}}"
 
-DEFAULT_RUN_TIME="$(date +"%I-%M%p" | tr '[:upper:]' '[:lower:]')"
+DEFAULT_RUN_TIME="$(date +"%Y-%m-%d--%I-%M%p" | tr '[:upper:]' '[:lower:]')"
 RUN_NAME="${RUN_NAME:-text-diffusion-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 
