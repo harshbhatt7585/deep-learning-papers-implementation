@@ -59,6 +59,7 @@ GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-${DEFAULT_GRAD_ACCUM_STEPS}}"
 DEFAULT_RUN_TIME="$(date +"%Y-%m-%d--%I-%M%p" | tr '[:upper:]' '[:lower:]')"
 RUN_NAME="${RUN_NAME:-text-diffusion-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
+RESUME="${RESUME:-}"
 
 if [[ -z "${FP8+x}" ]]; then
   if [[ "${GPU_TYPE_UPPER}" == "H100" ]]; then
@@ -137,10 +138,14 @@ download_data() {
 
 train() {
   local data_flags=()
+  local resume_flags=()
   if [[ "${STREAM_NANOCHAT}" == "1" ]]; then
     data_flags+=(--stream-nanochat --train-shards "${TRAIN_SHARDS}" --max-val-chars "${MAX_VAL_CHARS}")
   else
     data_flags+=(--token-shards-dir "${TOKEN_SHARDS_DIR}")
+  fi
+  if [[ -n "${RESUME}" ]]; then
+    resume_flags+=(--resume "${RESUME}")
   fi
 
   modal run modal_train.py \
@@ -157,6 +162,7 @@ train() {
     --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}" \
     --target-tokens "${TARGET_TOKENS}" \
     --out-dir "${OUT_DIR}" \
+    "${resume_flags[@]}" \
     "${data_flags[@]}" \
     "${modal_flags[@]}"
 }

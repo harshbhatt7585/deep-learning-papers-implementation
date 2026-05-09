@@ -126,6 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-shards-dir", type=Path, default=None)
 
     parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-nanochat"))
+    parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
@@ -214,6 +215,26 @@ def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -
         f"total_tokens={total_tokens:,} "
         f"tokens_per_scaling_param={total_tokens / scaling_params:.2f}"
     )
+
+
+def load_training_checkpoint(
+    *,
+    checkpoint_path: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+    runtime: Runtime,
+) -> int:
+    checkpoint = torch.load(checkpoint_path, map_location=runtime.device, weights_only=False)
+    source_model = unwrap_model(model)
+    source_model.load_state_dict(checkpoint["model_state"])
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    scaler_state = checkpoint.get("scaler_state")
+    if scaler_state is not None:
+        scaler.load_state_dict(scaler_state)
+    step = int(checkpoint.get("step", 0))
+    log(f"resumed checkpoint: {checkpoint_path} at step {step:,}")
+    return step
 
 
 def fp8_module_filter(module: torch.nn.Module, fqn: str) -> bool:
@@ -655,6 +676,21 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         "cuda",
         enabled=(runtime.device.type == "cuda" and args.amp_dtype == "float16"),
     )
+    start_step = 0
+    if args.resume is not None:
+        resume_path = args.resume
+        if resume_path.is_dir():
+            resume_path = resume_path / "checkpoint.pt"
+        start_step = load_training_checkpoint(
+            checkpoint_path=resume_path,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            runtime=runtime,
+        )
+        if start_step >= args.max_steps:
+            log(f"checkpoint step {start_step:,} is already >= max_steps {args.max_steps:,}; nothing to train")
+            return
     wandb_run = init_wandb(args, config, runtime)
 
     log_startup(args, data, config, model, runtime)
@@ -672,7 +708,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     if args.compile:
         log("first compiled step can take several minutes")
 
-    for step in range(args.max_steps):
+    for step in range(start_step, args.max_steps):
         step_id = step + 1
         lr = learning_rate(
             step,
@@ -781,6 +817,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 model=model,
                 tokenizer=data.tokenizer,
                 optimizer=optimizer,
+                scaler=scaler,
                 step=step_id,
                 args=args,
             )
@@ -793,6 +830,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             model=model,
             tokenizer=data.tokenizer,
             optimizer=optimizer,
+            scaler=scaler,
             step=args.max_steps,
             args=args,
         )

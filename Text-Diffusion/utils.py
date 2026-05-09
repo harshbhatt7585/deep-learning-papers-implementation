@@ -607,6 +607,7 @@ def save_checkpoint(
     model: torch.nn.Module,
     tokenizer: Tokenizer,
     optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler | None = None,
     step: int,
     args: argparse.Namespace,
 ) -> None:
@@ -620,6 +621,7 @@ def save_checkpoint(
             "config": asdict(source_model.config),
             "model_state": source_model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "scaler_state": scaler.state_dict() if scaler is not None else None,
             "tokenizer_type": tokenizer.tokenizer_type,
             "args": args_as_plain_dict(args),
         },

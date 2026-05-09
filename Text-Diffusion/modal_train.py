@@ -131,6 +131,7 @@ def run_train(
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
+    resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     stream_nanochat: bool = False,
     compile: bool = False,
@@ -169,6 +170,8 @@ def run_train(
         "--out-dir",
         out_dir,
     ]
+    if resume:
+        command.extend(["--resume", resume])
     if stream_nanochat:
         command.extend(
             [
@@ -360,6 +363,7 @@ def main(
     n_heads: int = 4,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
+    resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     tokenizer_threads: int = 64,
     doc_batch_size: int = 4096,
@@ -422,6 +426,7 @@ def main(
         n_heads=n_heads,
         n_layers=n_layers,
         out_dir=out_dir,
+        resume=resume,
         token_shards_dir=token_shards_dir,
         stream_nanochat=stream_nanochat,
         compile=compile,
