@@ -61,6 +61,7 @@ class StreamingNanochatTokenStore:
         batch_size: int,
         runtime: Runtime,
         tokenizer_batch_size: int,
+        token_cache_dir: Path | None = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.cache_dir = cache_dir
@@ -69,6 +70,7 @@ class StreamingNanochatTokenStore:
         self.batch_size = batch_size
         self.runtime = runtime
         self.tokenizer_batch_size = tokenizer_batch_size
+        self.token_cache_dir = token_cache_dir
         self.shard_indices = list(range(rank(), train_shards, world_size()))
         if not self.shard_indices:
             raise ValueError(f"rank {rank()} has no nanochat shards assigned")
@@ -93,14 +95,31 @@ class StreamingNanochatTokenStore:
             ids = self.tokenizer.encode(text, add_eos=True)
         return torch.tensor(ids, dtype=torch.long)
 
+    def _token_cache_path(self, shard_index: int) -> Path | None:
+        if self.token_cache_dir is None:
+            return None
+        return self.token_cache_dir / f"train_{shard_index:05d}.npy"
+
+    def _load_or_tokenize_shard(self, shard_index: int, parquet_path: Path) -> torch.Tensor:
+        cache_path = self._token_cache_path(shard_index)
+        if cache_path is not None and cache_path.exists():
+            log(f"using cached token shard {cache_path.name}")
+            return load_token_array(cache_path).to(dtype=torch.long)
+
+        text = read_parquet_text(parquet_path, max_chars=None)
+        tokens = self._encode_text(text)
+        if cache_path is not None:
+            save_token_array(cache_path, tokens)
+            log(f"cached token shard {cache_path.name}: {tokens.numel():,} tokens")
+        return tokens
+
     def _load_current_shard(self) -> None:
         attempts = 0
         while attempts < len(self.shard_indices):
             shard_index = self.shard_indices[self.position % len(self.shard_indices)]
             path = download_nanochat_shard(shard_index, self.cache_dir)
             log(f"streaming train shard rank={rank()} shard={path.name}")
-            text = read_parquet_text(path, max_chars=None)
-            tokens = self._encode_text(text)
+            tokens = self._load_or_tokenize_shard(shard_index, path)
             self.position += 1
             attempts += 1
             if tokens.numel() > self.seq_len:
@@ -121,7 +140,7 @@ class StreamingNanochatTokenStore:
             self._load_current_shard()
         self.batch_calls += 1
         starts = torch.randint(0, self.current_tokens.numel() - seq_len + 1, (batch_size,))
-        batch = torch.stack([self.current_tokens[start:start + seq_len] for start in starts])
+        batch = torch.stack([self.current_tokens[start:start + seq_len] for start in starts]).to(dtype=torch.long)
         return batch.to(runtime.device, non_blocking=runtime.non_blocking)
 
 
@@ -449,6 +468,22 @@ def load_token_array(path: Path) -> torch.Tensor:
     return torch.from_numpy(array)
 
 
+def token_array_dtype(tokens: torch.Tensor) -> np.dtype:
+    max_id = int(tokens.max().item()) if tokens.numel() else 0
+    if max_id <= np.iinfo(np.uint16).max:
+        return np.dtype(np.uint16)
+    return np.dtype(np.int32)
+
+
+def save_token_array(path: Path, tokens: torch.Tensor) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    array = tokens.detach().cpu().numpy().astype(token_array_dtype(tokens), copy=False)
+    tmp_path = path.with_suffix(path.suffix + f".rank{rank()}.tmp")
+    with tmp_path.open("wb") as f:
+        np.save(f, array)
+    tmp_path.replace(path)
+
+
 def load_token_store(paths: list[Path], *, seq_len: int) -> TokenStore:
     shards = []
     names = []
@@ -534,16 +569,36 @@ def load_streaming_nanochat_data(args: argparse.Namespace, runtime: Runtime) -> 
         batch_size=args.batch_size,
         runtime=runtime,
         tokenizer_batch_size=args.nanochat_tokenizer_batch_size,
+        token_cache_dir=args.token_shards_dir,
     )
 
     val_path = download_nanochat_shard(NANOCHAT_MAX_SHARD, args.nanochat_cache_dir)
-    log(f"reading streaming val shard: {val_path.name}")
-    val_text = read_parquet_text(val_path, max_chars=args.max_val_chars)
-    val_tokens = encode_text_documents(
-        tokenizer,
-        val_text,
-        batch_size=args.nanochat_tokenizer_batch_size,
-    )
+    val_token_path = args.token_shards_dir / "val.npy" if args.token_shards_dir is not None else None
+    val_text = ""
+    if val_token_path is not None and val_token_path.exists():
+        log(f"using cached streaming val tokens: {val_token_path.name}")
+        val_tokens = load_token_array(val_token_path).to(dtype=torch.long)
+    else:
+        if is_dist() and not is_main_process():
+            dist.barrier()
+            if val_token_path is not None and val_token_path.exists():
+                log(f"using cached streaming val tokens: {val_token_path.name}")
+                val_tokens = load_token_array(val_token_path).to(dtype=torch.long)
+            else:
+                raise FileNotFoundError(f"Missing cached validation tokens after rank0 barrier: {val_token_path}")
+        else:
+            log(f"reading streaming val shard: {val_path.name}")
+            val_text = read_parquet_text(val_path, max_chars=args.max_val_chars)
+            val_tokens = encode_text_documents(
+                tokenizer,
+                val_text,
+                batch_size=args.nanochat_tokenizer_batch_size,
+            )
+            if val_token_path is not None:
+                save_token_array(val_token_path, val_tokens)
+                log(f"cached streaming val tokens: {val_token_path.name} {val_tokens.numel():,} tokens")
+            if is_dist():
+                dist.barrier()
     if val_tokens.numel() <= args.seq_len:
         raise ValueError("Streaming validation data is too small for --seq-len.")
     if runtime.non_blocking:

@@ -210,6 +210,8 @@ def run_train(
                 str(train_shards),
                 "--max-val-chars",
                 str(max_val_chars),
+                "--token-shards-dir",
+                token_shards_dir,
             ]
         )
     elif token_shards_dir:

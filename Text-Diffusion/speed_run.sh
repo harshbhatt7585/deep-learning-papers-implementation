@@ -157,7 +157,7 @@ download_data() {
 train() {
   local data_flags=()
   if [[ "${STREAM_NANOCHAT}" == "1" ]]; then
-    data_flags+=(--stream-nanochat --train-shards "${TRAIN_SHARDS}" --max-val-chars "${MAX_VAL_CHARS}")
+    data_flags+=(--stream-nanochat --train-shards "${TRAIN_SHARDS}" --max-val-chars "${MAX_VAL_CHARS}" --token-shards-dir "${TOKEN_SHARDS_DIR}")
   else
     data_flags+=(--token-shards-dir "${TOKEN_SHARDS_DIR}")
   fi
