@@ -215,6 +215,7 @@ def generate_experiment_report(out_dir: Path, *, final_step: int | None = None) 
     plot_specs = [
         ("train/loss", "Train Loss", "loss"),
         ("eval/loss", "Eval Loss", "loss"),
+        ("eval/bpb", "Eval BPB", "bpb"),
         ("eval/masked_bpb", "Eval BPB", "bpb"),
         ("eval/core", "CORE", "score"),
         ("train/tokens_per_second", "Throughput", "tokens/sec"),
@@ -232,6 +233,7 @@ def generate_experiment_report(out_dir: Path, *, final_step: int | None = None) 
 
     summary_items = [
         ("Best eval/loss", best_value(series.get("eval/loss", []), mode="min")),
+        ("Best eval/bpb", best_value(series.get("eval/bpb", []), mode="min")),
         ("Best eval/masked_bpb", best_value(series.get("eval/masked_bpb", []), mode="min")),
         ("Best eval/core", best_value(series.get("eval/core", []), mode="max")),
         ("Best train/tokens_per_second", best_value(series.get("train/tokens_per_second", []), mode="max")),

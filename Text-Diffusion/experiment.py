@@ -24,7 +24,7 @@ def summarize_run(run_dir: Path) -> dict:
         "mtp_heads": manifest.get("model", {}).get("n_mtp_heads"),
         "mtp_loss_weight": manifest.get("training", {}).get("mtp_loss_weight"),
         "eval_loss": best_value(series.get("eval/loss", []), mode="min"),
-        "bpb": best_value(series.get("eval/masked_bpb", []), mode="min"),
+        "bpb": best_value(series.get("eval/bpb", []) or series.get("eval/masked_bpb", []), mode="min"),
         "core": best_value(series.get("eval/core", []), mode="max"),
         "tok_s": best_value(series.get("train/tokens_per_second", []), mode="max"),
     }

@@ -117,7 +117,7 @@ For the 600-step benchmark, rank runs by:
 
 ```text
 1. best eval/loss at same step
-2. best eval/masked_bpb at same step
+2. best eval/bpb at same step
 3. train loss slope
 4. samples at step 200/400/600
 5. throughput
