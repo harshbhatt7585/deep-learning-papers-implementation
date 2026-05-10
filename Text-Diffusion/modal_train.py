@@ -240,7 +240,7 @@ def run_train(
 
 @app.function(
     image=image,
-    gpu="A100",
+    gpu="A100-80GB",
     timeout=24 * 60 * 60,
     secrets=[
         modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
@@ -256,7 +256,7 @@ def train_a100_1gpu(**kwargs) -> None:
 
 @app.function(
     image=image,
-    gpu="A100:2",
+    gpu="A100-80GB:2",
     timeout=24 * 60 * 60,
     secrets=[
         modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
@@ -272,7 +272,7 @@ def train_a100_2gpu(**kwargs) -> None:
 
 @app.function(
     image=image,
-    gpu="A100:4",
+    gpu="A100-80GB:4",
     timeout=24 * 60 * 60,
     secrets=[
         modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
@@ -288,7 +288,7 @@ def train_a100_4gpu(**kwargs) -> None:
 
 @app.function(
     image=image,
-    gpu="A100:8",
+    gpu="A100-80GB:8",
     timeout=24 * 60 * 60,
     secrets=[
         modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
