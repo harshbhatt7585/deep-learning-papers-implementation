@@ -67,6 +67,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "mtp_heads": 3,
     "mtp_loss_weight": 0.3,
     "weight_decay": 0.1,
+    "aurora_weight_decay": 0.025,
     "warmup_steps": 50,
     "dropout": 0.1,
     "eval_interval": 200,
@@ -150,6 +151,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--fp8", action="store_true")
     parser.add_argument("--optimizer", choices=["adamw", "muon", "aurora"], default="adamw")
+    parser.add_argument("--aurora-weight-decay", type=float, default=None)
     parser.add_argument("--eval-interval", type=int, default=None)
 
     parser.add_argument("--wandb", action="store_true")
@@ -159,6 +161,7 @@ def parse_args() -> argparse.Namespace:
     nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
     mtp_heads = parsed.mtp_heads
     mtp_loss_weight = parsed.mtp_loss_weight
+    aurora_weight_decay = parsed.aurora_weight_decay
     args = with_internal_defaults(parsed)
     if eval_interval is not None:
         args.eval_interval = eval_interval
@@ -168,6 +171,8 @@ def parse_args() -> argparse.Namespace:
         args.mtp_heads = mtp_heads
     if mtp_loss_weight is not None:
         args.mtp_loss_weight = mtp_loss_weight
+    if aurora_weight_decay is not None:
+        args.aurora_weight_decay = aurora_weight_decay
     return args
 
 
@@ -358,13 +363,14 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
         matrix_kind = args.optimizer
         for shape in sorted({param.shape for param in matrix_params}):
             shape_params = [param for param in matrix_params if param.shape == shape]
+            matrix_weight_decay = args.aurora_weight_decay if matrix_kind == "aurora" else args.weight_decay
             group = {
                 "kind": matrix_kind,
                 "params": shape_params,
                 "lr": args.matrix_lr,
                 "lr_multiplier": args.matrix_lr / args.lr,
                 "momentum": args.muon_momentum,
-                "weight_decay": args.weight_decay,
+                "weight_decay": matrix_weight_decay,
             }
             if matrix_kind == "muon":
                 group.update(
