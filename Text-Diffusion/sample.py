@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from model import TextDiffusionConfig, TextDiffusionModel, generate
+from model import TextDiffusionConfig, TextDiffusionModel, generate, generate_causal
 from tokenizer import NanochatTokenizer
 
 
@@ -55,21 +55,34 @@ def main() -> None:
     model, tokenizer, checkpoint = load_checkpoint(args.checkpoint_dir, device)
     prompt_ids = torch.tensor(tokenizer.encode(args.prompt), dtype=torch.long, device=device)
 
-    output = generate(
-        model,
-        prompt_ids,
-        gen_length=args.gen_length,
-        block_length=args.block_length,
-        steps=args.steps,
-        threshold=args.threshold,
-        editing_threshold=None,
-        temperature=args.temperature,
-        top_k=args.top_k,
-        top_p=args.top_p,
-        eos_token_id=tokenizer.eos_token_id,
-    )
+    objective = checkpoint.get("args", {}).get("objective", "diffusion")
+    if objective == "causal_mtp":
+        output = generate_causal(
+            model,
+            prompt_ids,
+            gen_length=args.gen_length,
+            temperature=args.temperature,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+    else:
+        output = generate(
+            model,
+            prompt_ids,
+            gen_length=args.gen_length,
+            block_length=args.block_length,
+            steps=args.steps,
+            threshold=args.threshold,
+            editing_threshold=None,
+            temperature=args.temperature,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            eos_token_id=tokenizer.eos_token_id,
+        )
 
     print(f"loaded checkpoint step: {checkpoint['step']}")
+    print(f"objective: {objective}")
     print(tokenizer.decode(output.detach().cpu()))
 
 

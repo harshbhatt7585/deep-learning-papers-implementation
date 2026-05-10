@@ -18,6 +18,7 @@ from model import (
     TextDiffusionConfig,
     TextDiffusionModel,
     generate,
+    generate_causal,
     make_masked_inputs,
 )
 from nanochat_optim import DistMuonAdamW, MuonAdamW
@@ -63,6 +64,8 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "nanochat_tokenizer_threads": 4,
     "nanochat_tokenizer_batch_size": 128,
     "mask_prob": 0.30,
+    "mtp_heads": 3,
+    "mtp_loss_weight": 0.3,
     "weight_decay": 0.1,
     "warmup_steps": 50,
     "dropout": 0.1,
@@ -134,6 +137,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--target-tokens", type=int, default=-1)
     parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
+    parser.add_argument("--objective", choices=["diffusion", "causal_mtp"], default="diffusion")
+    parser.add_argument("--mtp-heads", type=int, default=None)
+    parser.add_argument("--mtp-loss-weight", type=float, default=None)
 
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--d-model", type=int, default=256)
@@ -151,11 +157,17 @@ def parse_args() -> argparse.Namespace:
     parsed = parser.parse_args()
     eval_interval = parsed.eval_interval
     nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
+    mtp_heads = parsed.mtp_heads
+    mtp_loss_weight = parsed.mtp_loss_weight
     args = with_internal_defaults(parsed)
     if eval_interval is not None:
         args.eval_interval = eval_interval
     if nanochat_tokenizer_vocab_size is not None:
         args.nanochat_tokenizer_vocab_size = nanochat_tokenizer_vocab_size
+    if mtp_heads is not None:
+        args.mtp_heads = mtp_heads
+    if mtp_loss_weight is not None:
+        args.mtp_loss_weight = mtp_loss_weight
     return args
 
 
@@ -175,6 +187,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         n_heads=args.n_heads,
         n_layers=args.n_layers,
         dropout=args.dropout,
+        n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
     )
 
 
@@ -304,6 +317,8 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         embedding_params = list(source_model.token_emb.parameters())
         lm_head_params = list(source_model.lm_head.parameters())
+        if getattr(source_model, "mtp_heads", None) is not None:
+            lm_head_params += list(source_model.mtp_heads.parameters())
         matrix_params = list(source_model.blocks.parameters())
         seen_ids = {id(param) for param in embedding_params + lm_head_params + matrix_params}
         scalar_params = [param for param in source_model.parameters() if id(param) not in seen_ids]
@@ -393,6 +408,36 @@ def masked_cross_entropy(logits: torch.Tensor, labels: torch.Tensor, *, reductio
     return F.cross_entropy(logits[masked], labels[masked], reduction=reduction)
 
 
+def causal_cross_entropy(logits: torch.Tensor, input_ids: torch.Tensor, *, reduction: str = "mean") -> torch.Tensor:
+    return F.cross_entropy(
+        logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
+        input_ids[:, 1:].contiguous().view(-1),
+        reduction=reduction,
+    )
+
+
+def causal_mtp_cross_entropy(
+    model: torch.nn.Module,
+    source_model: TextDiffusionModel,
+    input_ids: torch.Tensor,
+    *,
+    mtp_loss_weight: float,
+) -> torch.Tensor:
+    logits, hidden = model(input_ids, attention_mask=None, causal=True, return_hidden=True)
+    main_loss = causal_cross_entropy(logits, input_ids)
+    loss = main_loss
+    for offset, head in enumerate(source_model.mtp_heads, start=2):
+        if input_ids.size(1) <= offset:
+            break
+        aux_logits = head(hidden[:, :-offset, :])
+        aux_loss = F.cross_entropy(
+            aux_logits.contiguous().view(-1, aux_logits.size(-1)),
+            input_ids[:, offset:].contiguous().view(-1),
+        )
+        loss = loss + mtp_loss_weight * aux_loss / max(1, len(source_model.mtp_heads))
+    return loss
+
+
 @torch.no_grad()
 def estimate_eval_metrics(
     model: torch.nn.Module,
@@ -414,19 +459,25 @@ def estimate_eval_metrics(
             seq_len=args.seq_len,
             runtime=runtime,
         )
-        noised, labels = make_masked_inputs(
-            batch,
-            mask_token_id=source_model.config.mask_token_id,
-            pad_token_id=source_model.config.pad_token_id,
-            mask_prob=args.mask_prob,
-        )
         with autocast_context(runtime.device, args.amp_dtype):
             with disable_fp8(source_model):
-                logits = source_model(noised, attention_mask=None)
-            loss_sum = masked_cross_entropy(logits, labels, reduction="sum")
+                if args.objective == "causal_mtp":
+                    logits = source_model(batch, attention_mask=None, causal=True)
+                    loss_sum = causal_cross_entropy(logits, batch, reduction="sum")
+                    token_count = batch.numel() - batch.size(0)
+                else:
+                    noised, labels = make_masked_inputs(
+                        batch,
+                        mask_token_id=source_model.config.mask_token_id,
+                        pad_token_id=source_model.config.pad_token_id,
+                        mask_prob=args.mask_prob,
+                    )
+                    logits = source_model(noised, attention_mask=None)
+                    loss_sum = masked_cross_entropy(logits, labels, reduction="sum")
+                    token_count = int((labels != -100).sum().item())
 
         total_loss += float(loss_sum.item())
-        total_masked_tokens += int((labels != -100).sum().item())
+        total_masked_tokens += token_count
         total_bytes += sum(
             len(tokenizer.decode(row.detach().cpu().tolist()).encode("utf-8"))
             for row in batch
@@ -476,6 +527,7 @@ def estimate_core_metrics(
             runtime.device,
             cache_dir=args.core_eval_cache_dir,
             max_per_task=args.core_eval_max_per_task,
+            objective=args.objective,
         )
     model.train()
     return {
@@ -503,19 +555,30 @@ def sample_text(
             device=runtime.device,
         )
         with disable_fp8(source_model):
-            output = generate(
-                source_model,
-                prompt_ids,
-                gen_length=args.sample_length,
-                block_length=args.sample_block_length,
-                steps=args.sample_steps,
-                threshold=args.sample_threshold,
-                editing_threshold=None,
-                temperature=args.sample_temperature,
-                top_k=args.sample_top_k,
-                top_p=args.sample_top_p,
-                eos_token_id=tokenizer.eos_token_id,
-            )
+            if args.objective == "causal_mtp":
+                output = generate_causal(
+                    source_model,
+                    prompt_ids,
+                    gen_length=args.sample_length,
+                    temperature=args.sample_temperature,
+                    top_k=args.sample_top_k,
+                    top_p=args.sample_top_p,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+            else:
+                output = generate(
+                    source_model,
+                    prompt_ids,
+                    gen_length=args.sample_length,
+                    block_length=args.sample_block_length,
+                    steps=args.sample_steps,
+                    threshold=args.sample_threshold,
+                    editing_threshold=None,
+                    temperature=args.sample_temperature,
+                    top_k=args.sample_top_k,
+                    top_p=args.sample_top_p,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
         samples.append(tokenizer.decode(output.detach().cpu(), skip_special=False))
 
     sample = "\n".join(samples)
@@ -542,6 +605,9 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"val tokens: {data.val_tokens.numel():,}")
     log(f"vocab_size: {config.vocab_size:,}")
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
+    log(f"objective: {args.objective}")
+    if args.objective == "causal_mtp":
+        log(f"mtp: heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")
     log(f"scaling_params: {args.scaling_params:,}")
     log(f"tokens_per_step: {args.tokens_per_step:,}")
     log(f"max_steps: {args.max_steps:,}")
@@ -649,16 +715,24 @@ def train_one_step(
             if isinstance(model, DDP) and micro_step < args.grad_accum_steps - 1
             else nullcontext()
         )
-        noised, labels = make_masked_inputs(
-            batch,
-            mask_token_id=config.mask_token_id,
-            pad_token_id=config.pad_token_id,
-            mask_prob=args.mask_prob,
-        )
         with sync_context:
             with autocast_context(runtime.device, args.amp_dtype):
-                logits = model(noised, attention_mask=None)
-                loss = masked_cross_entropy(logits, labels)
+                if args.objective == "causal_mtp":
+                    loss = causal_mtp_cross_entropy(
+                        model,
+                        source_model,
+                        batch,
+                        mtp_loss_weight=args.mtp_loss_weight,
+                    )
+                else:
+                    noised, labels = make_masked_inputs(
+                        batch,
+                        mask_token_id=config.mask_token_id,
+                        pad_token_id=config.pad_token_id,
+                        mask_prob=args.mask_prob,
+                    )
+                    logits = model(noised, attention_mask=None)
+                    loss = masked_cross_entropy(logits, labels)
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
         step_loss += loss.detach().item()

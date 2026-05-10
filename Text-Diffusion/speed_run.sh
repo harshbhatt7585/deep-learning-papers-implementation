@@ -23,6 +23,9 @@ TARGET_TOKENS="${TARGET_TOKENS:--1}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 SEQ_LEN="${SEQ_LEN:-2048}"
 OPTIMIZER="${OPTIMIZER:-muon}"
+OBJECTIVE="${OBJECTIVE:-diffusion}"
+MTP_HEADS="${MTP_HEADS:-3}"
+MTP_LOSS_WEIGHT="${MTP_LOSS_WEIGHT:-0.3}"
 
 D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-6}"
@@ -160,6 +163,9 @@ train() {
     --seq-len "${SEQ_LEN}"
     --grad-accum-steps "${GRAD_ACCUM_STEPS}"
     --optimizer "${OPTIMIZER}"
+    --objective "${OBJECTIVE}"
+    --mtp-heads "${MTP_HEADS}"
+    --mtp-loss-weight "${MTP_LOSS_WEIGHT}"
     --gpu-type "${GPU_TYPE}"
     --d-model "${D_MODEL}"
     --n-heads "${N_HEADS}"
@@ -174,7 +180,9 @@ train() {
     command+=(--resume "${RESUME}")
   fi
   command+=("${data_flags[@]}")
-  command+=("${modal_flags[@]}")
+  if [[ ${#modal_flags[@]} -gt 0 ]]; then
+    command+=("${modal_flags[@]}")
+  fi
   "${command[@]}"
 }
 

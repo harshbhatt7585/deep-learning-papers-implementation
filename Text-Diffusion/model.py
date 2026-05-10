@@ -23,6 +23,7 @@ class TextDiffusionConfig:
     n_layers: int = 4
     dropout: float = 0.1
     ff_mult: int = 4
+    n_mtp_heads: int = 0
 
     def __post_init__(self) -> None:
         if self.n_kv_heads is None:
@@ -33,6 +34,8 @@ class TextDiffusionConfig:
             raise ValueError("n_kv_heads must divide n_heads")
         if (self.d_model // self.n_heads) % 2 != 0:
             raise ValueError("attention head_dim must be even for rotary embeddings")
+        if self.n_mtp_heads < 0:
+            raise ValueError("n_mtp_heads must be non-negative")
 
 
 def norm(x: torch.Tensor) -> torch.Tensor:
@@ -80,6 +83,7 @@ class SelfAttention(nn.Module):
         *,
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
+        causal: bool = False,
     ) -> torch.Tensor:
         batch_size, seq_len, _ = x.shape
         q = self.c_q(x).view(batch_size, seq_len, self.n_heads, self.head_dim)
@@ -94,7 +98,7 @@ class SelfAttention(nn.Module):
         k = norm(k) * 1.2
 
         if attention_mask is None:
-            y = flash_attn.flash_attn_func(q, k, v, causal=False)
+            y = flash_attn.flash_attn_func(q, k, v, causal=causal)
             y = y.contiguous().view(batch_size, seq_len, self.d_model)
             return self.c_proj(y)
 
@@ -116,6 +120,10 @@ class SelfAttention(nn.Module):
             else:
                 raise ValueError("attention_mask must be 2D or 3D")
             attn_mask = attn_mask.to(device=x.device)
+        if causal:
+            causal_mask = torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device).tril()
+            causal_mask = causal_mask[None, None, :, :]
+            attn_mask = causal_mask if attn_mask is None else attn_mask & causal_mask
 
         with sdpa_kernel(SDPA_BACKENDS):
             y = F.scaled_dot_product_attention(
@@ -124,7 +132,7 @@ class SelfAttention(nn.Module):
                 v,
                 attn_mask=attn_mask,
                 dropout_p=0.0,
-                is_causal=False,
+                is_causal=causal and attn_mask is None,
             )
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
         return self.c_proj(y)
@@ -154,8 +162,9 @@ class TransformerBlock(nn.Module):
         *,
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
+        causal: bool = False,
     ) -> torch.Tensor:
-        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask)
+        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
         x = x + self.mlp(norm(x))
         return x
 
@@ -170,6 +179,9 @@ class TextDiffusionModel(nn.Module):
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
         self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
+        self.mtp_heads = nn.ModuleList(
+            [Linear(config.d_model, config.vocab_size, bias=False) for _ in range(config.n_mtp_heads)]
+        )
         cos, sin = self._precompute_rotary_embeddings(config.max_seq_len, config.d_model // config.n_heads)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
@@ -183,7 +195,10 @@ class TextDiffusionModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        *,
+        causal: bool = False,
+        return_hidden: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if input_ids.ndim != 2:
             raise ValueError(f"input_ids must be 2D, got shape {tuple(input_ids.shape)}")
 
@@ -196,15 +211,20 @@ class TextDiffusionModel(nn.Module):
         cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
 
         for block in self.blocks:
-            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask)
+            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
 
         x = norm(x)
-        return self.lm_head(x)
+        logits = self.lm_head(x)
+        if return_hidden:
+            return logits, x
+        return logits
 
     @torch.no_grad()
     def init_weights(self) -> None:
         nn.init.normal_(self.token_emb.weight, mean=0.0, std=0.8)
         nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
+        for head in self.mtp_heads:
+            nn.init.normal_(head.weight, mean=0.0, std=0.001)
 
         scale = 3**0.5 * self.config.d_model**-0.5
         for block in self.blocks:
@@ -272,6 +292,39 @@ def diffusion_loss(
     return F.cross_entropy(logits[masked], labels[masked])
 
 
+def causal_mtp_loss(
+    model: TextDiffusionModel,
+    input_ids: torch.Tensor,
+    *,
+    mtp_loss_weight: float = 0.3,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    if input_ids.size(1) < 2:
+        raise ValueError("causal_mtp_loss requires seq_len >= 2")
+
+    logits, hidden = model(input_ids, attention_mask=None, causal=True, return_hidden=True)
+    main_loss = F.cross_entropy(
+        logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
+        input_ids[:, 1:].contiguous().view(-1),
+    )
+    loss = main_loss
+    aux_losses = []
+    for offset, head in enumerate(model.mtp_heads, start=2):
+        if input_ids.size(1) <= offset:
+            break
+        aux_logits = head(hidden[:, :-offset, :])
+        aux_loss = F.cross_entropy(
+            aux_logits.contiguous().view(-1, aux_logits.size(-1)),
+            input_ids[:, offset:].contiguous().view(-1),
+        )
+        aux_losses.append(aux_loss)
+        loss = loss + mtp_loss_weight * aux_loss / max(1, len(model.mtp_heads))
+
+    metrics = {"main_loss": main_loss.detach()}
+    if aux_losses:
+        metrics["mtp_loss"] = torch.stack([aux.detach() for aux in aux_losses]).mean()
+    return loss, metrics
+
+
 def build_block_diffusion_attention_mask(
     *,
     seq_len: int,
@@ -327,6 +380,42 @@ def _sample_tokens(
     tokens = tokens.view(probs.shape[:-1])
     confidence = probs.gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
     return tokens, confidence
+
+
+@torch.no_grad()
+def generate_causal(
+    model: TextDiffusionModel,
+    prompt_ids: torch.Tensor,
+    *,
+    gen_length: int,
+    temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
+    eos_token_id: int | None = None,
+) -> torch.Tensor:
+    """Autoregressive generation for causal and causal+MTP checkpoints."""
+
+    if prompt_ids.ndim == 1:
+        prompt_ids = prompt_ids.unsqueeze(0)
+
+    model.eval()
+    x = prompt_ids.to(model.device)
+    requested_len = x.size(1) + gen_length
+    max_len = min(requested_len, model.config.max_seq_len)
+
+    while x.size(1) < max_len:
+        logits = model(x, attention_mask=None, causal=True)
+        next_token, _ = _sample_tokens(
+            logits[:, -1, :],
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+        )
+        x = torch.cat([x, next_token[:, None]], dim=1)
+        if eos_token_id is not None and int(next_token[0].item()) == eos_token_id:
+            break
+
+    return x[0]
 
 
 @torch.no_grad()
