@@ -479,7 +479,7 @@ def estimate_eval_metrics(
     model.eval()
     source_model = unwrap_model(model)
     total_loss = 0.0
-    total_masked_tokens = 0
+    total_predicted_tokens = 0
     total_bytes = 0
 
     for _ in range(args.eval_batches):
@@ -507,7 +507,7 @@ def estimate_eval_metrics(
                     token_count = int((labels != -100).sum().item())
 
         total_loss += float(loss_sum.item())
-        total_masked_tokens += token_count
+        total_predicted_tokens += token_count
         total_bytes += sum(
             len(tokenizer.decode(row.detach().cpu().tolist()).encode("utf-8"))
             for row in batch
@@ -516,7 +516,7 @@ def estimate_eval_metrics(
     model.train()
     totals_device = torch.device("cpu") if runtime.device.type == "mps" else runtime.device
     totals = torch.tensor(
-        [total_loss, total_masked_tokens, total_bytes],
+        [total_loss, total_predicted_tokens, total_bytes],
         dtype=torch.float64,
         device=totals_device,
     )
@@ -524,12 +524,20 @@ def estimate_eval_metrics(
         dist.all_reduce(totals, op=dist.ReduceOp.SUM)
 
     total_loss = float(totals[0].item())
-    total_masked_tokens = max(1.0, float(totals[1].item()))
+    total_predicted_tokens = max(1.0, float(totals[1].item()))
     total_bytes = max(1.0, float(totals[2].item()))
+    bpb = total_loss / (math.log(2) * total_bytes)
+    loss = total_loss / total_predicted_tokens
+    if args.objective == "causal_mtp":
+        return {
+            "loss": loss,
+            "bpb": bpb,
+            "predicted_tokens": total_predicted_tokens,
+        }
     return {
-        "loss": total_loss / total_masked_tokens,
-        "masked_bpb": total_loss / (math.log(2) * total_bytes),
-        "masked_tokens": total_masked_tokens,
+        "loss": loss,
+        "masked_bpb": bpb,
+        "masked_tokens": total_predicted_tokens,
     }
 
 
@@ -663,6 +671,14 @@ def log_train_metrics(wandb_run, step: int, metrics: dict[str, float]) -> None:
         wandb_run.log(metrics, step=step)
 
 
+def eval_bpb_key(args: argparse.Namespace) -> str:
+    return "bpb" if args.objective == "causal_mtp" else "masked_bpb"
+
+
+def eval_token_key(args: argparse.Namespace) -> str:
+    return "predicted_tokens" if args.objective == "causal_mtp" else "masked_tokens"
+
+
 def create_wandb_sample_table(wandb_run):
     if wandb_run is None:
         return None
@@ -675,8 +691,8 @@ def create_wandb_sample_table(wandb_run):
             "prompt",
             "generated_text",
             "eval_loss",
-            "eval_masked_bpb",
-            "eval_masked_tokens",
+            "eval_bpb",
+            "eval_predicted_tokens",
             "sample_length",
             "block_length",
             "steps",
@@ -701,13 +717,15 @@ def log_wandb_sample_table(
         return
 
     metrics = eval_metrics or {}
+    bpb_key = eval_bpb_key(args)
+    token_key = eval_token_key(args)
     table.add_data(
         step,
         args.sample_prompt,
         sample,
         metrics.get("loss"),
-        metrics.get("masked_bpb"),
-        metrics.get("masked_tokens"),
+        metrics.get(bpb_key),
+        metrics.get(token_key),
         args.sample_length,
         args.sample_block_length,
         args.sample_steps,

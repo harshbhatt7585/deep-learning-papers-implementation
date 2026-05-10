@@ -94,8 +94,8 @@ class SelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos[:, :seq_len], sin[:, :seq_len])
         k = apply_rotary_emb(k, cos[:, :seq_len], sin[:, :seq_len])
 
-        q = (norm(q) * 1.2).to(dtype=v.dtype)
-        k = (norm(k) * 1.2).to(dtype=v.dtype)
+        q = norm(q) * 1.2
+        k = norm(k) * 1.2
 
         if attention_mask is None:
             y = flash_attn.flash_attn_func(q, k, v, causal=causal)
