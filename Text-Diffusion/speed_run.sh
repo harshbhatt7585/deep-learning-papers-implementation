@@ -27,6 +27,9 @@ OBJECTIVE="${OBJECTIVE:-diffusion}"
 MTP_HEADS="${MTP_HEADS:-3}"
 MTP_LOSS_WEIGHT="${MTP_LOSS_WEIGHT:-0.3}"
 AURORA_WEIGHT_DECAY="${AURORA_WEIGHT_DECAY:-0.025}"
+EXPERIMENT_DESCRIPTION="${EXPERIMENT_DESCRIPTION:-}"
+EXPERIMENT_TAGS="${EXPERIMENT_TAGS:-}"
+EXPERIMENT_NOTES="${EXPERIMENT_NOTES:-}"
 
 D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-6}"
@@ -180,6 +183,15 @@ train() {
   )
   if [[ -n "${RESUME}" ]]; then
     command+=(--resume "${RESUME}")
+  fi
+  if [[ -n "${EXPERIMENT_DESCRIPTION}" ]]; then
+    command+=(--experiment-description "${EXPERIMENT_DESCRIPTION}")
+  fi
+  if [[ -n "${EXPERIMENT_TAGS}" ]]; then
+    command+=(--experiment-tags "${EXPERIMENT_TAGS}")
+  fi
+  if [[ -n "${EXPERIMENT_NOTES}" ]]; then
+    command+=(--experiment-notes "${EXPERIMENT_NOTES}")
   fi
   command+=("${data_flags[@]}")
   if [[ ${#modal_flags[@]} -gt 0 ]]; then

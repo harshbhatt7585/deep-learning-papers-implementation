@@ -13,6 +13,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from core_eval import ensure_eval_bundle, evaluate_core
+from experiment_tracker import ExperimentTracker
 from flash_attention import describe_attention_backend
 from model import (
     TextDiffusionConfig,
@@ -106,6 +107,9 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "wandb_group": None,
     "wandb_tags": None,
     "wandb_dir": Path("runs/wandb"),
+    "experiment_description": None,
+    "experiment_tags": None,
+    "experiment_notes": None,
 }
 
 
@@ -155,6 +159,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-interval", type=int, default=None)
 
     parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--experiment-description", type=str, default=None)
+    parser.add_argument("--experiment-tags", type=str, default=None, help="Comma-separated experiment tags.")
+    parser.add_argument("--experiment-notes", type=str, default=None)
 
     parsed = parser.parse_args()
     eval_interval = parsed.eval_interval
@@ -162,6 +169,9 @@ def parse_args() -> argparse.Namespace:
     mtp_heads = parsed.mtp_heads
     mtp_loss_weight = parsed.mtp_loss_weight
     aurora_weight_decay = parsed.aurora_weight_decay
+    experiment_description = parsed.experiment_description
+    experiment_tags = parsed.experiment_tags
+    experiment_notes = parsed.experiment_notes
     args = with_internal_defaults(parsed)
     if eval_interval is not None:
         args.eval_interval = eval_interval
@@ -173,6 +183,12 @@ def parse_args() -> argparse.Namespace:
         args.mtp_loss_weight = mtp_loss_weight
     if aurora_weight_decay is not None:
         args.aurora_weight_decay = aurora_weight_decay
+    if experiment_description is not None:
+        args.experiment_description = experiment_description
+    if experiment_tags is not None:
+        args.experiment_tags = experiment_tags
+    if experiment_notes is not None:
+        args.experiment_notes = experiment_notes
     return args
 
 
@@ -778,6 +794,18 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     wandb_run = init_wandb(args, config, runtime)
 
     log_startup(args, data, config, model, runtime)
+    experiment = (
+        ExperimentTracker(
+            args.out_dir,
+            args=args,
+            config=config,
+            description=args.experiment_description,
+            tags=args.experiment_tags,
+            notes=args.experiment_notes,
+        )
+        if is_main_process()
+        else None
+    )
     if wandb_run is not None:
         wandb_run.summary["parameters"] = sum(p.numel() for p in unwrap_model(model).parameters())
         wandb_run.summary["train_tokens"] = data.train_tokens.numel()
@@ -828,6 +856,16 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     "train/tokens": step_id * args.tokens_per_step,
                 },
             )
+            if experiment is not None:
+                experiment.log_metrics(
+                    step_id,
+                    {
+                        "train/loss": train_loss,
+                        "train/lr": lr,
+                        "train/tokens_per_second": tokens_per_second,
+                        "train/tokens": step_id * args.tokens_per_step,
+                    },
+                )
             running_loss = 0.0
             last_log_time = time.time()
 
@@ -858,6 +896,17 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     "train/lr": lr,
                 },
             )
+            if experiment is not None:
+                experiment.log_metrics(
+                    step_id,
+                    {
+                        "eval/loss": eval_metrics["loss"],
+                        "eval/masked_bpb": eval_metrics["masked_bpb"],
+                        "eval/masked_tokens": eval_metrics["masked_tokens"],
+                        "eval/train_loss_at_eval": step_loss,
+                        "train/lr": lr,
+                    },
+                )
 
         if args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
             core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
@@ -879,9 +928,23 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                         },
                     },
                 )
+                if experiment is not None:
+                    experiment.log_metrics(
+                        step_id,
+                        {
+                            "eval/core": core_metrics["core"],
+                            **{
+                                f"eval/{key}": value
+                                for key, value in core_metrics.items()
+                                if key != "core"
+                            },
+                        },
+                    )
 
         if is_main_process() and args.sample_interval > 0 and step_id % args.sample_interval == 0:
             sample = sample_text(model, data.tokenizer, args, runtime)
+            if experiment is not None:
+                experiment.log_sample(step_id, sample)
             if wandb_run is not None:
                 import wandb
 
@@ -907,6 +970,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             )
             log(f"saved checkpoint: {args.out_dir / 'checkpoint.pt'}")
             log_train_metrics(wandb_run, step_id, {"checkpoint/step": step_id})
+            if experiment is not None:
+                experiment.log_metrics(step_id, {"checkpoint/step": step_id})
 
     if is_main_process():
         save_checkpoint(
@@ -919,6 +984,10 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             args=args,
         )
         log(f"saved final checkpoint: {args.out_dir / 'checkpoint.pt'}")
+        if experiment is not None:
+            experiment.log_metrics(args.max_steps, {"checkpoint/final_step": args.max_steps})
+            experiment.finalize(final_step=args.max_steps)
+            log(f"saved experiment report: {args.out_dir / 'experiment' / 'report.md'}")
         if wandb_run is not None:
             wandb_run.summary["final_step"] = args.max_steps
             wandb_run.finish()

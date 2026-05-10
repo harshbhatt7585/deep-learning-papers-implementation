@@ -18,6 +18,8 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 PROJECT_FILES = [
     "core_eval.py",
     "eval_core.py",
+    "experiment.py",
+    "experiment_tracker.py",
     "flash_attention.py",
     "model.py",
     "fp8.py",
@@ -147,6 +149,9 @@ def run_train(
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
+    experiment_description: str | None = None,
+    experiment_tags: str | None = None,
+    experiment_notes: str | None = None,
 ) -> None:
     command = [
         "torchrun",
@@ -226,6 +231,12 @@ def run_train(
         command.append("--fp8")
     if wandb:
         command.append("--wandb")
+    if experiment_description:
+        command.extend(["--experiment-description", experiment_description])
+    if experiment_tags:
+        command.extend(["--experiment-tags", experiment_tags])
+    if experiment_notes:
+        command.extend(["--experiment-notes", experiment_notes])
 
     try:
         env = os.environ.copy()
@@ -398,6 +409,9 @@ def main(
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
+    experiment_description: str | None = None,
+    experiment_tags: str | None = None,
+    experiment_notes: str | None = None,
     pretokenize: bool = False,
     tokenizer_only: bool = False,
     download_only: bool = False,
@@ -467,4 +481,7 @@ def main(
         compile=compile,
         fp8=fp8,
         wandb=wandb,
+        experiment_description=experiment_description,
+        experiment_tags=experiment_tags,
+        experiment_notes=experiment_notes,
     )
