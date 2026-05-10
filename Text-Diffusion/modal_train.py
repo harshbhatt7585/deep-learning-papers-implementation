@@ -152,6 +152,9 @@ def run_train(
     experiment_description: str | None = None,
     experiment_tags: str | None = None,
     experiment_notes: str | None = None,
+    eval_interval: int | None = None,
+    core_metric_every: int | None = None,
+    sample_interval: int | None = None,
 ) -> None:
     command = [
         "torchrun",
@@ -237,6 +240,12 @@ def run_train(
         command.extend(["--experiment-tags", experiment_tags])
     if experiment_notes:
         command.extend(["--experiment-notes", experiment_notes])
+    if eval_interval is not None:
+        command.extend(["--eval-interval", str(eval_interval)])
+    if core_metric_every is not None:
+        command.extend(["--core-metric-every", str(core_metric_every)])
+    if sample_interval is not None:
+        command.extend(["--sample-interval", str(sample_interval)])
 
     try:
         env = os.environ.copy()
@@ -412,6 +421,9 @@ def main(
     experiment_description: str | None = None,
     experiment_tags: str | None = None,
     experiment_notes: str | None = None,
+    eval_interval: int | None = None,
+    core_metric_every: int | None = None,
+    sample_interval: int | None = None,
     pretokenize: bool = False,
     tokenizer_only: bool = False,
     download_only: bool = False,
@@ -484,4 +496,7 @@ def main(
         experiment_description=experiment_description,
         experiment_tags=experiment_tags,
         experiment_notes=experiment_notes,
+        eval_interval=eval_interval,
+        core_metric_every=core_metric_every,
+        sample_interval=sample_interval,
     )

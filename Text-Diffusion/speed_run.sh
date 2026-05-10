@@ -30,6 +30,9 @@ AURORA_WEIGHT_DECAY="${AURORA_WEIGHT_DECAY:-0.025}"
 EXPERIMENT_DESCRIPTION="${EXPERIMENT_DESCRIPTION:-}"
 EXPERIMENT_TAGS="${EXPERIMENT_TAGS:-}"
 EXPERIMENT_NOTES="${EXPERIMENT_NOTES:-}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-}"
+CORE_METRIC_EVERY="${CORE_METRIC_EVERY:-}"
+SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-}"
 
 D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-6}"
@@ -192,6 +195,15 @@ train() {
   fi
   if [[ -n "${EXPERIMENT_NOTES}" ]]; then
     command+=(--experiment-notes "${EXPERIMENT_NOTES}")
+  fi
+  if [[ -n "${EVAL_INTERVAL}" ]]; then
+    command+=(--eval-interval "${EVAL_INTERVAL}")
+  fi
+  if [[ -n "${CORE_METRIC_EVERY}" ]]; then
+    command+=(--core-metric-every "${CORE_METRIC_EVERY}")
+  fi
+  if [[ -n "${SAMPLE_INTERVAL}" ]]; then
+    command+=(--sample-interval "${SAMPLE_INTERVAL}")
   fi
   command+=("${data_flags[@]}")
   if [[ ${#modal_flags[@]} -gt 0 ]]; then

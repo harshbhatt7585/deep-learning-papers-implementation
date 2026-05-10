@@ -157,6 +157,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimizer", choices=["adamw", "muon", "aurora"], default="adamw")
     parser.add_argument("--aurora-weight-decay", type=float, default=None)
     parser.add_argument("--eval-interval", type=int, default=None)
+    parser.add_argument("--core-metric-every", type=int, default=None)
+    parser.add_argument("--sample-interval", type=int, default=None)
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--experiment-description", type=str, default=None)
@@ -165,6 +167,8 @@ def parse_args() -> argparse.Namespace:
 
     parsed = parser.parse_args()
     eval_interval = parsed.eval_interval
+    core_metric_every = parsed.core_metric_every
+    sample_interval = parsed.sample_interval
     nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
     mtp_heads = parsed.mtp_heads
     mtp_loss_weight = parsed.mtp_loss_weight
@@ -175,6 +179,10 @@ def parse_args() -> argparse.Namespace:
     args = with_internal_defaults(parsed)
     if eval_interval is not None:
         args.eval_interval = eval_interval
+    if core_metric_every is not None:
+        args.core_metric_every = core_metric_every
+    if sample_interval is not None:
+        args.sample_interval = sample_interval
     if nanochat_tokenizer_vocab_size is not None:
         args.nanochat_tokenizer_vocab_size = nanochat_tokenizer_vocab_size
     if mtp_heads is not None:
