@@ -904,35 +904,30 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 runtime,
             )
             latest_eval_metrics = eval_metrics
+            bpb_key = eval_bpb_key(args)
+            token_key = eval_token_key(args)
+            bpb_label = "bpb" if args.objective == "causal_mtp" else "masked_bpb"
             log(
                 f"step {step_id:05d} "
                 f"train_loss {step_loss:.4f} "
                 f"val_loss {eval_metrics['loss']:.4f} "
-                f"masked_bpb {eval_metrics['masked_bpb']:.4f} "
+                f"{bpb_label} {eval_metrics[bpb_key]:.4f} "
                 f"lr {lr:.2e}"
             )
+            eval_log_metrics = {
+                "eval/loss": eval_metrics["loss"],
+                f"eval/{bpb_key}": eval_metrics[bpb_key],
+                f"eval/{token_key}": eval_metrics[token_key],
+                "eval/train_loss_at_eval": step_loss,
+                "train/lr": lr,
+            }
             log_train_metrics(
                 wandb_run,
                 step_id,
-                {
-                    "eval/loss": eval_metrics["loss"],
-                    "eval/masked_bpb": eval_metrics["masked_bpb"],
-                    "eval/masked_tokens": eval_metrics["masked_tokens"],
-                    "eval/train_loss_at_eval": step_loss,
-                    "train/lr": lr,
-                },
+                eval_log_metrics,
             )
             if experiment is not None:
-                experiment.log_metrics(
-                    step_id,
-                    {
-                        "eval/loss": eval_metrics["loss"],
-                        "eval/masked_bpb": eval_metrics["masked_bpb"],
-                        "eval/masked_tokens": eval_metrics["masked_tokens"],
-                        "eval/train_loss_at_eval": step_loss,
-                        "train/lr": lr,
-                    },
-                )
+                experiment.log_metrics(step_id, eval_log_metrics)
 
         if args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
             core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
