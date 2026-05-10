@@ -217,6 +217,7 @@ def run_train(
 
     try:
         env = os.environ.copy()
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         if compile:
             env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
         subprocess.run(command, cwd=WORKDIR, env=env, stdout=sys.stdout, stderr=sys.stderr, check=True)
