@@ -417,6 +417,112 @@ If 5*x + 3 = 13, then x is 5-6.
 
 Conclusion: hybrid local/full attention is promising for speed on H100, but this specific 600-step run is not a quality win. To isolate the attention change properly, we need a matched baseline with the same `MTP_HEADS=1`, `MTP_LOSS_WEIGHT=0.1`, H100, FP8, and GQA but full attention. Until then, this result only says hybrid attention is fast and not obviously catastrophic, not that it improves learning.
 
+## 2026-05-11: H100 Hybrid Attention + Gated MLP Run
+
+The next experiment kept the H100 hybrid-attention setup and changed only the MLP from the original `relu2` feed-forward block to a parameter-matched gated MLP. The goal was to test whether a SwiGLU-style gated feed-forward block improves quality without increasing the model size.
+
+Command:
+
+```bash
+GPU_TYPE=H100 \
+FP8=1 \
+COMPILE=1 \
+COMPILE_MODE=default \
+MAX_STEPS=600 \
+EVAL_INTERVAL=600 \
+SAMPLE_INTERVAL=600 \
+CORE_METRIC_EVERY=600 \
+OBJECTIVE=causal_mtp \
+MTP_HEADS=1 \
+MTP_LOSS_WEIGHT=0.1 \
+OPTIMIZER=muon \
+D_MODEL=768 \
+N_HEADS=6 \
+N_KV_HEADS=2 \
+N_LAYERS=12 \
+MLP_TYPE=gated \
+ATTENTION_WINDOW=512 \
+FULL_ATTENTION_EVERY=3 \
+RUN_NAME=bench-h100-8gpu-mtp1-gqa2-hybrid512-gated-w01-600-compile \
+EXPERIMENT_DESCRIPTION="D12 H100 8GPU causal-MTP benchmark: 1 MTP head, GQA kv=2, gated MLP, hybrid attention window 512, MTP weight 0.1, FP8." \
+EXPERIMENT_TAGS="benchmark,d12,mtp,heads-1,weight-0.1,gqa,kv-2,gated-mlp,hybrid512,h100,8gpu,fp8,compile" \
+./speed_run.sh train 8gpu
+```
+
+Startup confirmed the intended path:
+
+```text
+parameters: 150,994,944
+attention_heads: q=6 kv=2 head_dim=128
+mlp_type: gated
+attention_pattern: hybrid window=512 full_every=3
+attention_backend: FA3 (Hopper GPU with bf16 tensors)
+fp8: True
+compile_mode: default
+```
+
+Throughput improved versus the previous H100 hybrid `relu2` run:
+
+```text
+previous hybrid relu2: ~2.10M-2.14M tok/s
+new hybrid gated:      ~2.35M-2.40M tok/s
+```
+
+Final metrics:
+
+```text
+step 0600 train_loss 3.7734
+step 0600 val_loss 8.8747
+step 0600 bpb 2.7901
+step 0600 core 0.0334
+```
+
+Comparison:
+
+| Run | Hardware | MTP Heads | MLP | Attention | BPB | CORE | Throughput Notes |
+| --- | --- | ---: | --- | --- | ---: | ---: | --- |
+| MTP1 GQA hybrid512 | 8x H100 | 1 | relu2 | hybrid, window=512 | 2.8061 | 0.0317 | `~2.10M-2.14M tok/s` |
+| MTP1 GQA hybrid512 gated | 8x H100 | 1 | gated | hybrid, window=512 | 2.7901 | 0.0334 | `~2.35M-2.40M tok/s` |
+| MTP2 GQA | 8x A100 | 2 | relu2 | full | 2.7568 | 0.0366 | `~0.98M-1.01M tok/s` |
+
+The gated MLP run is an incremental improvement over the previous H100 hybrid `relu2` run: lower BPB, higher CORE, lower train loss, and better throughput. It still does not beat the earlier A100 MTP2 GQA run on 600-step CORE, but that run used two MTP heads and full attention, so it is not an isolated comparison.
+
+Conclusion: gated MLP is worth keeping for the H100 hybrid path unless a clean full-attention H100 baseline shows otherwise.
+
+## 2026-05-11: Sparse ReLU2 MLP Training Run
+
+After adding Sakana-style sparse training support, the next run switched back to `MLP_TYPE=relu2` and enabled an activation sparsity penalty. The goal is to train a model whose MLP activations become sparse enough to benefit from TwELL-style sparse inference kernels after training.
+
+The important difference is:
+
+```text
+MLP_TYPE=relu2
+SPARSE_L1_WEIGHT=1e-4
+```
+
+Early training showed the sparse objective working. MLP sparsity rose steadily while throughput stayed close to the gated H100 run:
+
+```text
+step 00105 train_loss 5.4567 mlp_sparsity 0.690 tok/s 2,323,854
+step 00150 train_loss 4.8391 mlp_sparsity 0.732 tok/s 2,326,795
+step 00200 train_loss 4.6076 mlp_sparsity 0.771 tok/s 2,321,675
+step 00250 train_loss 4.2817 mlp_sparsity 0.788 tok/s 2,316,178
+step 00300 train_loss 4.2205 mlp_sparsity 0.797 tok/s 2,311,438
+step 00343 train_loss 4.0047 mlp_sparsity 0.801 tok/s 2,308,831
+```
+
+This is the first useful signal from the sparse path. By step 343, the model is already around `80%` sparse in the measured MLP activations. That is not yet the `90-95%` sparsity range where sparse kernels usually become clearly attractive, but the trend is moving in the right direction without an obvious throughput collapse.
+
+Comparison at roughly similar progress:
+
+| Run | MLP | Sparse L1 | Step | Train Loss | MLP Sparsity | Tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| H100 hybrid gated | gated | 0 | 300 | 4.1590 | n/a | `~2.38M` |
+| H100 hybrid sparse relu2 | relu2 | `1e-4` | 300 | 4.2205 | 0.797 | `~2.31M` |
+| H100 hybrid sparse relu2 | relu2 | `1e-4` | 343 | 4.0047 | 0.801 | `~2.31M` |
+
+Conclusion so far: sparse training is behaving as intended. The model is becoming substantially sparse, and the speed cost during dense training is acceptable. The real decision point is the final 600-step quality and whether post-training TwELL inference gives a meaningful speedup on this checkpoint.
+
 ## Open Issues
 
 The W&B sample table currently warns:
