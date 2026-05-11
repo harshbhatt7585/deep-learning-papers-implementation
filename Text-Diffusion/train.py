@@ -87,7 +87,6 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "sample_temperature": 0.6,
     "sample_top_k": 50,
     "sample_top_p": None,
-    "compile_mode": "default",
     "fused_adamw": True,
     "fp8_recipe": "tensorwise",
     "matrix_lr": 0.02,
@@ -327,7 +326,7 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
         log("compiling model with torch.compile(dynamic=False)")
-        model = torch.compile(model, mode=args.compile_mode, dynamic=False)
+        model = torch.compile(model, dynamic=False)
     if is_dist() and args.optimizer in {"muon", "aurora"}:
         for param in model.parameters():
             dist.broadcast(param.data, src=0)
@@ -663,6 +662,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
         "sample: "
         f"interval={args.sample_interval} "
         f"steps={args.sample_steps} "
+        "remask=low_confidence "
         f"temperature={args.sample_temperature} "
         f"top_k={args.sample_top_k} "
         f"top_p={args.sample_top_p}"
@@ -699,7 +699,7 @@ def create_wandb_sample_table(wandb_run):
             "sample_length",
             "block_length",
             "steps",
-            "threshold",
+            "remask_strategy",
             "temperature",
             "top_k",
             "top_p",
@@ -732,7 +732,7 @@ def log_wandb_sample_table(
         args.sample_length,
         args.sample_block_length,
         args.sample_steps,
-        args.sample_threshold,
+        "low_confidence",
         args.sample_temperature,
         args.sample_top_k,
         args.sample_top_p,

@@ -45,7 +45,7 @@ def main() -> None:
     parser.add_argument("--gen-length", type=int, default=128)
     parser.add_argument("--block-length", type=int, default=32)
     parser.add_argument("--steps", type=int, default=32)
-    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--threshold", type=float, default=0.5, help="Deprecated; diffusion sampling now uses low-confidence remasking.")
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=None)

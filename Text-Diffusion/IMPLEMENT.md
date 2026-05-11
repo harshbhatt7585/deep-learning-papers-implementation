@@ -130,20 +130,17 @@ generated = generate(
     gen_length=32,
     block_length=8,
     steps=8,
-    threshold=0.70,
-    editing_threshold=0.90,
-    max_post_steps=16,
 )
 ```
 
 For each block:
 
 1. Build a block-causal attention mask.
-2. Sample or greedily choose candidate tokens for every masked position.
-3. Accept high-confidence candidates.
-4. If too few candidates pass the threshold, accept the most confident one.
-5. Optionally edit already-filled non-prompt tokens.
-6. Repeat until all masks in the block are filled and edit passes are done.
+2. Sample or greedily choose candidate tokens for every still-masked non-prompt position.
+3. Fill those masked positions with the proposed candidates.
+4. Compute the scheduled number of masks that should remain for the next step.
+5. Re-mask the lowest-confidence proposed tokens.
+6. Repeat until the scheduled mask count reaches zero.
 7. Move to the next block.
 
 This is the key difference from autoregressive decoding: several positions can
@@ -210,10 +207,8 @@ The implementation now matches these high-level LLaDA2.1 ideas:
 - Full masked output template instead of token-by-token generation.
 - Block-aligned generation with `block_length`.
 - Lower-triangular block attention, with full attention inside each block.
-- Confidence threshold for accepting denoised mask tokens.
-- Fallback to the most confident tokens when the threshold accepts too few.
-- Optional token editing with `editing_threshold`.
-- Post-fill edit passes controlled by `max_post_steps`.
+- Scheduled low-confidence remasking during the reverse process.
+- The number of remaining masks decreases across `steps`.
 - Greedy, top-k, and top-p sampling support.
 
 ## Step 10: What Is Still Simplified

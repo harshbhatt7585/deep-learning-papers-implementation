@@ -434,10 +434,12 @@ def generate(
     top_p: float | None = None,
     eos_token_id: int | None = None,
 ) -> torch.Tensor:
-    """Block-wise diffusion generation: fill masks from left blocks to right blocks."""
+    """Block-wise masked diffusion generation with low-confidence remasking."""
 
     if prompt_ids.ndim == 1:
         prompt_ids = prompt_ids.unsqueeze(0)
+    if steps <= 0:
+        raise ValueError("steps must be positive")
 
     model.eval()
     config = model.config
@@ -447,7 +449,6 @@ def generate(
     num_blocks = math.ceil(requested_len / block_length)
     total_len = num_blocks * block_length
 
-    transfer_count = max(1, math.ceil(block_length / steps))
     full_attention_mask = build_block_diffusion_attention_mask(
         seq_len=total_len,
         block_length=block_length,
@@ -466,9 +467,13 @@ def generate(
         if block_start < prompt_len:
             prompt_in_block[: prompt_len - block_start] = True
 
-        for step in range(steps + max_post_steps):
+        mutable_positions = ~prompt_in_block.unsqueeze(0)
+        mutable_count = int(mutable_positions.sum().item())
+        for step in range(steps):
             old_block = x[:, active_slice].clone()
             active_masks = old_block == config.mask_token_id
+            if not active_masks.any():
+                break
 
             attention_mask = full_attention_mask[:, :block_end, :block_end]
             logits = model(x[:, :block_end], attention_mask=attention_mask)
@@ -480,31 +485,23 @@ def generate(
                 top_p=top_p,
             )
 
-            accept = torch.zeros_like(active_masks)
-            if active_masks.any():
-                high_confidence = (confidence > threshold) & active_masks
-                accept |= high_confidence
-                if accept.sum() == 0:
-                    masked_confidence = confidence.masked_fill(~active_masks, float("-inf"))
-                    _, idx = torch.topk(
-                        masked_confidence[0],
-                        k=min(transfer_count, int(active_masks.sum().item())),
-                    )
-                    accept[0, idx] = True
+            updated_block = old_block.clone()
+            updated_block[active_masks] = candidates[active_masks]
 
-            if editing_threshold is not None:
-                editable = ~active_masks & ~prompt_in_block.unsqueeze(0)
-                changed = candidates != old_block
-                accept |= editable & changed & (confidence > editing_threshold)
+            remaining_ratio = 1.0 - ((step + 1) / steps)
+            remaining_masks = math.ceil(mutable_count * remaining_ratio)
+            if remaining_masks > 0:
+                masked_confidence = confidence.masked_fill(~active_masks, float("inf"))
+                _, idx = torch.topk(
+                    masked_confidence[0],
+                    k=min(remaining_masks, int(active_masks.sum().item())),
+                    largest=False,
+                )
+                updated_block[0, idx] = config.mask_token_id
 
-            if accept.any():
-                updated_block = x[:, active_slice].clone()
-                updated_block[accept] = candidates[accept]
-                x[:, active_slice] = updated_block
+            x[:, active_slice] = updated_block
 
-            if not active_masks.any():
-                break
-            if step >= steps - 1 and editing_threshold is None:
+            if remaining_masks == 0:
                 break
 
         if eos_token_id is not None:
