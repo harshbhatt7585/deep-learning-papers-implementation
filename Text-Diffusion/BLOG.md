@@ -491,7 +491,7 @@ Conclusion: gated MLP is worth keeping for the H100 hybrid path unless a clean f
 
 ## 2026-05-11: Sparse ReLU2 MLP Training Run
 
-After adding Sakana-style sparse training support, the next run switched back to `MLP_TYPE=relu2` and enabled an activation sparsity penalty. The goal is to train a model whose MLP activations become sparse enough to benefit from TwELL-style sparse inference kernels after training.
+The next run switched back to `MLP_TYPE=relu2` and enabled an activation sparsity penalty. The goal was to test whether sparse ReLU2 activations improve short-run quality without damaging H100 throughput.
 
 The important difference is:
 
@@ -500,7 +500,7 @@ MLP_TYPE=relu2
 SPARSE_L1_WEIGHT=1e-4
 ```
 
-Early training showed the sparse objective working. MLP sparsity rose steadily while throughput stayed close to the gated H100 run:
+Training showed the sparse objective working. MLP sparsity rose quickly, then plateaued around `0.795-0.800`:
 
 ```text
 step 00105 train_loss 5.4567 mlp_sparsity 0.690 tok/s 2,323,854
@@ -509,19 +509,46 @@ step 00200 train_loss 4.6076 mlp_sparsity 0.771 tok/s 2,321,675
 step 00250 train_loss 4.2817 mlp_sparsity 0.788 tok/s 2,316,178
 step 00300 train_loss 4.2205 mlp_sparsity 0.797 tok/s 2,311,438
 step 00343 train_loss 4.0047 mlp_sparsity 0.801 tok/s 2,308,831
+step 00500 train_loss 3.6400 mlp_sparsity 0.797 tok/s 2,323,451
+step 00552 train_loss 3.8979 mlp_sparsity 0.796 tok/s 1,105,460
+step 00600 train_loss 3.9502 mlp_sparsity 0.795 tok/s 2,320,898
 ```
 
-This is the first useful signal from the sparse path. By step 343, the model is already around `80%` sparse in the measured MLP activations. That is not yet the `90-95%` sparsity range where sparse kernels usually become clearly attractive, but the trend is moving in the right direction without an obvious throughput collapse.
+Final metrics:
 
-Comparison at roughly similar progress:
+```text
+step 0600 train_loss 3.9502
+step 0600 val_loss 8.9313
+step 0600 bpb 2.8051
+step 0600 core 0.0474
+final mlp_sparsity 0.795
+```
 
-| Run | MLP | Sparse L1 | Step | Train Loss | MLP Sparsity | Tok/s |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| H100 hybrid gated | gated | 0 | 300 | 4.1590 | n/a | `~2.38M` |
-| H100 hybrid sparse relu2 | relu2 | `1e-4` | 300 | 4.2205 | 0.797 | `~2.31M` |
-| H100 hybrid sparse relu2 | relu2 | `1e-4` | 343 | 4.0047 | 0.801 | `~2.31M` |
+CORE highlights:
 
-Conclusion so far: sparse training is behaving as intended. The model is becoming substantially sparse, and the speed cost during dense training is acceptable. The real decision point is the final 600-step quality and whether post-training TwELL inference gives a meaningful speedup on this checkpoint.
+```text
+hellaswag_zeroshot centered 0.0480
+arc_challenge centered -0.0267
+copa centered 0.2000
+commonsense_qa centered 0.2275
+bigbench_cs_algorithms centered 0.4380
+bigbench_dyck_languages centered 0.0720
+agi_eval_lsat_ar centered 0.1033
+bigbench_language_identification centered 0.1881
+```
+
+The samples were still poor and repetitive. The arithmetic prompt failed, and factual prompts still produced broken repeated fragments. So this is not a usable language model yet, but the benchmark signal improved.
+
+Comparison:
+
+| Run | MLP | Sparse L1 | BPB | CORE | MLP Sparsity | Throughput Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| A100 MTP2 GQA | relu2 | 0 | 2.7568 | 0.0366 | n/a | `~0.98M-1.01M tok/s` |
+| H100 hybrid relu2 MTP1 | relu2 | 0 | 2.8061 | 0.0317 | n/a | `~2.10M-2.14M tok/s` |
+| H100 hybrid gated MTP1 | gated | 0 | 2.7901 | 0.0334 | n/a | `~2.35M-2.40M tok/s` |
+| H100 hybrid sparse relu2 MTP1 | relu2 | `1e-4` | 2.8051 | 0.0474 | 0.795 | `~2.30M-2.32M tok/s` |
+
+Conclusion: sparse-L1 gave the best 600-step CORE score so far in this short-run set, even though BPB did not improve. The likely value is regularization, not speed: training still uses dense MLP matmuls, so sparsity does not reduce training FLOPs. For now, the sparse kernel path is not worth keeping in the training pipeline; continue with `relu2` and `gated` experiments, and treat sparse-L1 as an optional quality regularizer rather than a speed feature.
 
 ## Open Issues
 

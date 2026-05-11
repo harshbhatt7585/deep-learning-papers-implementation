@@ -159,16 +159,33 @@ class MLP(nn.Module):
             if hidden_dim >= 128:
                 hidden_dim = 16 * (hidden_dim // 16)
             self.c_gate = Linear(config.d_model, hidden_dim, bias=False)
+        elif self.mlp_type != "relu2":
+            raise ValueError(f"unknown mlp_type={self.mlp_type!r}")
         self.c_fc = Linear(config.d_model, hidden_dim, bias=False)
         self.c_proj = Linear(hidden_dim, config.d_model, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        return_stats: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if self.mlp_type == "gated":
-            x = self.c_fc(x) * F.silu(self.c_gate(x))
+            activation = self.c_fc(x) * F.silu(self.c_gate(x))
+            sparse_activation = activation
         else:
-            x = self.c_fc(x)
-            x = F.relu(x).square()
-        return self.c_proj(x)
+            sparse_activation = F.relu(self.c_fc(x))
+            activation = sparse_activation.square()
+        out = self.c_proj(activation)
+        if not return_stats:
+            return out
+        abs_activation = sparse_activation.abs()
+        stats = {
+            "mlp_l1": abs_activation.mean(),
+            "mlp_l0": (abs_activation > 0).float().sum(dim=-1).mean(),
+            "mlp_sparsity": (abs_activation == 0).float().mean(),
+        }
+        return out, stats
 
 
 class TransformerBlock(nn.Module):
@@ -185,8 +202,13 @@ class TransformerBlock(nn.Module):
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
         window_size: tuple[int, int] = (-1, -1),
-    ) -> torch.Tensor:
+        return_mlp_stats: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
+        if return_mlp_stats:
+            mlp_out, mlp_stats = self.mlp(norm(x), return_stats=True)
+            x = x + mlp_out
+            return x, mlp_stats
         x = x + self.mlp(norm(x))
         return x
 
@@ -220,7 +242,8 @@ class TextDiffusionModel(nn.Module):
         *,
         causal: bool = False,
         return_hidden: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        return_mlp_stats: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, dict[str, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         if input_ids.ndim != 2:
             raise ValueError(f"input_ids must be 2D, got shape {tuple(input_ids.shape)}")
 
@@ -232,12 +255,32 @@ class TextDiffusionModel(nn.Module):
         x = self.drop(x)
         cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
 
+        mlp_stats: list[dict[str, torch.Tensor]] = []
         for block_idx, block in enumerate(self.blocks):
             window_size = self._attention_window_size(block_idx)
-            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
+            if return_mlp_stats:
+                x, block_mlp_stats = block(
+                    x,
+                    cos_sin=cos_sin,
+                    attention_mask=attention_mask,
+                    causal=causal,
+                    window_size=window_size,
+                    return_mlp_stats=True,
+                )
+                mlp_stats.append(block_mlp_stats)
+            else:
+                x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
 
         x = norm(x)
         logits = self.lm_head(x)
+        if return_mlp_stats:
+            reduced_mlp_stats = {
+                key: torch.stack([stats[key] for stats in mlp_stats]).mean()
+                for key in ("mlp_l1", "mlp_l0", "mlp_sparsity")
+            }
+            if return_hidden:
+                return logits, x, reduced_mlp_stats
+            return logits, reduced_mlp_stats
         if return_hidden:
             return logits, x
         return logits

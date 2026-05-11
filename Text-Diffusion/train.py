@@ -72,6 +72,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "warmup_steps": 50,
     "dropout": 0.1,
     "mlp_type": "relu2",
+    "sparse_l1_weight": 0.0,
     "eval_interval": 200,
     "eval_batches": 20,
     "core_metric_every": 400,
@@ -153,6 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-kv-heads", type=int, default=None)
     parser.add_argument("--n-layers", type=int, default=4)
     parser.add_argument("--mlp-type", choices=["relu2", "gated"], default=None)
+    parser.add_argument("--sparse-l1-weight", type=float, default=None)
     parser.add_argument("--attention-window", type=int, default=0)
     parser.add_argument("--full-attention-every", type=int, default=0)
 
@@ -181,6 +183,7 @@ def parse_args() -> argparse.Namespace:
     aurora_weight_decay = parsed.aurora_weight_decay
     compile_mode = parsed.compile_mode
     mlp_type = parsed.mlp_type
+    sparse_l1_weight = parsed.sparse_l1_weight
     experiment_description = parsed.experiment_description
     experiment_tags = parsed.experiment_tags
     experiment_notes = parsed.experiment_notes
@@ -203,6 +206,8 @@ def parse_args() -> argparse.Namespace:
         args.compile_mode = compile_mode
     if mlp_type is not None:
         args.mlp_type = mlp_type
+    if sparse_l1_weight is not None:
+        args.sparse_l1_weight = sparse_l1_weight
     if experiment_description is not None:
         args.experiment_description = experiment_description
     if experiment_tags is not None:
@@ -468,6 +473,35 @@ def causal_mtp_cross_entropy(
     input_ids: torch.Tensor,
     *,
     mtp_loss_weight: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    output = model(
+        input_ids,
+        attention_mask=None,
+        causal=True,
+        return_hidden=True,
+        return_mlp_stats=True,
+    )
+    logits, hidden, mlp_stats = output
+    main_loss = causal_cross_entropy(logits, input_ids)
+    loss = main_loss
+    for offset, head in enumerate(source_model.mtp_heads, start=2):
+        if input_ids.size(1) <= offset:
+            break
+        aux_logits = head(hidden[:, :-offset, :])
+        aux_loss = F.cross_entropy(
+            aux_logits.contiguous().view(-1, aux_logits.size(-1)),
+            input_ids[:, offset:].contiguous().view(-1),
+        )
+        loss = loss + mtp_loss_weight * aux_loss / max(1, len(source_model.mtp_heads))
+    return loss, mlp_stats
+
+
+def causal_mtp_cross_entropy_dense(
+    model: torch.nn.Module,
+    source_model: TextDiffusionModel,
+    input_ids: torch.Tensor,
+    *,
+    mtp_loss_weight: float,
 ) -> torch.Tensor:
     logits, hidden = model(input_ids, attention_mask=None, causal=True, return_hidden=True)
     main_loss = causal_cross_entropy(logits, input_ids)
@@ -482,6 +516,17 @@ def causal_mtp_cross_entropy(
         )
         loss = loss + mtp_loss_weight * aux_loss / max(1, len(source_model.mtp_heads))
     return loss
+
+
+def apply_sparse_l1_loss(
+    loss: torch.Tensor,
+    mlp_stats: dict[str, torch.Tensor],
+    *,
+    sparse_l1_weight: float,
+) -> torch.Tensor:
+    if sparse_l1_weight <= 0:
+        return loss
+    return loss + sparse_l1_weight * mlp_stats["mlp_l1"]
 
 
 @torch.no_grad()
@@ -661,6 +706,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
     log(f"attention_heads: q={config.n_heads} kv={config.n_kv_heads} head_dim={config.d_model // config.n_heads}")
     log(f"mlp_type: {config.mlp_type}")
+    log(f"sparse_l1_weight: {args.sparse_l1_weight:g}")
     if config.attention_window > 0:
         log(f"attention_pattern: hybrid window={config.attention_window} full_every={config.full_attention_every}")
     else:
@@ -770,11 +816,15 @@ def train_one_step(
     train_tokens: torch.Tensor,
     args: argparse.Namespace,
     runtime: Runtime,
-) -> float:
+) -> tuple[float, dict[str, float]]:
     optimizer.zero_grad(set_to_none=True)
     source_model = unwrap_model(model)
     config = source_model.config
     step_loss = 0.0
+    step_mlp_l1 = 0.0
+    step_mlp_l0 = 0.0
+    step_mlp_sparsity = 0.0
+    use_sparse_loss = args.sparse_l1_weight > 0
 
     for micro_step in range(args.grad_accum_steps):
         batch = get_batch(
@@ -791,12 +841,21 @@ def train_one_step(
         with sync_context:
             with autocast_context(runtime.device, args.amp_dtype):
                 if args.objective == "causal_mtp":
-                    loss = causal_mtp_cross_entropy(
-                        model,
-                        source_model,
-                        batch,
-                        mtp_loss_weight=args.mtp_loss_weight,
-                    )
+                    if use_sparse_loss:
+                        loss, mlp_stats = causal_mtp_cross_entropy(
+                            model,
+                            source_model,
+                            batch,
+                            mtp_loss_weight=args.mtp_loss_weight,
+                        )
+                    else:
+                        loss = causal_mtp_cross_entropy_dense(
+                            model,
+                            source_model,
+                            batch,
+                            mtp_loss_weight=args.mtp_loss_weight,
+                        )
+                        mlp_stats = None
                 else:
                     noised, labels = make_masked_inputs(
                         batch,
@@ -804,17 +863,37 @@ def train_one_step(
                         pad_token_id=config.pad_token_id,
                         mask_prob=args.mask_prob,
                     )
-                    logits = model(noised, attention_mask=None)
+                    if use_sparse_loss:
+                        logits, mlp_stats = model(noised, attention_mask=None, return_mlp_stats=True)
+                    else:
+                        logits = model(noised, attention_mask=None)
+                        mlp_stats = None
                     loss = masked_cross_entropy(logits, labels)
+                if mlp_stats is not None:
+                    loss = apply_sparse_l1_loss(
+                        loss,
+                        mlp_stats,
+                        sparse_l1_weight=args.sparse_l1_weight,
+                    )
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
         step_loss += loss.detach().item()
+        if mlp_stats is not None:
+            step_mlp_l1 += float(mlp_stats["mlp_l1"].detach().item())
+            step_mlp_l0 += float(mlp_stats["mlp_l0"].detach().item())
+            step_mlp_sparsity += float(mlp_stats["mlp_sparsity"].detach().item())
 
     scaler.unscale_(optimizer)
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     scaler.step(optimizer)
     scaler.update()
-    return step_loss / args.grad_accum_steps
+    inv_accum = 1.0 / args.grad_accum_steps
+    sparse_metrics = {
+        "train/mlp_l1": step_mlp_l1 * inv_accum,
+        "train/mlp_l0": step_mlp_l0 * inv_accum,
+        "train/mlp_sparsity": step_mlp_sparsity * inv_accum,
+    }
+    return step_loss * inv_accum, sparse_metrics
 
 
 def train(args: argparse.Namespace, runtime: Runtime) -> None:
@@ -881,7 +960,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         )
         set_lr(optimizer, lr)
 
-        step_loss = train_one_step(
+        step_loss, step_sparse_metrics = train_one_step(
             model=model,
             optimizer=optimizer,
             scaler=scaler,
@@ -896,27 +975,26 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             tokens = args.tokens_per_step * args.log_interval
             tokens_per_second = tokens / max(elapsed, 1e-9)
             train_loss = running_loss / args.log_interval
-            log(f"step {step_id:05d} train_loss {train_loss:.4f} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
+            sparse_log = (
+                f" mlp_sparsity {step_sparse_metrics['train/mlp_sparsity']:.3f}"
+                if args.sparse_l1_weight > 0
+                else ""
+            )
+            log(f"step {step_id:05d} train_loss {train_loss:.4f}{sparse_log} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
+            train_log_metrics = {
+                "train/loss": train_loss,
+                "train/lr": lr,
+                "train/tokens_per_second": tokens_per_second,
+                "train/tokens": step_id * args.tokens_per_step,
+                **step_sparse_metrics,
+            }
             log_train_metrics(
                 wandb_run,
                 step_id,
-                {
-                    "train/loss": train_loss,
-                    "train/lr": lr,
-                    "train/tokens_per_second": tokens_per_second,
-                    "train/tokens": step_id * args.tokens_per_step,
-                },
+                train_log_metrics,
             )
             if experiment is not None:
-                experiment.log_metrics(
-                    step_id,
-                    {
-                        "train/loss": train_loss,
-                        "train/lr": lr,
-                        "train/tokens_per_second": tokens_per_second,
-                        "train/tokens": step_id * args.tokens_per_step,
-                    },
-                )
+                experiment.log_metrics(step_id, train_log_metrics)
             running_loss = 0.0
             last_log_time = time.time()
 
