@@ -71,6 +71,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "aurora_weight_decay": 0.025,
     "warmup_steps": 50,
     "dropout": 0.1,
+    "mlp_type": "relu2",
     "eval_interval": 200,
     "eval_batches": 20,
     "core_metric_every": 400,
@@ -151,6 +152,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--n-kv-heads", type=int, default=None)
     parser.add_argument("--n-layers", type=int, default=4)
+    parser.add_argument("--mlp-type", choices=["relu2", "gated"], default=None)
     parser.add_argument("--attention-window", type=int, default=0)
     parser.add_argument("--full-attention-every", type=int, default=0)
 
@@ -178,6 +180,7 @@ def parse_args() -> argparse.Namespace:
     mtp_loss_weight = parsed.mtp_loss_weight
     aurora_weight_decay = parsed.aurora_weight_decay
     compile_mode = parsed.compile_mode
+    mlp_type = parsed.mlp_type
     experiment_description = parsed.experiment_description
     experiment_tags = parsed.experiment_tags
     experiment_notes = parsed.experiment_notes
@@ -198,6 +201,8 @@ def parse_args() -> argparse.Namespace:
         args.aurora_weight_decay = aurora_weight_decay
     if compile_mode is not None:
         args.compile_mode = compile_mode
+    if mlp_type is not None:
+        args.mlp_type = mlp_type
     if experiment_description is not None:
         args.experiment_description = experiment_description
     if experiment_tags is not None:
@@ -223,6 +228,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         n_heads=args.n_heads,
         n_kv_heads=args.n_kv_heads,
         n_layers=args.n_layers,
+        mlp_type=args.mlp_type,
         attention_window=args.attention_window,
         full_attention_every=args.full_attention_every,
         dropout=args.dropout,
@@ -654,6 +660,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"vocab_size: {config.vocab_size:,}")
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
     log(f"attention_heads: q={config.n_heads} kv={config.n_kv_heads} head_dim={config.d_model // config.n_heads}")
+    log(f"mlp_type: {config.mlp_type}")
     if config.attention_window > 0:
         log(f"attention_pattern: hybrid window={config.attention_window} full_every={config.full_attention_every}")
     else:

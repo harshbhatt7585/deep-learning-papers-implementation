@@ -23,6 +23,7 @@ class TextDiffusionConfig:
     n_layers: int = 4
     dropout: float = 0.1
     ff_mult: int = 4
+    mlp_type: str = "relu2"
     n_mtp_heads: int = 0
     attention_window: int = 0
     full_attention_every: int = 0
@@ -38,6 +39,8 @@ class TextDiffusionConfig:
             raise ValueError("attention head_dim must be even for rotary embeddings")
         if self.n_mtp_heads < 0:
             raise ValueError("n_mtp_heads must be non-negative")
+        if self.mlp_type not in {"relu2", "gated"}:
+            raise ValueError("mlp_type must be relu2 or gated")
         if self.attention_window < 0:
             raise ValueError("attention_window must be non-negative")
         if self.full_attention_every < 0:
@@ -148,12 +151,23 @@ class SelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config: TextDiffusionConfig) -> None:
         super().__init__()
-        self.c_fc = Linear(config.d_model, config.ff_mult * config.d_model, bias=False)
-        self.c_proj = Linear(config.ff_mult * config.d_model, config.d_model, bias=False)
+        self.mlp_type = config.mlp_type
+        hidden_dim = config.ff_mult * config.d_model
+        if self.mlp_type == "gated":
+            # Parameter-match ReLU2 MLP: 3 * gated_hidden ~= 2 * relu_hidden.
+            hidden_dim = max(1, (2 * hidden_dim) // 3)
+            if hidden_dim >= 128:
+                hidden_dim = 16 * (hidden_dim // 16)
+            self.c_gate = Linear(config.d_model, hidden_dim, bias=False)
+        self.c_fc = Linear(config.d_model, hidden_dim, bias=False)
+        self.c_proj = Linear(hidden_dim, config.d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.c_fc(x)
-        x = F.relu(x).square()
+        if self.mlp_type == "gated":
+            x = self.c_fc(x) * F.silu(self.c_gate(x))
+        else:
+            x = self.c_fc(x)
+            x = F.relu(x).square()
         return self.c_proj(x)
 
 
@@ -249,6 +263,8 @@ class TextDiffusionModel(nn.Module):
             nn.init.uniform_(block.attn.c_v.weight, -scale, scale)
             nn.init.zeros_(block.attn.c_proj.weight)
             nn.init.uniform_(block.mlp.c_fc.weight, -0.4 * scale, 0.4 * scale)
+            if hasattr(block.mlp, "c_gate"):
+                nn.init.uniform_(block.mlp.c_gate.weight, -0.4 * scale, 0.4 * scale)
             nn.init.zeros_(block.mlp.c_proj.weight)
 
     def _precompute_rotary_embeddings(
