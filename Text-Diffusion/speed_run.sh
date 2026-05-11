@@ -16,6 +16,61 @@ TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
 STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
 GPU_TYPE="${GPU_TYPE:-H100}"
 GPU_TYPE_UPPER="$(printf "%s" "${GPU_TYPE}" | tr '[:lower:]' '[:upper:]')"
+EXPERIMENT_RECIPE="${EXPERIMENT_RECIPE:-}"
+
+set_default() {
+  local name="$1"
+  local value="$2"
+  if [[ -z "${!name+x}" ]]; then
+    printf -v "${name}" "%s" "${value}"
+  fi
+}
+
+case "${EXPERIMENT_RECIPE}" in
+  "")
+    ;;
+  nanochat-beater-d12|small-llm-d12)
+    set_default TARGET_PARAM_DATA_RATIO 8
+    set_default TARGET_TOKENS -1
+    set_default MAX_STEPS -1
+    set_default OBJECTIVE causal_mtp
+    set_default MTP_HEADS 1
+    set_default MTP_LOSS_WEIGHT 0.3
+    set_default OPTIMIZER muon
+    set_default D_MODEL 768
+    set_default N_HEADS 6
+    set_default N_LAYERS 12
+    set_default MLP_TYPE relu2
+    N_KV_HEADS=""
+    SPARSE_L1_WEIGHT=0
+    ATTENTION_WINDOW=0
+    FULL_ATTENTION_EVERY=0
+    FP8=0
+    ;;
+  nanochat-beater-d16|small-llm-d16)
+    set_default TARGET_PARAM_DATA_RATIO 8
+    set_default TARGET_TOKENS -1
+    set_default MAX_STEPS -1
+    set_default OBJECTIVE causal_mtp
+    set_default MTP_HEADS 1
+    set_default MTP_LOSS_WEIGHT 0.3
+    set_default OPTIMIZER muon
+    set_default D_MODEL 640
+    set_default N_HEADS 5
+    set_default N_LAYERS 16
+    set_default MLP_TYPE relu2
+    N_KV_HEADS=""
+    SPARSE_L1_WEIGHT=0
+    ATTENTION_WINDOW=0
+    FULL_ATTENTION_EVERY=0
+    FP8=0
+    ;;
+  *)
+    echo "unknown EXPERIMENT_RECIPE: ${EXPERIMENT_RECIPE}" >&2
+    echo "known recipes: nanochat-beater-d12, nanochat-beater-d16" >&2
+    exit 2
+    ;;
+esac
 
 MAX_STEPS="${MAX_STEPS:--1}"
 TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-8}"
