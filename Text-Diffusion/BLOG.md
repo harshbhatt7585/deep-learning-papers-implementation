@@ -177,6 +177,91 @@ The model has useful language modeling behavior but weak reasoning. This is expe
 
 `<|bos|>` appears at both start and end because the nanochat tokenizer uses it as a document boundary. This is okay for training, but samples can look odd.
 
+## 2026-05-11: GQA MTP2 600-Step Benchmark
+
+The next experiment was to test whether grouped-query attention could make the D12 causal-MTP run cheaper without hurting early validation quality.
+
+The model already had separate query and KV head support internally. We exposed it through:
+
+```bash
+N_KV_HEADS=2
+```
+
+That changes attention from regular multi-head attention:
+
+```text
+q heads: 6
+kv heads: 6
+```
+
+to grouped-query attention:
+
+```text
+q heads: 6
+kv heads: 2
+```
+
+The run command was:
+
+```bash
+GPU_TYPE=A100 \
+FP8=0 \
+COMPILE=1 \
+MAX_STEPS=600 \
+CORE_METRIC_EVERY=600 \
+OBJECTIVE=causal_mtp \
+MTP_HEADS=2 \
+MTP_LOSS_WEIGHT=0.1 \
+OPTIMIZER=muon \
+D_MODEL=768 \
+N_HEADS=6 \
+N_KV_HEADS=2 \
+N_LAYERS=12 \
+RUN_NAME=bench-a100-8gpu-mtp2-gqa2-w01-600-compile \
+EXPERIMENT_DESCRIPTION="D12 A100 8GPU causal-MTP quick benchmark: 2 MTP heads, GQA with 2 KV heads, MTP weight 0.1, compile enabled." \
+EXPERIMENT_TAGS="benchmark,d12,mtp,heads-2,gqa,kv-2,weight-0.1,a100,8gpu,compile" \
+./speed_run.sh train 8gpu
+```
+
+The previous comparable 600-step run was the same D12 causal-MTP setup with `MTP_HEADS=2`, `MTP_LOSS_WEIGHT=0.1`, 8x A100, and compile enabled, but without GQA. That run used regular attention with `N_HEADS=6` and implicit `N_KV_HEADS=6`.
+
+Results:
+
+| Run | Attention | MTP Heads | Val Loss | BPB | CORE | Throughput Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| MTP2 non-GQA | q=6, kv=6 | 2 | 8.8281 | 2.7712 | 0.0280 | Often around `300K-500K tok/s`, noisy |
+| MTP2 GQA | q=6, kv=2 | 2 | 8.7863 | 2.7568 | 0.0366 | Many post-warmup steps around `0.98M-1.01M tok/s`, still noisy |
+
+The GQA run ended with:
+
+```text
+step 00600 train_loss 3.8527
+step 00600 val_loss 8.7863
+step 00600 bpb 2.7568
+step 00600 core 0.0366
+```
+
+This is an incremental improvement over the non-GQA 600-step MTP2 run:
+
+```text
+BPB:  2.7712 -> 2.7568
+CORE: 0.0280 -> 0.0366
+```
+
+The speed signal is also encouraging. After compile warmup, the GQA run frequently reported close to `1M tok/s`. The per-step logger is still noisy, so the exact throughput should not be over-interpreted, but GQA appears materially faster than the non-GQA run.
+
+Sample quality is still poor at 600 steps. The model remains repetitive and fails simple factual or reasoning prompts like France, gold, and arithmetic. That matches the low CORE score. So this is not a final quality win; it is a useful early signal that `N_KV_HEADS=2` may improve speed and does not obviously hurt early BPB/CORE.
+
+Compared to the longer MTP run from May 10:
+
+```text
+longer MTP D12 best CORE: 0.1001
+nanochat D12 reference CORE: ~0.1059
+new 600-step GQA MTP2 CORE: 0.0366
+```
+
+The new GQA run is not close to the longer-run quality yet. Its value is that it gives us a faster configuration to test in longer runs.
+
 ## Open Issues
 
 The W&B sample table currently warns:

@@ -149,6 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-heads", type=int, default=4)
+    parser.add_argument("--n-kv-heads", type=int, default=None)
     parser.add_argument("--n-layers", type=int, default=4)
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
@@ -214,6 +215,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         pad_token_id=tokenizer.pad_token_id,
         d_model=args.d_model,
         n_heads=args.n_heads,
+        n_kv_heads=args.n_kv_heads,
         n_layers=args.n_layers,
         dropout=args.dropout,
         n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
@@ -643,6 +645,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"val tokens: {data.val_tokens.numel():,}")
     log(f"vocab_size: {config.vocab_size:,}")
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
+    log(f"attention_heads: q={config.n_heads} kv={config.n_kv_heads} head_dim={config.d_model // config.n_heads}")
     log(f"objective: {args.objective}")
     if args.objective == "causal_mtp":
         log(f"mtp: heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")

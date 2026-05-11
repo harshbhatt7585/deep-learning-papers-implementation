@@ -139,6 +139,7 @@ def run_train(
     aurora_weight_decay: float = 0.025,
     d_model: int = 256,
     n_heads: int = 4,
+    n_kv_heads: int | None = None,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     resume: str | None = None,
@@ -198,6 +199,8 @@ def run_train(
         "--out-dir",
         out_dir,
     ]
+    if n_kv_heads is not None:
+        command.extend(["--n-kv-heads", str(n_kv_heads)])
     if resume:
         command.extend(["--resume", resume])
     if stream_nanochat:
@@ -408,6 +411,7 @@ def main(
     gpu_type: str = "H100",
     d_model: int = 256,
     n_heads: int = 4,
+    n_kv_heads: int | None = None,
     n_layers: int = 4,
     out_dir: str = "/runs/text-diffusion-4gpu",
     resume: str | None = None,
@@ -485,6 +489,7 @@ def main(
         target_tokens=target_tokens,
         d_model=d_model,
         n_heads=n_heads,
+        n_kv_heads=n_kv_heads,
         n_layers=n_layers,
         out_dir=out_dir,
         resume=resume,

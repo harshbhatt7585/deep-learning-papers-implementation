@@ -36,6 +36,7 @@ SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-}"
 
 D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-6}"
+N_KV_HEADS="${N_KV_HEADS:-}"
 N_LAYERS="${N_LAYERS:-12}"
 
 case "${RUN_CONFIG}" in
@@ -184,6 +185,9 @@ train() {
     --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
     --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
   )
+  if [[ -n "${N_KV_HEADS}" ]]; then
+    command+=(--n-kv-heads "${N_KV_HEADS}")
+  fi
   if [[ -n "${RESUME}" ]]; then
     command+=(--resume "${RESUME}")
   fi
