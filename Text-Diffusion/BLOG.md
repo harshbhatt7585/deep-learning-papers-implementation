@@ -259,6 +259,73 @@ If 5*x + 3 = 13, then x is a number of x...
 
 This is useful as a screening run. A configuration that is bad at 400 steps probably should not get a full ratio-8 run. A configuration that reaches around this level or better can be promoted to the full schedule.
 
+## 2026-05-11: H100 FP8 MTP2 400-Step Check
+
+Next we tested whether adding a second MTP head helps under the same 400-step gate, this time on H100 with FP8 enabled.
+
+Configuration:
+
+```bash
+GPU_TYPE=H100
+FP8=1
+MAX_STEPS=400
+EVAL_INTERVAL=400
+CORE_METRIC_EVERY=400
+SAMPLE_INTERVAL=400
+BATCH_SIZE=32
+SEQ_LEN=2048
+OBJECTIVE=causal_mtp
+MTP_HEADS=2
+MTP_LOSS_WEIGHT=0.15
+OPTIMIZER=muon
+AURORA_WEIGHT_DECAY=0.025
+D_MODEL=768
+N_HEADS=6
+N_LAYERS=12
+COMPILE=1
+TRAIN_SHARDS=170
+MAX_VAL_CHARS=2000000
+RUN_NAME=bench-h100-fp8-8gpu-d12-mtp2-w015-relu2-fullattn-400
+```
+
+Result at step 400:
+
+```text
+train_loss: 4.3863
+val_loss: 3.5491
+masked_bpb: 1.1157
+CORE: 0.0710
+lr: 6.04e-09
+throughput: ~1.50M tok/s on 8x H100 FP8
+checkpoint: /runs/bench-h100-fp8-8gpu-d12-mtp2-w015-relu2-fullattn-400/checkpoint.pt
+wandb: https://wandb.ai/harshbhatt7585/text-diffusion/runs/x8z09q7i
+```
+
+Compared to the A100 MTP1 400-step gate:
+
+| Run | MTP Heads | MTP Weight | Hardware | FP8 | Val Loss | BPB | CORE | Tok/s |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| A100 MTP1 | 1 | 0.30 | 8x A100 | 0 | 3.5953 | 1.1289 | 0.0693 | ~2.06M |
+| H100 MTP2 | 2 | 0.15 | 8x H100 | 1 | 3.5491 | 1.1157 | 0.0710 | ~1.50M |
+
+MTP2 slightly improved the 400-step gate: lower validation loss, lower BPB, and CORE moved from `0.0693` to `0.0710`. This is not a large enough margin to call it a clear win yet because hardware and FP8 changed at the same time, but it is good enough to justify a clean controlled comparison.
+
+The samples are still fluent but undertrained and repetitive:
+
+```text
+The capital of France is the capital of the United States.
+The chemical symbol of gold is a symbol of purity...
+If 5*x + 3 = 13, then x is 1.5...
+```
+
+Takeaway: MTP2 is worth keeping in the experiment queue, but the next clean test should isolate variables:
+
+```text
+A100 MTP1 w0.30 vs A100 MTP2 w0.15
+or
+H100 FP8 MTP1 w0.30 vs H100 FP8 MTP2 w0.15
+```
+
 ## Next Experiments
 
 1. Use the fixed 400-step checkpoint as the first comparison gate:
