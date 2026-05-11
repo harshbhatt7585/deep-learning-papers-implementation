@@ -24,6 +24,8 @@ class TextDiffusionConfig:
     dropout: float = 0.1
     ff_mult: int = 4
     n_mtp_heads: int = 0
+    attention_window: int = 0
+    full_attention_every: int = 0
 
     def __post_init__(self) -> None:
         if self.n_kv_heads is None:
@@ -36,6 +38,10 @@ class TextDiffusionConfig:
             raise ValueError("attention head_dim must be even for rotary embeddings")
         if self.n_mtp_heads < 0:
             raise ValueError("n_mtp_heads must be non-negative")
+        if self.attention_window < 0:
+            raise ValueError("attention_window must be non-negative")
+        if self.full_attention_every < 0:
+            raise ValueError("full_attention_every must be non-negative")
 
 
 def norm(x: torch.Tensor) -> torch.Tensor:
@@ -84,6 +90,7 @@ class SelfAttention(nn.Module):
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
+        window_size: tuple[int, int] = (-1, -1),
     ) -> torch.Tensor:
         batch_size, seq_len, _ = x.shape
         q = self.c_q(x).view(batch_size, seq_len, self.n_heads, self.head_dim)
@@ -98,7 +105,7 @@ class SelfAttention(nn.Module):
         k = (norm(k) * 1.2).to(dtype=v.dtype)
 
         if attention_mask is None:
-            y = flash_attn.flash_attn_func(q, k, v, causal=causal)
+            y = flash_attn.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
             y = y.contiguous().view(batch_size, seq_len, self.d_model)
             return self.c_proj(y)
 
@@ -163,8 +170,9 @@ class TransformerBlock(nn.Module):
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
+        window_size: tuple[int, int] = (-1, -1),
     ) -> torch.Tensor:
-        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
+        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
         x = x + self.mlp(norm(x))
         return x
 
@@ -210,14 +218,22 @@ class TextDiffusionModel(nn.Module):
         x = self.drop(x)
         cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
 
-        for block in self.blocks:
-            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
+        for block_idx, block in enumerate(self.blocks):
+            window_size = self._attention_window_size(block_idx)
+            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
 
         x = norm(x)
         logits = self.lm_head(x)
         if return_hidden:
             return logits, x
         return logits
+
+    def _attention_window_size(self, block_idx: int) -> tuple[int, int]:
+        if self.config.attention_window <= 0:
+            return (-1, -1)
+        if self.config.full_attention_every > 0 and block_idx % self.config.full_attention_every == 0:
+            return (-1, -1)
+        return (self.config.attention_window, 0)
 
     @torch.no_grad()
     def init_weights(self) -> None:

@@ -150,6 +150,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--n-kv-heads", type=int, default=None)
     parser.add_argument("--n-layers", type=int, default=4)
+    parser.add_argument("--attention-window", type=int, default=0)
+    parser.add_argument("--full-attention-every", type=int, default=0)
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
@@ -216,6 +218,8 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         n_heads=args.n_heads,
         n_kv_heads=args.n_kv_heads,
         n_layers=args.n_layers,
+        attention_window=args.attention_window,
+        full_attention_every=args.full_attention_every,
         dropout=args.dropout,
         n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
     )
@@ -645,6 +649,10 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"vocab_size: {config.vocab_size:,}")
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
     log(f"attention_heads: q={config.n_heads} kv={config.n_kv_heads} head_dim={config.d_model // config.n_heads}")
+    if config.attention_window > 0:
+        log(f"attention_pattern: hybrid window={config.attention_window} full_every={config.full_attention_every}")
+    else:
+        log("attention_pattern: full")
     log(f"objective: {args.objective}")
     if args.objective == "causal_mtp":
         log(f"mtp: heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")

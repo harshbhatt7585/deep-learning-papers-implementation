@@ -38,6 +38,8 @@ D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-6}"
 N_KV_HEADS="${N_KV_HEADS:-}"
 N_LAYERS="${N_LAYERS:-12}"
+ATTENTION_WINDOW="${ATTENTION_WINDOW:-0}"
+FULL_ATTENTION_EVERY="${FULL_ATTENTION_EVERY:-0}"
 
 case "${RUN_CONFIG}" in
   1gpu|1GPU|1)
@@ -179,6 +181,8 @@ train() {
     --d-model "${D_MODEL}"
     --n-heads "${N_HEADS}"
     --n-layers "${N_LAYERS}"
+    --attention-window "${ATTENTION_WINDOW}"
+    --full-attention-every "${FULL_ATTENTION_EVERY}"
     --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}"
     --target-tokens "${TARGET_TOKENS}"
     --out-dir "${OUT_DIR}"

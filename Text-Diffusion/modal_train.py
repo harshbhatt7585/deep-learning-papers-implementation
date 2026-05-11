@@ -141,6 +141,8 @@ def run_train(
     n_heads: int = 4,
     n_kv_heads: int | None = None,
     n_layers: int = 4,
+    attention_window: int = 0,
+    full_attention_every: int = 0,
     out_dir: str = "/runs/text-diffusion-4gpu",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
@@ -194,6 +196,10 @@ def run_train(
         str(n_heads),
         "--n-layers",
         str(n_layers),
+        "--attention-window",
+        str(attention_window),
+        "--full-attention-every",
+        str(full_attention_every),
         "--amp-dtype",
         "bfloat16",
         "--out-dir",
@@ -257,6 +263,12 @@ def run_train(
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         if compile:
             env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
+            env.setdefault("TORCHINDUCTOR_CACHE_DIR", "/data/torchinductor_cache")
+            env.setdefault("TRITON_CACHE_DIR", "/data/triton_cache")
+            env.setdefault("TORCHINDUCTOR_FX_GRAPH_CACHE", "1")
+            env.setdefault("TORCHINDUCTOR_AUTOGRAD_CACHE", "1")
+            Path(env["TORCHINDUCTOR_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
+            Path(env["TRITON_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
         subprocess.run(command, cwd=WORKDIR, env=env, stdout=sys.stdout, stderr=sys.stderr, check=True)
     finally:
         data_volume.commit()
@@ -413,6 +425,8 @@ def main(
     n_heads: int = 4,
     n_kv_heads: int | None = None,
     n_layers: int = 4,
+    attention_window: int = 0,
+    full_attention_every: int = 0,
     out_dir: str = "/runs/text-diffusion-4gpu",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
@@ -491,6 +505,8 @@ def main(
         n_heads=n_heads,
         n_kv_heads=n_kv_heads,
         n_layers=n_layers,
+        attention_window=attention_window,
+        full_attention_every=full_attention_every,
         out_dir=out_dir,
         resume=resume,
         token_shards_dir=token_shards_dir,
