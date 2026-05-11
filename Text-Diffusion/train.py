@@ -366,11 +366,31 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
         model_dim = source_model.config.d_model
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         embedding_params = list(source_model.token_emb.parameters())
+        value_embedding_params = list(getattr(source_model, "value_embeds", torch.nn.ModuleDict()).parameters())
         lm_head_params = list(source_model.lm_head.parameters())
         if getattr(source_model, "mtp_heads", None) is not None:
             lm_head_params += list(source_model.mtp_heads.parameters())
         matrix_params = list(source_model.blocks.parameters())
-        seen_ids = {id(param) for param in embedding_params + lm_head_params + matrix_params}
+        nanochat_resid_params: list[torch.nn.Parameter] = []
+        nanochat_x0_params: list[torch.nn.Parameter] = []
+        nanochat_smear_params: list[torch.nn.Parameter] = []
+        nanochat_resid_params.append(source_model.resid_lambdas)
+        nanochat_x0_params.append(source_model.x0_lambdas)
+        nanochat_smear_params.extend(source_model.smear_gate.parameters())
+        nanochat_smear_params.append(source_model.smear_lambda)
+        nanochat_smear_params.append(source_model.backout_lambda)
+        seen_ids = {
+            id(param)
+            for param in (
+                embedding_params
+                + value_embedding_params
+                + lm_head_params
+                + matrix_params
+                + nanochat_resid_params
+                + nanochat_x0_params
+                + nanochat_smear_params
+            )
+        }
         scalar_params = [param for param in source_model.parameters() if id(param) not in seen_ids]
 
         param_groups: list[dict[str, Any]] = [
@@ -393,6 +413,54 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
                 "weight_decay": 0.001,
             },
         ]
+        if value_embedding_params:
+            param_groups.append(
+                {
+                    "kind": "adamw",
+                    "params": value_embedding_params,
+                    "lr": args.embedding_lr * dmodel_lr_scale * 0.5,
+                    "lr_multiplier": args.embedding_lr * dmodel_lr_scale * 0.5 / args.lr,
+                    "betas": (0.8, 0.995),
+                    "eps": 1e-10,
+                    "weight_decay": 0.01,
+                }
+            )
+        if nanochat_resid_params:
+            param_groups.append(
+                {
+                    "kind": "adamw",
+                    "params": nanochat_resid_params,
+                    "lr": args.scalar_lr * 0.01,
+                    "lr_multiplier": args.scalar_lr * 0.01 / args.lr,
+                    "betas": (0.8, 0.95),
+                    "eps": 1e-10,
+                    "weight_decay": 0.05,
+                }
+            )
+        if nanochat_x0_params:
+            param_groups.append(
+                {
+                    "kind": "adamw",
+                    "params": nanochat_x0_params,
+                    "lr": args.scalar_lr,
+                    "lr_multiplier": args.scalar_lr / args.lr,
+                    "betas": (0.96, 0.95),
+                    "eps": 1e-10,
+                    "weight_decay": 0.0,
+                }
+            )
+        if nanochat_smear_params:
+            param_groups.append(
+                {
+                    "kind": "adamw",
+                    "params": nanochat_smear_params,
+                    "lr": 0.2,
+                    "lr_multiplier": 0.2 / args.lr,
+                    "betas": (0.8, 0.95),
+                    "eps": 1e-10,
+                    "weight_decay": 0.0,
+                }
+            )
         if scalar_params:
             param_groups.append(
                 {
@@ -440,6 +508,7 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
             f"matrix_params={sum(param.numel() for param in matrix_params):,} "
             f"lm_head_params={sum(param.numel() for param in lm_head_params):,} "
             f"embedding_params={sum(param.numel() for param in embedding_params):,} "
+            f"value_embedding_params={sum(param.numel() for param in value_embedding_params):,} "
             f"scalar_params={sum(param.numel() for param in scalar_params):,}"
         )
         return optimizer_cls(param_groups)
@@ -706,6 +775,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
     log(f"attention_heads: q={config.n_heads} kv={config.n_kv_heads} head_dim={config.d_model // config.n_heads}")
     log(f"mlp_type: {config.mlp_type}")
+    log("architecture: nanochat-style")
     log(f"sparse_l1_weight: {args.sparse_l1_weight:g}")
     if config.attention_window > 0:
         log(f"attention_pattern: hybrid window={config.attention_window} full_every={config.full_attention_every}")

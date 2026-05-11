@@ -37,8 +37,8 @@ case "${EXPERIMENT_RECIPE}" in
     set_default MTP_HEADS 1
     set_default MTP_LOSS_WEIGHT 0.3
     set_default OPTIMIZER muon
-    set_default D_MODEL 768
-    set_default N_HEADS 6
+    set_default D_MODEL 384
+    set_default N_HEADS 3
     set_default N_LAYERS 12
     set_default MLP_TYPE relu2
     N_KV_HEADS=""
@@ -55,8 +55,8 @@ case "${EXPERIMENT_RECIPE}" in
     set_default MTP_HEADS 1
     set_default MTP_LOSS_WEIGHT 0.3
     set_default OPTIMIZER muon
-    set_default D_MODEL 640
-    set_default N_HEADS 5
+    set_default D_MODEL 384
+    set_default N_HEADS 3
     set_default N_LAYERS 16
     set_default MLP_TYPE relu2
     N_KV_HEADS=""

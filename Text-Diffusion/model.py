@@ -59,6 +59,10 @@ def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> t
     return torch.cat([y1, y2], dim=-1)
 
 
+def has_value_embedding(layer_idx: int, n_layers: int) -> bool:
+    return layer_idx % 2 == (n_layers - 1) % 2
+
+
 SDPA_BACKENDS = [
     SDPBackend.FLASH_ATTENTION,
     SDPBackend.EFFICIENT_ATTENTION,
@@ -74,8 +78,9 @@ class Linear(nn.Linear):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TextDiffusionConfig, layer_idx: int) -> None:
         super().__init__()
+        self.layer_idx = layer_idx
         self.n_heads = config.n_heads
         self.n_kv_heads = config.n_kv_heads or config.n_heads
         self.d_model = config.d_model
@@ -85,11 +90,18 @@ class SelfAttention(nn.Module):
         self.c_k = Linear(config.d_model, self.n_kv_heads * self.head_dim, bias=False)
         self.c_v = Linear(config.d_model, self.n_kv_heads * self.head_dim, bias=False)
         self.c_proj = Linear(config.d_model, config.d_model, bias=False)
+        self.ve_gate_channels = min(24, config.d_model)
+        self.ve_gate = (
+            Linear(self.ve_gate_channels, self.n_kv_heads, bias=False)
+            if has_value_embedding(layer_idx, config.n_layers)
+            else None
+        )
 
     def forward(
         self,
         x: torch.Tensor,
         *,
+        value_embedding: torch.Tensor | None = None,
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
@@ -99,6 +111,12 @@ class SelfAttention(nn.Module):
         q = self.c_q(x).view(batch_size, seq_len, self.n_heads, self.head_dim)
         k = self.c_k(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
         v = self.c_v(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        if value_embedding is not None:
+            if self.ve_gate is None:
+                raise ValueError("value_embedding was provided to a layer without a value gate")
+            ve = value_embedding.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+            gate = 3 * torch.sigmoid(self.ve_gate(x[..., : self.ve_gate_channels]))
+            v = v + gate.unsqueeze(-1) * ve
 
         cos, sin = cos_sin
         q = apply_rotary_emb(q, cos[:, :seq_len], sin[:, :seq_len])
@@ -189,22 +207,30 @@ class MLP(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TextDiffusionConfig, layer_idx: int) -> None:
         super().__init__()
-        self.attn = SelfAttention(config)
+        self.attn = SelfAttention(config, layer_idx)
         self.mlp = MLP(config)
 
     def forward(
         self,
         x: torch.Tensor,
         *,
+        value_embedding: torch.Tensor | None = None,
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
         window_size: tuple[int, int] = (-1, -1),
         return_mlp_stats: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
+        x = x + self.attn(
+            norm(x),
+            value_embedding=value_embedding,
+            cos_sin=cos_sin,
+            attention_mask=attention_mask,
+            causal=causal,
+            window_size=window_size,
+        )
         if return_mlp_stats:
             mlp_out, mlp_stats = self.mlp(norm(x), return_stats=True)
             x = x + mlp_out
@@ -221,10 +247,25 @@ class TextDiffusionModel(nn.Module):
         self.config = config
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
         self.drop = nn.Dropout(config.dropout)
-        self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
+        self.blocks = nn.ModuleList([TransformerBlock(config, block_idx) for block_idx in range(config.n_layers)])
         self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
         self.mtp_heads = nn.ModuleList(
             [Linear(config.d_model, config.vocab_size, bias=False) for _ in range(config.n_mtp_heads)]
+        )
+        self.resid_lambdas = nn.Parameter(torch.ones(config.n_layers))
+        self.x0_lambdas = nn.Parameter(torch.zeros(config.n_layers))
+        self.smear_gate_channels = min(24, config.d_model)
+        self.smear_gate = Linear(self.smear_gate_channels, 1, bias=False)
+        self.smear_lambda = nn.Parameter(torch.zeros(1))
+        self.backout_lambda = nn.Parameter(0.2 * torch.ones(1))
+        head_dim = config.d_model // config.n_heads
+        kv_dim = (config.n_kv_heads or config.n_heads) * head_dim
+        self.value_embeds = nn.ModuleDict(
+            {
+                str(layer_idx): nn.Embedding(config.vocab_size, kv_dim)
+                for layer_idx in range(config.n_layers)
+                if has_value_embedding(layer_idx, config.n_layers)
+            }
         )
         cos, sin = self._precompute_rotary_embeddings(config.max_seq_len, config.d_model // config.n_heads)
         self.register_buffer("cos", cos, persistent=False)
@@ -253,14 +294,27 @@ class TextDiffusionModel(nn.Module):
 
         x = norm(self.token_emb(input_ids))
         x = self.drop(x)
+        if seq_len > 1:
+            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(self.smear_gate(x[:, 1:, : self.smear_gate_channels]))
+            x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
         cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
 
         mlp_stats: list[dict[str, torch.Tensor]] = []
+        x0 = x
+        x_backout = None
+        backout_layer = self.config.n_layers // 2
         for block_idx, block in enumerate(self.blocks):
             window_size = self._attention_window_size(block_idx)
+            x = self.resid_lambdas[block_idx].to(x.dtype) * x + self.x0_lambdas[block_idx].to(x.dtype) * x0
+            value_embedding = (
+                self.value_embeds[str(block_idx)](input_ids).to(x.dtype)
+                if str(block_idx) in self.value_embeds
+                else None
+            )
             if return_mlp_stats:
                 x, block_mlp_stats = block(
                     x,
+                    value_embedding=value_embedding,
                     cos_sin=cos_sin,
                     attention_mask=attention_mask,
                     causal=causal,
@@ -269,10 +323,22 @@ class TextDiffusionModel(nn.Module):
                 )
                 mlp_stats.append(block_mlp_stats)
             else:
-                x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal, window_size=window_size)
+                x = block(
+                    x,
+                    value_embedding=value_embedding,
+                    cos_sin=cos_sin,
+                    attention_mask=attention_mask,
+                    causal=causal,
+                    window_size=window_size,
+                )
+            if block_idx == backout_layer:
+                x_backout = x
 
+        if x_backout is not None:
+            x = x - self.backout_lambda.to(x.dtype) * x_backout
         x = norm(x)
         logits = self.lm_head(x)
+        logits = 15 * torch.tanh(logits.float() / 15)
         if return_mlp_stats:
             reduced_mlp_stats = {
                 key: torch.stack([stats[key] for stats in mlp_stats]).mean()
@@ -298,17 +364,27 @@ class TextDiffusionModel(nn.Module):
         nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
         for head in self.mtp_heads:
             nn.init.normal_(head.weight, mean=0.0, std=0.001)
-
         scale = 3**0.5 * self.config.d_model**-0.5
+        for value_embedding in self.value_embeds.values():
+            nn.init.uniform_(value_embedding.weight, -scale, scale)
+
         for block in self.blocks:
             nn.init.uniform_(block.attn.c_q.weight, -scale, scale)
             nn.init.uniform_(block.attn.c_k.weight, -scale, scale)
             nn.init.uniform_(block.attn.c_v.weight, -scale, scale)
             nn.init.zeros_(block.attn.c_proj.weight)
+            if block.attn.ve_gate is not None:
+                nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
             nn.init.uniform_(block.mlp.c_fc.weight, -0.4 * scale, 0.4 * scale)
             if hasattr(block.mlp, "c_gate"):
                 nn.init.uniform_(block.mlp.c_gate.weight, -0.4 * scale, 0.4 * scale)
             nn.init.zeros_(block.mlp.c_proj.weight)
+        for layer_idx in range(self.config.n_layers):
+            self.resid_lambdas.data[layer_idx] = 1.15 - (0.10 * layer_idx / max(self.config.n_layers - 1, 1))
+            self.x0_lambdas.data[layer_idx] = 0.20 - (0.15 * layer_idx / max(self.config.n_layers - 1, 1))
+        nn.init.uniform_(self.smear_gate.weight, 0.0, 0.02)
+        nn.init.zeros_(self.smear_lambda)
+        nn.init.constant_(self.backout_lambda, 0.2)
 
     def _precompute_rotary_embeddings(
         self,
