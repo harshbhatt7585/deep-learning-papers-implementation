@@ -87,6 +87,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "sample_temperature": 0.6,
     "sample_top_k": 50,
     "sample_top_p": None,
+    "compile_mode": "default",
     "fused_adamw": True,
     "fp8_recipe": "tensorwise",
     "matrix_lr": 0.02,
@@ -155,6 +156,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--compile-mode", choices=["default", "reduce-overhead", "max-autotune"], default=None)
     parser.add_argument("--fp8", action="store_true")
     parser.add_argument("--optimizer", choices=["adamw", "muon", "aurora"], default="adamw")
     parser.add_argument("--aurora-weight-decay", type=float, default=None)
@@ -175,6 +177,7 @@ def parse_args() -> argparse.Namespace:
     mtp_heads = parsed.mtp_heads
     mtp_loss_weight = parsed.mtp_loss_weight
     aurora_weight_decay = parsed.aurora_weight_decay
+    compile_mode = parsed.compile_mode
     experiment_description = parsed.experiment_description
     experiment_tags = parsed.experiment_tags
     experiment_notes = parsed.experiment_notes
@@ -193,6 +196,8 @@ def parse_args() -> argparse.Namespace:
         args.mtp_loss_weight = mtp_loss_weight
     if aurora_weight_decay is not None:
         args.aurora_weight_decay = aurora_weight_decay
+    if compile_mode is not None:
+        args.compile_mode = compile_mode
     if experiment_description is not None:
         args.experiment_description = experiment_description
     if experiment_tags is not None:
@@ -329,8 +334,8 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
     model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
-        log("compiling model with torch.compile(dynamic=False)")
-        model = torch.compile(model, dynamic=False)
+        log(f"compiling model with torch.compile(mode={args.compile_mode}, dynamic=False)")
+        model = torch.compile(model, mode=args.compile_mode, dynamic=False)
     if is_dist() and args.optimizer in {"muon", "aurora"}:
         for param in model.parameters():
             dist.broadcast(param.data, src=0)
@@ -664,6 +669,8 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bfloat16" else torch.float16 if args.amp_dtype == "float16" else torch.float32
     log(f"attention_backend: {describe_attention_backend(masked=False, dtype=amp_dtype)}")
     log(f"compile: {args.compile}")
+    if args.compile:
+        log(f"compile_mode: {args.compile_mode}")
     log(f"fp8: {args.fp8}")
     log(f"eval_interval: {args.eval_interval}")
     log(

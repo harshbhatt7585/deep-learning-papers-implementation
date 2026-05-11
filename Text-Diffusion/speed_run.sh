@@ -88,6 +88,7 @@ if [[ "${GPU_TYPE_UPPER}" != "H100" && "${FP8}" == "1" ]]; then
   FP8=0
 fi
 COMPILE="${COMPILE:-1}"
+COMPILE_MODE="${COMPILE_MODE:-default}"
 WANDB="${WANDB:-1}"
 OVERWRITE_TOKENS="${OVERWRITE_TOKENS:-0}"
 
@@ -189,6 +190,9 @@ train() {
     --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
     --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
   )
+  if [[ "${COMPILE}" == "1" ]]; then
+    command+=(--compile-mode "${COMPILE_MODE}")
+  fi
   if [[ -n "${N_KV_HEADS}" ]]; then
     command+=(--n-kv-heads "${N_KV_HEADS}")
   fi

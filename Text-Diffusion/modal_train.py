@@ -150,6 +150,7 @@ def run_train(
     nanochat_tokenizer_vocab_size: int = 32_768,
     stream_nanochat: bool = False,
     compile: bool = False,
+    compile_mode: str = "default",
     fp8: bool = False,
     wandb: bool = False,
     experiment_description: str | None = None,
@@ -241,6 +242,7 @@ def run_train(
         )
     if compile:
         command.append("--compile")
+        command.extend(["--compile-mode", compile_mode])
     if fp8:
         command.append("--fp8")
     if wandb:
@@ -436,6 +438,7 @@ def main(
     doc_batch_size: int = 4096,
     tokenizer_train_shards: int = 8,
     compile: bool = False,
+    compile_mode: str = "default",
     fp8: bool = False,
     wandb: bool = False,
     experiment_description: str | None = None,
@@ -514,6 +517,7 @@ def main(
         nanochat_tokenizer_vocab_size=nanochat_tokenizer_vocab_size,
         stream_nanochat=stream_nanochat,
         compile=compile,
+        compile_mode=compile_mode,
         fp8=fp8,
         wandb=wandb,
         experiment_description=experiment_description,
