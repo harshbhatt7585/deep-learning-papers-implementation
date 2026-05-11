@@ -324,6 +324,99 @@ The BPB numbers are not directly comparable because the objectives are different
 
 Conclusion: this diffusion remasking experiment was not good. The sampler is closer to LLaDA-style low-confidence remasking, but the training objective/model scale still does not produce useful continuation behavior. For now, the better path remains causal-MTP with GQA.
 
+## 2026-05-11: H100 Hybrid Attention Causal-MTP Run
+
+The next experiment tested a practical DeepSeek-style idea: hybrid full/local attention instead of full attention in every layer. The goal was not to reproduce DeepSeek CSA/HCA exactly, but to test a simpler local/full pattern that could improve training speed while keeping enough global layers.
+
+Configuration:
+
+```text
+objective: causal_mtp
+MTP heads: 1
+MTP loss weight: 0.1
+GPU: 8x H100
+FP8: on
+compile: on
+GQA: q=6, kv=2
+attention pattern: hybrid
+attention window: 512
+full attention every: 3 layers
+parameters: 150,994,944
+tokens_per_step: 524,288
+total_training_tokens: 314,572,800
+```
+
+The command was:
+
+```bash
+GPU_TYPE=H100 \
+FP8=1 \
+COMPILE=1 \
+MAX_STEPS=600 \
+EVAL_INTERVAL=600 \
+SAMPLE_INTERVAL=600 \
+CORE_METRIC_EVERY=600 \
+OBJECTIVE=causal_mtp \
+MTP_HEADS=1 \
+MTP_LOSS_WEIGHT=0.1 \
+OPTIMIZER=muon \
+D_MODEL=768 \
+N_HEADS=6 \
+N_KV_HEADS=2 \
+N_LAYERS=12 \
+ATTENTION_WINDOW=512 \
+FULL_ATTENTION_EVERY=3 \
+RUN_NAME=bench-h100-8gpu-mtp1-gqa2-hybrid512-w01-600-compile \
+EXPERIMENT_DESCRIPTION="D12 H100 8GPU causal-MTP benchmark: 1 MTP head, GQA kv=2, hybrid full/local attention window 512, MTP weight 0.1, FP8." \
+EXPERIMENT_TAGS="benchmark,d12,mtp,heads-1,weight-0.1,gqa,kv-2,hybrid-attn,window-512,full-every-3,h100,8gpu,fp8,compile" \
+./speed_run.sh train 8gpu
+```
+
+Startup confirmed the intended path:
+
+```text
+attention_heads: q=6 kv=2 head_dim=128
+attention_pattern: hybrid window=512 full_every=3
+attention_backend: FA3 (Hopper GPU with bf16 tensors)
+fp8: True
+```
+
+Throughput was strong and stable after compile warmup:
+
+```text
+typical throughput: ~2.10M-2.14M tok/s
+```
+
+Final metrics:
+
+```text
+step 0600 train_loss 3.9426
+step 0600 val_loss 8.9344
+step 0600 bpb 2.8061
+step 0600 core 0.0317
+```
+
+Comparison against the earlier 600-step GQA MTP2 run:
+
+| Run | Hardware | MTP Heads | Attention | BPB | CORE | Throughput Notes |
+| --- | --- | ---: | --- | ---: | ---: | --- |
+| MTP2 GQA | 8x A100 | 2 | full, q=6 kv=2 | 2.7568 | 0.0366 | many steps near `0.98M-1.01M tok/s` |
+| MTP1 GQA hybrid512 | 8x H100 | 1 | hybrid, q=6 kv=2, window=512 | 2.8061 | 0.0317 | many steps near `2.10M-2.14M tok/s` |
+
+This run is much faster, but quality did not improve at 600 steps. BPB and CORE are both slightly worse than the earlier MTP2 GQA A100 run, though this comparison changes multiple variables at once: hardware, MTP head count, attention pattern, and FP8.
+
+Samples were still weak and repetitive. They were somewhat language-like, but failed simple facts and reasoning:
+
+```text
+The capital of France is ... 3D connectinguries...
+The chemical symbol of gold is ... symbol ... symbol ...
+If yesterday was Friday, then tomorrow will be ... childrening...
+The planets of the solar system are: " " " ...
+If 5*x + 3 = 13, then x is 5-6.
+```
+
+Conclusion: hybrid local/full attention is promising for speed on H100, but this specific 600-step run is not a quality win. To isolate the attention change properly, we need a matched baseline with the same `MTP_HEADS=1`, `MTP_LOSS_WEIGHT=0.1`, H100, FP8, and GQA but full attention. Until then, this result only says hybrid attention is fast and not obviously catastrophic, not that it improves learning.
+
 ## Open Issues
 
 The W&B sample table currently warns:
