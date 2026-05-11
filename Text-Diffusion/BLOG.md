@@ -196,9 +196,85 @@ FP8=1
 
 For causal-MTP with FP8/H100, we should verify whether attention stays on FA3. Earlier smoke tests showed q/k could become float32 in some paths, forcing SDPA. That is a speed issue, not a correctness issue.
 
+## 2026-05-11: Fixed 400-Step A100 Repro Check
+
+We reproduced the simple D12 causal-MTP setup and stopped at a fixed 400-step checkpoint so it can be used as a cheap experiment gate before running the full token-proportional ratio-8 schedule.
+
+Configuration:
+
+```bash
+GPU_TYPE=A100
+FP8=0
+MAX_STEPS=400
+BATCH_SIZE=32
+SEQ_LEN=2048
+OBJECTIVE=causal_mtp
+MTP_HEADS=1
+MTP_LOSS_WEIGHT=0.3
+OPTIMIZER=muon
+AURORA_WEIGHT_DECAY=0.025
+D_MODEL=768
+N_HEADS=6
+N_LAYERS=12
+COMPILE=1
+TRAIN_SHARDS=170
+MAX_VAL_CHARS=2000000
+```
+
+Result at step 400:
+
+```text
+train_loss: 5.0072
+val_loss: 3.5953
+masked_bpb: 1.1289
+CORE: 0.0693
+lr: 2.85e-04
+throughput: ~2.06M tok/s on 8x A100 80GB
+```
+
+CORE breakdown highlights:
+
+```text
+arc_easy: 0.1840 centered
+piqa: 0.1760 centered
+lambada_openai: 0.1480
+winograd: 0.1282 centered
+winogrande: 0.1480 centered
+bigbench_cs_algorithms: 0.4180
+```
+
+Samples at 400 steps are already much more language-like than the earlier broken sparse/hybrid runs:
+
+```text
+The chemical symbol of gold is the symbol for gold.
+The opposite of hot is that the cold is about 10 degrees.
+```
+
+But the model is still clearly undertrained and repetitive:
+
+```text
+The capital of France is the capital of France...
+If 5*x + 3 = 13, then x is a number of x...
+```
+
+This is useful as a screening run. A configuration that is bad at 400 steps probably should not get a full ratio-8 run. A configuration that reaches around this level or better can be promoted to the full schedule.
+
 ## Next Experiments
 
-1. Run pure causal LM baseline:
+1. Use the fixed 400-step checkpoint as the first comparison gate:
+
+```bash
+MAX_STEPS=400
+```
+
+Then promote only promising variants to:
+
+```bash
+TARGET_PARAM_DATA_RATIO=8
+MAX_STEPS=-1
+```
+
+2. Run pure causal LM baseline:
 
 ```bash
 OBJECTIVE=causal_mtp
@@ -207,7 +283,7 @@ MTP_HEADS=0
 
 This tells us whether the MTP auxiliary head is helping or hurting.
 
-2. Run MTP with lower auxiliary weight:
+3. Run MTP with lower auxiliary weight:
 
 ```bash
 MTP_HEADS=1
@@ -216,7 +292,7 @@ MTP_LOSS_WEIGHT=0.1
 
 Current `0.3` might be too strong and may hurt next-token quality.
 
-3. Increase token budget:
+4. Increase token budget:
 
 ```bash
 TARGET_PARAM_DATA_RATIO=12
@@ -224,7 +300,7 @@ TARGET_PARAM_DATA_RATIO=12
 
 The current run uses about 8 tokens per parameter, matching the nanochat rule. MTP may need a different schedule.
 
-4. Run clean H100 FP8 test:
+5. Run clean H100 FP8 test:
 
 ```bash
 GPU_TYPE=H100
@@ -240,7 +316,7 @@ RUN_NAME=text-mtp-8gpu--h100-fp8
 ./speed_run.sh train 8gpu
 ```
 
-5. Try Aurora with corrected weight decay:
+6. Try Aurora with corrected weight decay:
 
 ```bash
 OPTIMIZER=aurora
