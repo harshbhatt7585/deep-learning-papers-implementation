@@ -262,6 +262,68 @@ new 600-step GQA MTP2 CORE: 0.0366
 
 The new GQA run is not close to the longer-run quality yet. Its value is that it gives us a faster configuration to test in longer runs.
 
+## 2026-05-11: H100 Diffusion Remasking Run
+
+The next experiment was to revisit the diffusion objective using the newer low-confidence remasking sampler and GQA. The goal was to see whether a more LLaDA-style sampling loop plus H100 throughput could make the diffusion path more promising.
+
+The run was:
+
+```bash
+GPU_TYPE=H100 \
+FP8=1 \
+COMPILE=1 \
+MAX_STEPS=600 \
+CORE_METRIC_EVERY=600 \
+OBJECTIVE=diffusion \
+OPTIMIZER=muon \
+D_MODEL=768 \
+N_HEADS=6 \
+N_KV_HEADS=2 \
+N_LAYERS=12 \
+RUN_NAME=bench-h100-8gpu-diffusion-gqa2-remask-600-regional-compile \
+EXPERIMENT_DESCRIPTION="D12 H100 8GPU masked diffusion benchmark: GQA kv=2, low-confidence remasking sampler, regional torch.compile, FP8." \
+EXPERIMENT_TAGS="benchmark,d12,diffusion,gqa,kv-2,low-confidence-remask,h100,8gpu,fp8,regional-compile" \
+./speed_run.sh train 8gpu
+```
+
+The run was very fast after warmup:
+
+```text
+typical throughput: ~2.64M-2.72M tok/s
+```
+
+But the quality was poor. Intermediate evals:
+
+```text
+step 0200 val_loss 10.1857 masked_bpb 0.9607
+step 0400 val_loss 10.0995 masked_bpb 0.9528
+step 0600 val_loss 9.8851  masked_bpb 0.9333
+step 0600 core -0.0068
+```
+
+The samples were not usable. They collapsed into repetitive local patterns:
+
+```text
+The capital of France is since the since of the since...
+The chemical symbol of gold is ... chemical chemical chemical...
+If yesterday was Friday, then tomorrow will be ,,,,,,,,,,
+The opposite of hot is ... -- -- -- -- ...
+My favorite color is up. up. up. up...
+```
+
+This is worse than the causal-MTP path. Even though masked BPB improved during the 600 steps and the H100 throughput was excellent, the generated text was highly repetitive and CORE was negative.
+
+Comparison against the nearby 600-step causal-MTP GQA run:
+
+| Run | Objective | Hardware | BPB Metric | CORE | Sample Quality |
+| --- | --- | --- | ---: | ---: | --- |
+| MTP2 GQA | causal-MTP | 8x A100 | `bpb 2.7568` | `0.0366` | Poor but language-like |
+| Diffusion GQA remask | masked diffusion | 8x H100 | `masked_bpb 0.9333` | `-0.0068` | Repetitive collapse |
+
+The BPB numbers are not directly comparable because the objectives are different: causal-MTP logs autoregressive BPB, while diffusion logs masked-token BPB. CORE and samples are the more useful comparison here, and both favor causal-MTP.
+
+Conclusion: this diffusion remasking experiment was not good. The sampler is closer to LLaDA-style low-confidence remasking, but the training objective/model scale still does not produce useful continuation behavior. For now, the better path remains causal-MTP with GQA.
+
 ## Open Issues
 
 The W&B sample table currently warns:
