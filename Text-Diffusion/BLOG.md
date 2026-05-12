@@ -430,6 +430,56 @@ If 5*x + 3 = 13, then x is the other x - x = 13...
 
 Decision: keep full attention for the current D12 baseline. GQA is useful for KV-cache savings during long-context inference, but this experiment is training a small model at short context, so the quality tradeoff is not worth it here.
 
+## 2026-05-12: Tied Embeddings 400-Step Check
+
+We tested tying the token embedding matrix and LM head to reduce the D12 parameter count. With a 32k tokenizer and `d_model=768`, this saves one full vocabulary matrix:
+
+```text
+saved parameters: 32,768 * 768 = 25,165,824
+```
+
+Configuration difference:
+
+```bash
+tie_word_embeddings: True
+RUN_NAME=bench-h100-fp8-d12-tied-mtp2-w015-fullattn-400
+```
+
+Result at step 400:
+
+```text
+train_loss: 4.3332
+val_loss: 3.5672
+masked_bpb: 1.1210
+CORE: 0.0615
+throughput: ~1.52M tok/s on 8x H100 FP8
+checkpoint: /runs/bench-h100-fp8-d12-tied-mtp2-w015-fullattn-400/checkpoint.pt
+wandb: https://wandb.ai/harshbhatt7585/text-diffusion/runs/v2lguits
+```
+
+Compared to the untied H100 FP8 MTP2 baseline:
+
+| Run | Params | Val Loss | BPB | CORE | Tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Untied MTP2 | ~185.6M | 3.5491 | 1.1157 | 0.0710 | ~1.50M |
+| Tied MTP2 | ~160.4M | 3.5672 | 1.1210 | 0.0615 | ~1.52M |
+
+Tying embeddings made the model meaningfully smaller and slightly faster, but the 400-step quality gate got worse. The validation loss and BPB regressed slightly, while CORE dropped more noticeably from `0.0710` to `0.0615`. Samples also stayed repetitive:
+
+```text
+The opposite of hot is the water vapor...
+My favorite color is blue... I want to be a little girl...
+If 5*x + 3 = 13, then x is 0.001*x...
+```
+
+Decision: tied embeddings are useful for size reduction, but not for the current score baseline. Keep untied embeddings when optimizing for CORE:
+
+```bash
+NO_TIE_WORD_EMBEDDINGS=1
+```
+
+If we revisit tying, the next fair test should tune the shared embedding initialization and learning rate instead of assuming the untied embedding/head hyperparameters transfer cleanly.
+
 ## Next Experiments
 
 1. Use the fixed 400-step checkpoint as the first comparison gate:
