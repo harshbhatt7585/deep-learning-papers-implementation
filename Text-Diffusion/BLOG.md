@@ -389,6 +389,47 @@ This MoE variant did not improve the model. It was worse on validation loss, BPB
 
 Decision: remove the MoE implementation and keep dense ReLU2 as the current baseline. If MoE is revisited, it should be done with a proper static-capacity/fused expert kernel and a more meaningful capacity tradeoff.
 
+## 2026-05-12: GQA3 400-Step Check
+
+We also tested grouped-query attention to see whether reducing KV heads could keep quality while improving throughput. The setup was the same H100 FP8 MTP2 400-step gate, except attention used 6 query heads and 3 KV heads.
+
+Configuration difference:
+
+```bash
+N_HEADS=6
+N_KV_HEADS=3
+RUN_NAME=bench-h100-fp8-8gpu-d12-mtp2-w015-gqa3-relu2-400
+```
+
+Result at step 400:
+
+```text
+train_loss: 4.4088
+val_loss: 3.5655
+masked_bpb: 1.1188
+CORE: 0.0681
+throughput: ~1.50M tok/s on 8x H100 FP8
+checkpoint: /runs/bench-h100-fp8-8gpu-d12-mtp2-w015-gqa3-relu2-400/checkpoint.pt
+wandb: https://wandb.ai/harshbhatt7585/text-diffusion/runs/ul7o5nlv
+```
+
+Compared to the full multi-head attention baseline:
+
+| Run | KV Heads | Val Loss | BPB | CORE | Tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Full MHA | 6 | 3.5491 | 1.1157 | 0.0710 | ~1.50M |
+| GQA3 | 3 | 3.5655 | 1.1188 | 0.0681 | ~1.50M |
+
+GQA3 did not help this small model. It slightly worsened validation loss, BPB, and CORE, while throughput stayed basically unchanged. The samples also remained repetitive and factually weak:
+
+```text
+The capital of France is composed of six major cities...
+The opposite of hot is a hot one.
+If 5*x + 3 = 13, then x is the other x - x = 13...
+```
+
+Decision: keep full attention for the current D12 baseline. GQA is useful for KV-cache savings during long-context inference, but this experiment is training a small model at short context, so the quality tradeoff is not worth it here.
+
 ## Next Experiments
 
 1. Use the fixed 400-step checkpoint as the first comparison gate:
