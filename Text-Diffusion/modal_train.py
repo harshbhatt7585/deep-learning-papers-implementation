@@ -141,6 +141,8 @@ def run_train(
     d_model: int = 256,
     n_heads: int = 4,
     n_layers: int = 4,
+    ff_mult: int = 4,
+    gated_mlp: bool = False,
     out_dir: str = "/runs/text-diffusion-4gpu",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
@@ -188,11 +190,15 @@ def run_train(
         str(n_heads),
         "--n-layers",
         str(n_layers),
+        "--ff-mult",
+        str(ff_mult),
         "--amp-dtype",
         "bfloat16",
         "--out-dir",
         out_dir,
     ]
+    if gated_mlp:
+        command.append("--gated-mlp")
     if resume:
         command.extend(["--resume", resume])
     if eval_interval is not None:
@@ -399,6 +405,8 @@ def main(
     d_model: int = 256,
     n_heads: int = 4,
     n_layers: int = 4,
+    ff_mult: int = 4,
+    gated_mlp: bool = False,
     out_dir: str = "/runs/text-diffusion-4gpu",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
@@ -479,6 +487,8 @@ def main(
         d_model=d_model,
         n_heads=n_heads,
         n_layers=n_layers,
+        ff_mult=ff_mult,
+        gated_mlp=gated_mlp,
         out_dir=out_dir,
         resume=resume,
         token_shards_dir=token_shards_dir,

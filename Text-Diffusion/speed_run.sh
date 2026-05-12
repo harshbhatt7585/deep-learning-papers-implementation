@@ -37,6 +37,8 @@ AURORA_WEIGHT_DECAY="${AURORA_WEIGHT_DECAY:-0.025}"
 D_MODEL="${D_MODEL:-768}"
 N_HEADS="${N_HEADS:-6}"
 N_LAYERS="${N_LAYERS:-12}"
+FF_MULT="${FF_MULT:-4}"
+GATED_MLP="${GATED_MLP:-0}"
 
 case "${RUN_CONFIG}" in
   1gpu|1GPU|1)
@@ -181,12 +183,16 @@ train() {
     --d-model "${D_MODEL}"
     --n-heads "${N_HEADS}"
     --n-layers "${N_LAYERS}"
+    --ff-mult "${FF_MULT}"
     --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}"
     --target-tokens "${TARGET_TOKENS}"
     --out-dir "${OUT_DIR}"
     --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
     --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
   )
+  if [[ "${GATED_MLP}" == "1" ]]; then
+    command+=(--gated-mlp)
+  fi
   if [[ -n "${RESUME}" ]]; then
     command+=(--resume "${RESUME}")
   fi

@@ -20,6 +20,7 @@ from model import (
     generate,
     generate_causal,
     make_masked_inputs,
+    norm,
 )
 from nanochat_optim import DistMuonAdamW, MuonAdamW
 from fp8 import disable_fp8
@@ -66,10 +67,11 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "mask_prob": 0.30,
     "mtp_heads": 3,
     "mtp_loss_weight": 0.3,
+    "ff_mult": 4,
     "weight_decay": 0.1,
     "aurora_weight_decay": 0.025,
     "warmup_steps": 50,
-    "dropout": 0.1,
+    "dropout": 0.0,
     "eval_interval": 200,
     "eval_batches": 20,
     "core_metric_every": 400,
@@ -146,6 +148,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--n-layers", type=int, default=4)
+    parser.add_argument("--ff-mult", type=int, default=None, help="MLP hidden expansion factor (default 4).")
+    parser.add_argument("--gated-mlp", action="store_true", help="Use SwiGLU-style gated MLP instead of ReLU^2.")
 
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--compile", action="store_true")
@@ -166,6 +170,7 @@ def parse_args() -> argparse.Namespace:
     mtp_heads = parsed.mtp_heads
     mtp_loss_weight = parsed.mtp_loss_weight
     aurora_weight_decay = parsed.aurora_weight_decay
+    ff_mult = parsed.ff_mult
     args = with_internal_defaults(parsed)
     if eval_interval is not None:
         args.eval_interval = eval_interval
@@ -181,6 +186,8 @@ def parse_args() -> argparse.Namespace:
         args.mtp_loss_weight = mtp_loss_weight
     if aurora_weight_decay is not None:
         args.aurora_weight_decay = aurora_weight_decay
+    if ff_mult is not None:
+        args.ff_mult = ff_mult
     return args
 
 
@@ -200,6 +207,8 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         n_heads=args.n_heads,
         n_layers=args.n_layers,
         dropout=args.dropout,
+        ff_mult=args.ff_mult,
+        gated_mlp=args.gated_mlp,
         n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
     )
 
@@ -330,9 +339,12 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         embedding_params = list(source_model.token_emb.parameters())
         lm_head_params = list(source_model.lm_head.parameters())
-        if getattr(source_model, "mtp_heads", None) is not None:
-            lm_head_params += list(source_model.mtp_heads.parameters())
         matrix_params = list(source_model.blocks.parameters())
+        # DeepSeek-V3 style MTP heads are d_model x d_model projections that
+        # feed the shared lm_head, so they belong with the other matrix params
+        # (muon group), not the unembedding-vocab group.
+        if getattr(source_model, "mtp_heads", None) is not None:
+            matrix_params += list(source_model.mtp_heads.parameters())
         seen_ids = {id(param) for param in embedding_params + lm_head_params + matrix_params}
         scalar_params = [param for param in source_model.parameters() if id(param) not in seen_ids]
 
@@ -443,7 +455,8 @@ def causal_mtp_cross_entropy(
     for offset, head in enumerate(source_model.mtp_heads, start=2):
         if input_ids.size(1) <= offset:
             break
-        aux_logits = head(hidden[:, :-offset, :])
+        h_offset = norm(head(hidden[:, :-offset, :]))
+        aux_logits = source_model.lm_head(h_offset)
         aux_loss = F.cross_entropy(
             aux_logits.contiguous().view(-1, aux_logits.size(-1)),
             input_ids[:, offset:].contiguous().view(-1),
@@ -622,6 +635,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"objective: {args.objective}")
     if args.objective == "causal_mtp":
         log(f"mtp: heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")
+    log(f"mlp: kind={'gated_swiglu' if config.gated_mlp else 'relu2'} ff_mult={config.ff_mult}")
     log(f"scaling_params: {args.scaling_params:,}")
     log(f"tokens_per_step: {args.tokens_per_step:,}")
     log(f"max_steps: {args.max_steps:,}")

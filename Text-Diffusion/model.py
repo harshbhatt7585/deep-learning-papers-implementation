@@ -24,6 +24,7 @@ class TextDiffusionConfig:
     dropout: float = 0.1
     ff_mult: int = 4
     n_mtp_heads: int = 0
+    gated_mlp: bool = False
 
     def __post_init__(self) -> None:
         if self.n_kv_heads is None:
@@ -43,6 +44,10 @@ def norm(x: torch.Tensor) -> torch.Tensor:
 
 
 def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    # Cast cos/sin to x.dtype so the result stays in the same dtype as x.
+    # Otherwise fp32 cos/sin promotes bf16 q/k to fp32 and FA3 falls back to SDPA.
+    cos = cos.to(dtype=x.dtype)
+    sin = sin.to(dtype=x.dtype)
     dim = x.shape[-1] // 2
     x1, x2 = x[..., :dim], x[..., dim:]
     y1 = x1 * cos + x2 * sin
@@ -58,10 +63,14 @@ SDPA_BACKENDS = [
 
 
 class Linear(nn.Linear):
-    """Nanochat-style bias-free Linear with fp32 master weights."""
+    """Bias-free Linear with fp32 master weights.
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, self.weight.to(dtype=x.dtype), self.bias)
+    The forward pass intentionally uses the inherited ``nn.Linear.forward`` so
+    that ``torch.autocast`` can cache the bf16/fp16 cast of the weight across
+    calls inside the same autocast region. Manually casting on every call
+    (``weight.to(dtype=x.dtype)``) defeats that cache and allocates a fresh
+    low-precision tensor for every Linear, every step.
+    """
 
 
 class SelfAttention(nn.Module):
@@ -139,6 +148,8 @@ class SelfAttention(nn.Module):
 
 
 class MLP(nn.Module):
+    """ReLU-squared MLP (nanochat-style): 2 projections, no gating."""
+
     def __init__(self, config: TextDiffusionConfig) -> None:
         super().__init__()
         self.c_fc = Linear(config.d_model, config.ff_mult * config.d_model, bias=False)
@@ -150,11 +161,25 @@ class MLP(nn.Module):
         return self.c_proj(x)
 
 
+class GatedMLP(nn.Module):
+    """SwiGLU-style gated MLP (LLaMA/Mixtral/Qwen-style): SiLU(gate) * up, then down."""
+
+    def __init__(self, config: TextDiffusionConfig) -> None:
+        super().__init__()
+        hidden = config.ff_mult * config.d_model
+        self.c_gate = Linear(config.d_model, hidden, bias=False)
+        self.c_up = Linear(config.d_model, hidden, bias=False)
+        self.c_proj = Linear(hidden, config.d_model, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.c_proj(F.silu(self.c_gate(x)) * self.c_up(x))
+
+
 class TransformerBlock(nn.Module):
     def __init__(self, config: TextDiffusionConfig) -> None:
         super().__init__()
         self.attn = SelfAttention(config)
-        self.mlp = MLP(config)
+        self.mlp = GatedMLP(config) if config.gated_mlp else MLP(config)
 
     def forward(
         self,
@@ -179,8 +204,12 @@ class TextDiffusionModel(nn.Module):
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
         self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
+        # DeepSeek-V3 style multi-token prediction heads: each MTP head is a
+        # small (d_model -> d_model) projection whose output is normed and then
+        # projected to vocab by the *shared* lm_head. This keeps the auxiliary
+        # signal but avoids carrying one full-vocab matrix per MTP offset.
         self.mtp_heads = nn.ModuleList(
-            [Linear(config.d_model, config.vocab_size, bias=False) for _ in range(config.n_mtp_heads)]
+            [Linear(config.d_model, config.d_model, bias=False) for _ in range(config.n_mtp_heads)]
         )
         cos, sin = self._precompute_rotary_embeddings(config.max_seq_len, config.d_model // config.n_heads)
         self.register_buffer("cos", cos, persistent=False)
@@ -223,16 +252,21 @@ class TextDiffusionModel(nn.Module):
     def init_weights(self) -> None:
         nn.init.normal_(self.token_emb.weight, mean=0.0, std=0.8)
         nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
-        for head in self.mtp_heads:
-            nn.init.normal_(head.weight, mean=0.0, std=0.001)
 
         scale = 3**0.5 * self.config.d_model**-0.5
+        for head in self.mtp_heads:
+            nn.init.uniform_(head.weight, -scale, scale)
+
         for block in self.blocks:
             nn.init.uniform_(block.attn.c_q.weight, -scale, scale)
             nn.init.uniform_(block.attn.c_k.weight, -scale, scale)
             nn.init.uniform_(block.attn.c_v.weight, -scale, scale)
             nn.init.zeros_(block.attn.c_proj.weight)
-            nn.init.uniform_(block.mlp.c_fc.weight, -0.4 * scale, 0.4 * scale)
+            if isinstance(block.mlp, GatedMLP):
+                nn.init.uniform_(block.mlp.c_gate.weight, -0.4 * scale, 0.4 * scale)
+                nn.init.uniform_(block.mlp.c_up.weight, -0.4 * scale, 0.4 * scale)
+            else:
+                nn.init.uniform_(block.mlp.c_fc.weight, -0.4 * scale, 0.4 * scale)
             nn.init.zeros_(block.mlp.c_proj.weight)
 
     def _precompute_rotary_embeddings(
@@ -311,7 +345,8 @@ def causal_mtp_loss(
     for offset, head in enumerate(model.mtp_heads, start=2):
         if input_ids.size(1) <= offset:
             break
-        aux_logits = head(hidden[:, :-offset, :])
+        h_offset = norm(head(hidden[:, :-offset, :]))
+        aux_logits = model.lm_head(h_offset)
         aux_loss = F.cross_entropy(
             aux_logits.contiguous().view(-1, aux_logits.size(-1)),
             input_ids[:, offset:].contiguous().view(-1),
