@@ -24,6 +24,7 @@ PROJECT_FILES = [
     "nanochat_optim.py",
     "pretokenize.py",
     "sample.py",
+    "spec_decode.py",
     "tokenizer.py",
     "train.py",
     "utils.py",
@@ -498,4 +499,74 @@ def main(
         compile=compile,
         fp8=fp8,
         wandb=wandb,
+    )
+
+
+@app.function(
+    image=image,
+    gpu="A10G",
+    timeout=60 * 60,
+    volumes={
+        "/data": data_volume,
+        "/runs": runs_volume,
+    },
+)
+def run_spec_decode(
+    *,
+    checkpoint: str,
+    prompt: str = "The capital of France is",
+    gen_length: int = 64,
+    temperature: float = 0.0,
+    tokenizer_dir: str | None = None,
+    seed: int = 0,
+    warmup: int = 1,
+) -> None:
+    command = [
+        "python",
+        "-m",
+        "spec_decode",
+        "--checkpoint",
+        checkpoint,
+        "--prompt",
+        prompt,
+        "--gen-length",
+        str(gen_length),
+        "--temperature",
+        str(temperature),
+        "--seed",
+        str(seed),
+        "--warmup",
+        str(warmup),
+    ]
+    if tokenizer_dir is not None:
+        command += ["--tokenizer-dir", tokenizer_dir]
+    subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+
+
+@app.local_entrypoint()
+def spec(
+    checkpoint: str = "/runs/bench-h100-bf16-4gpu-d12-mtp1-swiglu-ff3-drop0-400/checkpoint.pt",
+    prompt: str = "The capital of France is",
+    gen_length: int = 64,
+    temperature: float = 0.0,
+    tokenizer_dir: str | None = None,
+    seed: int = 0,
+    warmup: int = 1,
+) -> None:
+    """Run the Medusa-style speculative decoding smoke test on a Modal H100.
+
+    Example:
+        modal run modal_train.py::spec \\
+            --checkpoint /runs/bench-h100-bf16-4gpu-d12-mtp1-swiglu-ff3-drop0-400/checkpoint.pt \\
+            --prompt "The capital of France is" \\
+            --gen-length 64
+    """
+    run_spec_decode.remote(
+        checkpoint=checkpoint,
+        prompt=prompt,
+        gen_length=gen_length,
+        temperature=temperature,
+        tokenizer_dir=tokenizer_dir,
+        seed=seed,
+        warmup=warmup,
     )
