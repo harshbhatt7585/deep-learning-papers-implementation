@@ -171,7 +171,7 @@ throughput: ~1.50M tok/s on 8× H100 FP8
 
 MTP2 + FP8 + H100 gave us our highest CORE so far. Hardware and FP8 changed at the same time, so it isn't a clean MTP1-vs-MTP2 isolation, but the gate gate was the best we'd seen and we kept it as the bar to beat.
 
-## 2026-05-12: MoE MLP — Did Not Help
+## 2026-05-12: MoE MLP — Promising But Not Promoted
 
 We tested whether ReLU²'s activation sparsity could be turned into useful expert sparsity by replacing the dense MLP with a top-1 MoE.
 
@@ -195,9 +195,9 @@ Result at step 400:
 val_loss: 3.6385   BPB: 1.1439   CORE: 0.0688   tok/s: ~1.14M
 ```
 
-Worse on every metric. Keeping total params similar forced each active expert to be much narrower than the dense `ff=4` MLP, so the run mostly added routing complexity without adding useful active compute.
+This is not a failure: `CORE=0.0688` ties the SwiGLU/dropout=0 run and is close to the 400-step baseline. But loss, BPB, and throughput all regressed relative to the current best. Keeping total params similar forced each active expert to be much narrower than the dense `ff=4` MLP, so this particular run added routing complexity without adding enough useful active compute.
 
-**Decision:** remove MoE from the active queue. If revisited, it needs a static-capacity/fused expert kernel and a meaningful active-compute increase.
+**Decision:** do not promote this exact MoE config yet. It may improve later or with more active expert capacity, but a follow-up should use a static-capacity/fused expert kernel and a meaningful active-compute increase.
 
 ## 2026-05-12: GQA3 — Did Not Help
 
