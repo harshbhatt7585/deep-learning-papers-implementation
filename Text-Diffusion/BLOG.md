@@ -17,13 +17,14 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 | 5 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
 | — | Tied embeddings | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5672 | 1.1210 | 0.0615 | ~160M |
 | — | MTP-shared first attempt | ReLU² ff=4 | shared × 1 | 8× A100 | 3.5363 | 1.1105 | 0.0585 | ~136M |
+| — | SwiGLU MTP1 + **GQA-2** (rejected) | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5335 | 1.1123 | 0.0459 | ~140M |
 | — | SwiGLU dropout=0.1 (broken) | SwiGLU ff=3 | shared × 1 | 8× H100 | **8.4141** | **2.6436** | 0.0447 | ~143M |
 
 Reading the leaderboard:
 
 - The top score (`0.0710`) is still held by the heaviest config: 2× full-vocab MTP heads (≈50M extra params) and ReLU² FFN.
 - The new SwiGLU + shared-MTP + dropout=0 result (`0.0688`) lands **tied for #3 on half the GPUs and ~50M fewer MTP params**, which is the most parameter-efficient point on the board. It's the right direction to scale up.
-- The "MTP-shared first attempt" (`0.0585`) and "SwiGLU dropout=0.1" (`0.0447`) rows are kept in the table on purpose: they are the controlled stepping stones that show what *not* to do. Details in §SwiGLU below.
+- The "MTP-shared first attempt" (`0.0585`), "SwiGLU + GQA-2" (`0.0459`), and "SwiGLU dropout=0.1" (`0.0447`) rows are kept in the table on purpose: they are the controlled stepping stones that show what *not* to do. Details in §SwiGLU and §GQA-2 below.
 
 ## 2026-05-10: From Diffusion To Text-MTP
 
@@ -351,6 +352,78 @@ bigbench_cs_algorithms:     0.3500
 
 This run is the most parameter-efficient point on the leaderboard so far: tied for `CORE=0.0688` with the MoE config while using `~50M` fewer MTP parameters, no FP8, and half the GPUs. The next step is to roll back to 8× H100 and stack capacity (MTP=2 shared, or `ff_mult=4` SwiGLU) to actually challenge the current `0.0710` top score.
 
+## 2026-05-12: GQA-2 on SwiGLU MTP1 — Rejected at Gate
+
+We re-tested grouped-query attention on top of the new per-param-efficient baseline (`SwiGLU MTP1 shared, dropout=0`). The previous GQA-3 result (§above) was on the older ReLU²/MTP2 baseline, so this run is the more relevant attribution: it isolates GQA over the current best-efficient config.
+
+The only delta from the `CORE=0.0688` baseline is `N_KV_HEADS=3` (6 query heads → 3 K/V heads, ratio 2). Everything else — `D_MODEL=768`, `N_LAYERS=12`, `FF_MULT=3`, `GATED_MLP=1`, `MTP_HEADS=1`, `MTP_LOSS_WEIGHT=0.15`, `OPTIMIZER=muon`, `BATCH_SIZE=32`, `SEQ_LEN=2048`, `MAX_STEPS=400`, `AMP_DTYPE=bfloat16`, `FP8=0`, `COMPILE=0`, `dropout=0`, 4× H100 — is identical.
+
+```bash
+RUN_NAME=bench-h100-bf16-4gpu-d12-mtp1-swiglu-ff3-drop0-gqa2-400
+N_HEADS=6  N_KV_HEADS=3   # <-- the only change
+```
+
+Result at step 400:
+
+```text
+train_loss: 4.3419     (+0.107 vs baseline 4.2346)
+val_loss:   3.5335     (-0.053 vs baseline 3.5866, better)
+masked_bpb: 1.1123     (-0.012 vs baseline 1.1246, better)
+CORE:       0.0459     (-0.023 vs baseline 0.0688, 33% relative drop)
+tok/s:      ~780K on 4× H100 bf16
+parameters: ~140M      (-3M vs baseline)
+KV cache:   0.5×       (the only structural win)
+```
+
+### The divergence is the headline
+
+BPB improved by **1.1%** while CORE fell **33% relative**. This is precisely the "better next-token prediction, worse downstream discrimination" pattern that GQA produces when you don't reinvest the capacity you saved. The CORE drop is way too large to be noise — run-to-run CORE σ at this scale is ~0.005, this delta is `~4σ`.
+
+### Where CORE was lost (per-task vs baseline)
+
+| Task | Baseline centered | GQA-2 centered | Δ | Direction |
+| --- | ---: | ---: | ---: | --- |
+| `piqa` | 0.2280 | 0.1680 | −0.060 | loss |
+| `commonsense_qa` | 0.1450 | 0.0300 | −0.115 | **big loss** |
+| `boolq` | n/a | −0.4105 | — | **catastrophic, below random** |
+| `arc_easy` | 0.1520 | 0.1440 | −0.008 | flat |
+| `lambada_openai` | 0.1320 | 0.1440 | +0.012 | gain |
+| `bigbench_lang_id` | 0.1771 | 0.1969 | +0.020 | gain |
+| `bigbench_cs_algorithms` | 0.3500 | 0.4040 | +0.054 | gain |
+
+The pattern is unmistakable:
+
+- **Pure language-modeling tasks** (`lambada`, `bigbench_lang_id`, `bigbench_cs_algorithms`) → GQA-2 *wins*. The model is a sharper next-token predictor under the natural-text distribution.
+- **Multi-hop reading / fact discrimination tasks** (`piqa`, `commonsense_qa`, `boolq`) → GQA-2 *loses badly*. These tasks require the model to attend to specific facts in the prompt and compare them against answer choices — exactly the routing patterns that reduced K/V rank cripples.
+
+Sample text confirms the same story. Baseline produced coherent if simple completions ("The chemical symbol of gold is gold."). GQA-2 collapses into tautology loops:
+
+```text
+<|bos|>The capital of France is the capital of France.<|bos|>
+<|bos|>The opposite of hot is the heat, which is the result of the heat, or
+the heat, of the Sun, which is the result of the heat. The heat is absorbed
+by the Sun, and the heat is absorbed by the Sun and subsequently absorbed
+into the Sun. Some of the heat is absorbed by the Sun ...
+```
+
+This is what you get when attention cannot route to distinct contextual anchors — the model attends to the *topic* repeatedly and re-emits it.
+
+### Why this happened (intuition)
+
+GQA-2 halves the K/V rank per layer. With 12 layers and `n_heads=6 → n_kv_heads=3`, attention now has **36 K/V channels** instead of **72**.
+
+- Common routing patterns ("attend to the last noun", "attend to the current topic") survive — they only need a few independent attention paths.
+- Hence BPB improves: fewer K/V dimensions reduces overfitting noise on the dominant continuations, acting like a soft regularizer over next-token prediction.
+- But the model can no longer maintain enough *independent* attention patterns to do something like "look up the chemical symbol in line 1 while predicting the answer in line 5". That's why `commonsense_qa` cratered and `boolq` went below random.
+
+The interesting twist is `train_loss` is *worse* (+0.107) while `val_loss` is *better* (−0.053). The reduced K/V capacity prevents the model from fitting the minibatches as sharply, but the simpler representations generalize the next-token distribution better. So the model is genuinely *underfitting* in a way that helps perplexity and hurts task discrimination.
+
+### Decision
+
+**Reject GQA-2 as a standalone change.** The 3M-param + 50% KV-cache wins are real but trivial at our scale (~2% of the model), and they buy nothing at `SEQ_LEN=2048` where the KV cache is already small. A 33% relative CORE drop is not negotiable.
+
+GQA is not categorically bad — production models (LLaMA, Mixtral, Qwen) all use it. But they pair it with a *capacity reinvestment*: more layers, wider FFN, or much longer training. The standard recipe is "GQA + FF_MULT=4 SwiGLU + more layers", not "GQA alone". We'll only revisit GQA if we plan to reinvest the savings in `FF_MULT=4` or `N_LAYERS=14`, and only after we've actually beaten the leaderboard with the dense `MTP=2 shared` recipe.
+
 ## Lessons Learned
 
 1. **Dropout is not free with SwiGLU.** The standard `dropout=0.1` carryover from nanoGPT silently destroys generalization once the FFN becomes multiplicative-gated. If you change MLP architecture, recheck dropout.
@@ -358,6 +431,8 @@ This run is the most parameter-efficient point on the leaderboard so far: tied f
 3. **Rotary buffers must match input dtype for FA3.** Leaving `cos`/`sin` in fp32 while `q/k` are bf16 silently downgrades to SDPA on H100 (-25% throughput).
 4. **Parameter-cost matters at this scale.** Trading `~50M` full-vocab MTP params for a shared d×d projection costs CORE if you don't reinvest the saved capacity somewhere (FFN width, more layers, more steps).
 5. **400-step gate is doing its job.** Every architectural experiment landed or failed inside this gate at < $5/run. Long schedules are reserved for promoted configs only.
+6. **"Better BPB, worse CORE" is the GQA capacity-routing signature.** BPB averages over every token (dominated by the modal continuation); CORE scores specific answer-discrimination tokens. When K/V rank shrinks, the model gets sharper at average-case next-token prediction (fewer dimensions to overfit) but loses the *independent* attention patterns needed for multi-hop reading. If you ever see val_loss ↓ alongside CORE ↓ by >2σ, suspect attention-routing capacity, not optimizer drift.
+7. **Don't cut capacity without reinvesting it.** GQA, MoE-without-expert-width, tied embeddings, MTP-shared-without-recovery — every "free shrinkage" we've tried at this scale has cost CORE. The winning configs all *trade* one form of capacity for another (e.g. dropped MTP unembeddings → SwiGLU width), not just shed it.
 
 ## Next Experiments
 
@@ -379,3 +454,5 @@ Priorities, roughly in order:
 ## Current Position
 
 The current best 400-step gate score is `CORE = 0.0710` (H100 FP8 MTP2 ReLU², full-vocab MTP heads). The current best **per-parameter and per-GPU** efficiency is `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0 — same neighborhood, dramatically cheaper. The nanochat D12 reference (`~0.1059`) is still ahead but no longer feels out of reach: closing the gap is about scaling the SwiGLU+shared-MTP recipe back up to 8 GPUs and/or running longer than 400 steps.
+
+GQA in either flavor (-2 over SwiGLU MTP1, -3 over ReLU² MTP2) has now been tested twice and rejected both times. Attention stays full multi-head (`N_HEADS=6, N_KV_HEADS=6`) on the recommended pretraining config. Any future GQA attempt should be paired with a capacity-reinvestment knob (`FF_MULT=4` or `N_LAYERS=14`), not run as a standalone change.
