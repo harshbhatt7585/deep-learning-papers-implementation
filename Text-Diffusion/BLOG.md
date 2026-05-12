@@ -13,7 +13,7 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 | 1 | **H100 FP8 MTP2 ReLU²** | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | **0.0710** | ~1.50M |
 | 2 | A100 MTP1 ReLU² | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | ~2.06M |
 | 3 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | ~0.72M |
-| 3 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~1.14M |
+| 4 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~1.14M |
 | 5 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~1.50M |
 | — | Tied embeddings | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5672 | 1.1210 | 0.0615 | ~1.52M |
 | — | MTP-shared first attempt | ReLU² ff=4 | shared × 1 | 8× A100 | 3.5363 | 1.1105 | 0.0585 | ~1.08M |
@@ -178,6 +178,7 @@ We tested whether ReLU²'s activation sparsity could be turned into useful exper
 ```bash
 MLP_TYPE=moe   FF_MULT=1   MOE_NUM_EXPERTS=4   MOE_TOP_K=1
 MOE_AUX_LOSS_WEIGHT=0.01
+RUN_NAME=bench-h100-fp8-8gpu-d12-mtp2-w015-moe4top1-ff1-400
 ```
 
 Several MoE-specific bugs had to be fixed before it even ran on H100 FP8:
