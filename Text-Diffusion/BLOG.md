@@ -13,7 +13,7 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 | 1 | **H100 FP8 MTP2 ReLU²** | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | **0.0710** | ~185M |
 | 2 | A100 MTP1 ReLU² | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | ~160M |
 | 3 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | ~143M |
-| 4 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~185M (≈181M active) |
+| 4 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~185M (≈143M active) |
 | 5 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
 | — | Tied embeddings | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5672 | 1.1210 | 0.0615 | ~160M |
 | — | MTP-shared first attempt | ReLU² ff=4 | shared × 1 | 8× A100 | 3.5363 | 1.1105 | 0.0585 | ~136M |
