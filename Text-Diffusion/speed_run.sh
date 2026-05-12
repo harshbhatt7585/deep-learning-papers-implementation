@@ -22,6 +22,9 @@ TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-8}"
 TARGET_TOKENS="${TARGET_TOKENS:--1}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 SEQ_LEN="${SEQ_LEN:-2048}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-}"
+CORE_METRIC_EVERY="${CORE_METRIC_EVERY:-}"
+SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-}"
 OPTIMIZER="${OPTIMIZER:-muon}"
 OBJECTIVE="${OBJECTIVE:-diffusion}"
 MTP_HEADS="${MTP_HEADS:-3}"
@@ -180,6 +183,15 @@ train() {
   )
   if [[ -n "${RESUME}" ]]; then
     command+=(--resume "${RESUME}")
+  fi
+  if [[ -n "${EVAL_INTERVAL}" ]]; then
+    command+=(--eval-interval "${EVAL_INTERVAL}")
+  fi
+  if [[ -n "${CORE_METRIC_EVERY}" ]]; then
+    command+=(--core-metric-every "${CORE_METRIC_EVERY}")
+  fi
+  if [[ -n "${SAMPLE_INTERVAL}" ]]; then
+    command+=(--sample-interval "${SAMPLE_INTERVAL}")
   fi
   command+=("${data_flags[@]}")
   if [[ ${#modal_flags[@]} -gt 0 ]]; then

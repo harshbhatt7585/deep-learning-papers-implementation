@@ -130,6 +130,9 @@ def run_train(
     batch_size: int = 32,
     seq_len: int = 128,
     grad_accum_steps: int = 1,
+    eval_interval: int | None = None,
+    core_metric_every: int | None = None,
+    sample_interval: int | None = None,
     optimizer: str = "adamw",
     objective: str = "diffusion",
     mtp_heads: int = 3,
@@ -192,6 +195,12 @@ def run_train(
     ]
     if resume:
         command.extend(["--resume", resume])
+    if eval_interval is not None:
+        command.extend(["--eval-interval", str(eval_interval)])
+    if core_metric_every is not None:
+        command.extend(["--core-metric-every", str(core_metric_every)])
+    if sample_interval is not None:
+        command.extend(["--sample-interval", str(sample_interval)])
     if stream_nanochat:
         command.extend(
             [
@@ -378,6 +387,9 @@ def main(
     batch_size: int = 32,
     seq_len: int = 128,
     grad_accum_steps: int = 1,
+    eval_interval: int | None = None,
+    core_metric_every: int | None = None,
+    sample_interval: int | None = None,
     optimizer: str = "adamw",
     objective: str = "diffusion",
     mtp_heads: int = 3,
@@ -448,6 +460,9 @@ def main(
         batch_size=batch_size,
         seq_len=seq_len,
         grad_accum_steps=grad_accum_steps,
+        eval_interval=eval_interval,
+        core_metric_every=core_metric_every,
+        sample_interval=sample_interval,
         optimizer=optimizer,
         objective=objective,
         mtp_heads=mtp_heads,

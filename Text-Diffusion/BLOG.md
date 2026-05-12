@@ -326,6 +326,69 @@ or
 H100 FP8 MTP1 w0.30 vs H100 FP8 MTP2 w0.15
 ```
 
+## 2026-05-12: MoE MLP 400-Step Check
+
+We tested whether the observed ReLU2 activation sparsity could be converted into useful expert sparsity by replacing the dense MLP with a top-1 MoE MLP.
+
+Configuration:
+
+```bash
+GPU_TYPE=H100
+FP8=1
+MAX_STEPS=400
+EVAL_INTERVAL=400
+CORE_METRIC_EVERY=400
+SAMPLE_INTERVAL=400
+BATCH_SIZE=32
+SEQ_LEN=2048
+OBJECTIVE=causal_mtp
+MTP_HEADS=2
+MTP_LOSS_WEIGHT=0.15
+OPTIMIZER=muon
+D_MODEL=768
+N_HEADS=6
+N_LAYERS=12
+MLP_TYPE=moe
+FF_MULT=1
+MOE_NUM_EXPERTS=4
+MOE_TOP_K=1
+MOE_AUX_LOSS_WEIGHT=0.01
+COMPILE=1
+```
+
+The MoE path required several fixes before it would run on H100 FP8:
+
+```text
+dynamic expert routing caused torch.compile cache churn
+FP8 expert matmuls required routed token counts divisible by 16
+top-1 routing left some expert weights unused, producing None gradients for Muon
+```
+
+A 1-GPU H100 FP8 compile smoke eventually completed after guarding the dynamic routing path, padding expert batches, and ensuring all expert parameters participated in the graph. The full 8-GPU 400-step run then completed.
+
+Result at step 400:
+
+```text
+train_loss: 4.6509
+val_loss: 3.6385
+masked_bpb: 1.1439
+CORE: 0.0688
+throughput: ~1.14M tok/s on 8x H100 FP8
+checkpoint: /runs/bench-h100-fp8-8gpu-d12-mtp2-w015-moe4top1-ff1-400/checkpoint.pt
+wandb: https://wandb.ai/harshbhatt7585/text-diffusion/runs/cmau2fvv
+```
+
+Compared to the dense ReLU2 H100 FP8 MTP2 run:
+
+| Run | MLP | Val Loss | BPB | CORE | Tok/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Dense ReLU2 | dense ff=4 | 3.5491 | 1.1157 | 0.0710 | ~1.50M |
+| MoE top-1 | 4 experts, ff=1 | 3.6385 | 1.1439 | 0.0688 | ~1.14M |
+
+This MoE variant did not improve the model. It was worse on validation loss, BPB, CORE, throughput, and sample repetition. Keeping total parameters similar forced each active expert to be much narrower than the dense `ff=4` MLP, so the run mostly added routing complexity without adding useful active compute.
+
+Decision: remove the MoE implementation and keep dense ReLU2 as the current baseline. If MoE is revisited, it should be done with a proper static-capacity/fused expert kernel and a more meaningful capacity tradeoff.
+
 ## Next Experiments
 
 1. Use the fixed 400-step checkpoint as the first comparison gate:
