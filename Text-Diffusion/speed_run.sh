@@ -15,7 +15,10 @@ DOC_BATCH_SIZE="${DOC_BATCH_SIZE:-4096}"
 TOKENIZER_TRAIN_SHARDS="${TOKENIZER_TRAIN_SHARDS:-8}"
 STREAM_NANOCHAT="${STREAM_NANOCHAT:-1}"
 GPU_TYPE="${GPU_TYPE:-H100}"
-GPU_TYPE_UPPER="$(printf "%s" "${GPU_TYPE}" | tr '[:lower:]' '[:upper:]')"
+GPU_TYPE_UPPER="$(printf "%s" "${GPU_TYPE}" | tr '[:lower:]' '[:upper:]' | tr '_' '-')"
+if [[ "${GPU_TYPE_UPPER}" == "A100-80GB" ]]; then
+  GPU_TYPE="A100-80GB"
+fi
 
 MAX_STEPS="${MAX_STEPS:--1}"
 TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-8}"
@@ -80,6 +83,9 @@ fi
 if [[ "${GPU_TYPE_UPPER}" != "H100" && "${FP8}" == "1" ]]; then
   echo "warning: disabling FP8 because GPU_TYPE=${GPU_TYPE} is not H100" >&2
   FP8=0
+fi
+if [[ "${GPU_TYPE_UPPER}" == "A100" || "${GPU_TYPE_UPPER}" == "A100-80GB" ]]; then
+  echo "modal gpu request: A100-80GB:${GPU_COUNT}" >&2
 fi
 COMPILE="${COMPILE:-1}"
 WANDB="${WANDB:-1}"

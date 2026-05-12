@@ -416,7 +416,9 @@ def main(
     overwrite_tokens: bool = False,
     stream_nanochat: bool = False,
 ) -> None:
-    gpu_type = gpu_type.upper()
+    gpu_type = gpu_type.upper().replace("_", "-")
+    if gpu_type == "A100-80GB":
+        gpu_type = "A100"
     if gpu_type != "H100" and fp8:
         raise ValueError("--fp8 is only supported for H100/Hopper in this training path; disable FP8 for A100.")
 
@@ -437,7 +439,6 @@ def main(
         )
         return
 
-    gpu_type = gpu_type.upper()
     train_functions = {
         ("A100", 1): train_a100_1gpu,
         ("A100", 2): train_a100_2gpu,
@@ -450,7 +451,12 @@ def main(
     }
     train_function = train_functions.get((gpu_type, gpu_count))
     if train_function is None:
-        raise ValueError("--gpu-type must be A100 or H100, and --gpu-count must be one of: 1, 2, 4, 8")
+        raise ValueError("--gpu-type must be A100, A100-80GB, or H100, and --gpu-count must be one of: 1, 2, 4, 8")
+
+    modal_gpu_request = f"A100-80GB:{gpu_count}" if gpu_type == "A100" and gpu_count > 1 else gpu_type
+    if gpu_type == "A100" and gpu_count == 1:
+        modal_gpu_request = "A100-80GB"
+    print(f"modal_gpu_request: {modal_gpu_request}", flush=True)
 
     train_function.remote(
         max_steps=max_steps,
