@@ -14,7 +14,8 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 | 2 | A100 MTP1 ReLU² | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | ~160M |
 | 3 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | ~143M |
 | 4 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~185M (≈143M active) |
-| 5 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
+| 5 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | ~143M |
+| 6 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
 | — | Tied embeddings | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5672 | 1.1210 | 0.0615 | ~160M |
 | — | MTP-shared first attempt | ReLU² ff=4 | shared × 1 | 8× A100 | 3.5363 | 1.1105 | 0.0585 | ~136M |
 | — | SwiGLU MTP1 + **GQA-2** (rejected) | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5335 | 1.1123 | 0.0459 | ~140M |
@@ -24,6 +25,7 @@ Reading the leaderboard:
 
 - The top score (`0.0710`) is still held by the heaviest config: 2× full-vocab MTP heads (≈50M extra params) and ReLU² FFN.
 - The new SwiGLU + shared-MTP + dropout=0 result (`0.0688`) lands **tied for #3 on half the GPUs and ~50M fewer MTP params**, which is the most parameter-efficient point on the board. It's the right direction to scale up.
+- The first Token Superposition Training gate (`s=4`, `r=0.3`) improved val loss/BPB versus the efficient baseline but landed just below it on CORE (`0.0685` vs `0.0688`). It is promising but not promoted yet.
 - The "MTP-shared first attempt" (`0.0585`), "SwiGLU + GQA-2" (`0.0459`), and "SwiGLU dropout=0.1" (`0.0447`) rows are kept in the table on purpose: they are the controlled stepping stones that show what *not* to do. Details in §SwiGLU and §GQA-2 below.
 
 ## 2026-05-10: From Diffusion To Text-MTP
@@ -495,6 +497,50 @@ Defer judgment on DFlash until two cheap follow-ups have run:
 2. **Retrain a longer / wider drafter.** `N_DRAFT_LAYERS=4`, `BLOCK_SIZE=8`, `MAX_STEPS=2000`. Target: `≥2x` speedup with `acc/block ≥ 3` on H100/FA3.
 
 This experiment does not move the 400-step gate. The gate continues to govern training-quality decisions; inference experiments live and die on their own metrics here.
+
+## 2026-05-13: Token Superposition Training Gate
+
+We added a Token Superposition Training (TST) phase inspired by Nous Research's "Efficient Pre-Training with Token Superposition". The implementation keeps the final checkpoint as the normal `TextDiffusionModel`: during the TST phase only, the training batch is reshaped into token bags, embeddings inside each bag are averaged, and each latent position predicts the next raw token bag. After the TST ratio is exhausted, training automatically returns to the baseline `causal_mtp` objective.
+
+Gate config:
+
+```bash
+GPU_TYPE=H100
+FP8=0
+COMPILE=0
+OBJECTIVE=causal_mtp
+MTP_HEADS=1
+MTP_LOSS_WEIGHT=0.15
+TST_BAG_SIZE=4
+TST_RATIO=0.3
+D_MODEL=768
+N_LAYERS=12
+N_HEADS=6
+GATED_MLP=1
+FF_MULT=3
+OPTIMIZER=muon
+BATCH_SIZE=32
+SEQ_LEN=2048
+MAX_STEPS=400
+RUN_CONFIG=4gpu
+```
+
+Schedule math:
+
+- `tokens_per_step = 524,288` latent transformer positions.
+- `TST_RATIO=0.3` at `MAX_STEPS=400` gives `120` TST steps and `280` normal recovery steps.
+- TST exposes `120 * 524,288 * 4 = 251.7M` raw tokens.
+- Recovery exposes `280 * 524,288 = 146.8M` raw tokens.
+- Total effective raw-token exposure is `398.5M`, about `1.9x` the normal 400-step baseline (`209.7M`), for roughly the same number of transformer-position steps.
+
+Result:
+
+| Run | Val Loss | BPB | CORE |
+| --- | ---: | ---: | ---: |
+| SwiGLU MTP1 shared baseline | 3.5866 | 1.1246 | 0.0688 |
+| TST s4 r0.3 + SwiGLU MTP1 recovery | 3.5789 | 1.1222 | 0.0685 |
+
+Interpretation: TST recovered validation loss and BPB slightly better than the efficient baseline, but did not cleanly beat CORE. Samples remained rough and repetitive, suggesting `120` TST steps plus `280` recovery steps may not be enough recovery at the 400-step gate. Next cheap gate: `TST_RATIO=0.2`, keeping `TST_BAG_SIZE=4`, so the model gets `80` TST steps and `320` normal recovery steps.
 
 ## Lessons Learned
 

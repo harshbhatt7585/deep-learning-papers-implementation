@@ -67,6 +67,8 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "mask_prob": 0.30,
     "mtp_heads": 3,
     "mtp_loss_weight": 0.3,
+    "tst_bag_size": 1,
+    "tst_ratio": 0.0,
     "ff_mult": 4,
     "weight_decay": 0.1,
     "aurora_weight_decay": 0.025,
@@ -143,6 +145,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--objective", choices=["diffusion", "causal_mtp", "dflash"], default="diffusion")
     parser.add_argument("--mtp-heads", type=int, default=None)
     parser.add_argument("--mtp-loss-weight", type=float, default=None)
+    parser.add_argument("--tst-bag-size", type=int, default=None)
+    parser.add_argument(
+        "--tst-ratio",
+        type=float,
+        default=None,
+        help="Fraction of training steps to run Token-Superposition Training before causal/MTP recovery.",
+    )
 
     # DFlash drafter training (Chen et al. 2026, "Block Diffusion for Flash
     # Speculative Decoding"). When --objective=dflash, we freeze a target
@@ -181,6 +190,8 @@ def parse_args() -> argparse.Namespace:
     nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
     mtp_heads = parsed.mtp_heads
     mtp_loss_weight = parsed.mtp_loss_weight
+    tst_bag_size = parsed.tst_bag_size
+    tst_ratio = parsed.tst_ratio
     aurora_weight_decay = parsed.aurora_weight_decay
     ff_mult = parsed.ff_mult
     args = with_internal_defaults(parsed)
@@ -196,6 +207,10 @@ def parse_args() -> argparse.Namespace:
         args.mtp_heads = mtp_heads
     if mtp_loss_weight is not None:
         args.mtp_loss_weight = mtp_loss_weight
+    if tst_bag_size is not None:
+        args.tst_bag_size = tst_bag_size
+    if tst_ratio is not None:
+        args.tst_ratio = tst_ratio
     if aurora_weight_decay is not None:
         args.aurora_weight_decay = aurora_weight_decay
     if ff_mult is not None:
@@ -366,6 +381,8 @@ def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -
 
     args.scaling_params = scaling_params
     args.tokens_per_step = step_tokens
+    args.tst_steps = int(args.max_steps * args.tst_ratio) if args.tst_bag_size > 1 and args.tst_ratio > 0 else 0
+    args.effective_training_tokens = total_tokens + args.tst_steps * step_tokens * max(0, args.tst_bag_size - 1)
     args.total_training_tokens = total_tokens
     log(
         "training_horizon: "
@@ -376,6 +393,15 @@ def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -
         f"total_tokens={total_tokens:,} "
         f"tokens_per_scaling_param={total_tokens / scaling_params:.2f}"
     )
+    if args.tst_steps > 0:
+        log(
+            "tst_horizon: "
+            f"bag_size={args.tst_bag_size} "
+            f"ratio={args.tst_ratio:g} "
+            f"steps={args.tst_steps:,} "
+            f"effective_raw_tokens={args.effective_training_tokens:,} "
+            f"effective_tokens_per_scaling_param={args.effective_training_tokens / scaling_params:.2f}"
+        )
 
 
 def load_training_checkpoint(
@@ -641,6 +667,48 @@ def causal_mtp_cross_entropy(
         )
         loss = loss + mtp_loss_weight * aux_loss / max(1, len(source_model.mtp_heads))
     return loss
+
+
+def token_superposition_cross_entropy(
+    model: torch.nn.Module,
+    source_model: TextDiffusionModel,
+    input_ids: torch.Tensor,
+    *,
+    bag_size: int,
+) -> torch.Tensor:
+    """Token-Superposition Training loss.
+
+    Non-overlapping input bags of ``bag_size`` raw tokens are averaged inside
+    the model embedding layer. Each latent bag predicts the next raw token bag
+    with the simplified multi-hot CE objective from the TST paper.
+    """
+    if bag_size <= 1:
+        logits = model(input_ids, attention_mask=None, causal=True)
+        return causal_cross_entropy(logits, input_ids)
+
+    usable_len = (input_ids.size(1) // bag_size) * bag_size
+    if usable_len < 2 * bag_size:
+        raise ValueError(
+            f"tst requires at least two bags: seq_len={input_ids.size(1)} bag_size={bag_size}"
+        )
+
+    bags = input_ids[:, :usable_len].view(input_ids.size(0), usable_len // bag_size, bag_size)
+    input_bags = bags[:, :-1, :]
+    target_bags = bags[:, 1:, :]
+    logits = model(input_bags, attention_mask=None, causal=True)
+
+    log_den = torch.logsumexp(logits, dim=-1)
+    target_logit_sum = logits.gather(-1, target_bags).sum(dim=-1)
+    loss = (log_den.float() - target_logit_sum.float() / bag_size).mean()
+    if len(source_model.mtp_heads) > 0:
+        loss = loss + logits.new_zeros(()) * sum(head.weight.sum() for head in source_model.mtp_heads)
+    return loss
+
+
+def use_tst_phase(args: argparse.Namespace, step_id: int) -> bool:
+    if args.tst_bag_size <= 1 or args.tst_ratio <= 0.0:
+        return False
+    return step_id <= int(args.max_steps * args.tst_ratio)
 
 
 @torch.no_grad()
@@ -933,11 +1001,21 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"objective: {args.objective}")
     if args.objective == "causal_mtp":
         log(f"mtp: heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")
+    if args.tst_steps > 0:
+        log(
+            "tst: "
+            f"bag_size={args.tst_bag_size} "
+            f"ratio={args.tst_ratio:g} "
+            f"steps={args.tst_steps:,} "
+            "then causal_mtp recovery"
+        )
     log(f"mlp: kind={'gated_swiglu' if config.gated_mlp else 'relu2'} ff_mult={config.ff_mult}")
     log(f"scaling_params: {args.scaling_params:,}")
     log(f"tokens_per_step: {args.tokens_per_step:,}")
     log(f"max_steps: {args.max_steps:,}")
     log(f"total_training_tokens: {args.total_training_tokens:,}")
+    if args.tst_steps > 0:
+        log(f"effective_training_tokens: {args.effective_training_tokens:,}")
     log(f"amp_dtype: {args.amp_dtype}")
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bfloat16" else torch.float16 if args.amp_dtype == "float16" else torch.float32
     log(f"attention_backend: {describe_attention_backend(masked=False, dtype=amp_dtype)}")
@@ -1021,6 +1099,7 @@ def train_one_step(
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     train_tokens: torch.Tensor,
+    step_id: int,
     args: argparse.Namespace,
     runtime: Runtime,
 ) -> float:
@@ -1030,10 +1109,12 @@ def train_one_step(
     step_loss = 0.0
 
     for micro_step in range(args.grad_accum_steps):
+        tst_active = use_tst_phase(args, step_id)
+        batch_seq_len = args.seq_len * args.tst_bag_size if tst_active else args.seq_len
         batch = get_batch(
             train_tokens,
             batch_size=args.batch_size,
-            seq_len=args.seq_len,
+            seq_len=batch_seq_len,
             runtime=runtime,
         )
         sync_context = (
@@ -1043,7 +1124,14 @@ def train_one_step(
         )
         with sync_context:
             with autocast_context(runtime.device, args.amp_dtype):
-                if args.objective == "causal_mtp":
+                if tst_active:
+                    loss = token_superposition_cross_entropy(
+                        model,
+                        source_model,
+                        batch,
+                        bag_size=args.tst_bag_size,
+                    )
+                elif args.objective == "causal_mtp":
                     loss = causal_mtp_cross_entropy(
                         model,
                         source_model,
@@ -1087,6 +1175,12 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     config = build_config(args, data.tokenizer)
     model = build_model(args, config, runtime)
     resolve_training_horizon(args, model)
+    if args.tst_bag_size < 1:
+        raise ValueError("--tst-bag-size must be >= 1")
+    if not 0.0 <= args.tst_ratio <= 1.0:
+        raise ValueError("--tst-ratio must be in [0, 1]")
+    if args.tst_ratio > 0.0 and args.objective != "causal_mtp":
+        raise ValueError("TST pretraining is currently supported only with --objective causal_mtp recovery")
     optimizer = build_optimizer(args, model, runtime)
     scaler = torch.amp.GradScaler(
         "cuda",
@@ -1139,6 +1233,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             optimizer=optimizer,
             scaler=scaler,
             train_tokens=data.train_tokens,
+            step_id=step_id,
             args=args,
             runtime=runtime,
         )
@@ -1146,10 +1241,17 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
 
         if args.log_interval > 0 and step_id % args.log_interval == 0:
             elapsed = time.time() - last_log_time
-            tokens = args.tokens_per_step * args.log_interval
+            current_tokens_per_step = args.tokens_per_step * (
+                args.tst_bag_size if use_tst_phase(args, step_id) else 1
+            )
+            tokens = current_tokens_per_step * args.log_interval
             tokens_per_second = tokens / max(elapsed, 1e-9)
             train_loss = running_loss / args.log_interval
-            log(f"step {step_id:05d} train_loss {train_loss:.4f} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
+            phase = "tst" if use_tst_phase(args, step_id) else args.objective
+            log(f"step {step_id:05d} phase {phase} train_loss {train_loss:.4f} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
+            raw_tokens_seen = step_id * args.tokens_per_step
+            if args.tst_steps > 0:
+                raw_tokens_seen += min(step_id, args.tst_steps) * args.tokens_per_step * (args.tst_bag_size - 1)
             log_train_metrics(
                 wandb_run,
                 step_id,
@@ -1157,7 +1259,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     "train/loss": train_loss,
                     "train/lr": lr,
                     "train/tokens_per_second": tokens_per_second,
-                    "train/tokens": step_id * args.tokens_per_step,
+                    "train/tokens": raw_tokens_seen,
+                    "train/phase_is_tst": 1.0 if phase == "tst" else 0.0,
                 },
             )
             running_loss = 0.0

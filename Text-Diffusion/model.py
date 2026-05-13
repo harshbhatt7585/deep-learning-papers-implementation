@@ -283,10 +283,15 @@ class TextDiffusionModel(nn.Module):
         target features for the drafter. The two flags are mutually exclusive; if both
         are set, the per-layer list takes precedence.
         """
-        if input_ids.ndim != 2:
-            raise ValueError(f"input_ids must be 2D, got shape {tuple(input_ids.shape)}")
+        if input_ids.ndim not in (2, 3):
+            raise ValueError(f"input_ids must be 2D or 3D, got shape {tuple(input_ids.shape)}")
 
-        batch_size, seq_len = input_ids.shape
+        if input_ids.ndim == 3:
+            if past_key_values is not None:
+                raise ValueError("3D bagged input_ids cannot be used with past_key_values")
+            batch_size, seq_len, bag_size = input_ids.shape
+        else:
+            batch_size, seq_len = input_ids.shape
         past_len = 0 if past_key_values is None else past_key_values[0][0].size(1)
         total_len = past_len + seq_len
         if total_len > self.config.max_seq_len:
@@ -296,7 +301,10 @@ class TextDiffusionModel(nn.Module):
                 f"past_key_values has {len(past_key_values)} layers, expected {len(self.blocks)}"
             )
 
-        x = norm(self.token_emb(input_ids))
+        if input_ids.ndim == 3:
+            x = norm(self.token_emb(input_ids).mean(dim=2))
+        else:
+            x = norm(self.token_emb(input_ids))
         x = self.drop(x)
         cos_sin = (self.cos[:, :total_len], self.sin[:, :total_len])
 
