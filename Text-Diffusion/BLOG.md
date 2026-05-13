@@ -424,6 +424,78 @@ The interesting twist is `train_loss` is *worse* (+0.107) while `val_loss` is *b
 
 GQA is not categorically bad — production models (LLaMA, Mixtral, Qwen) all use it. But they pair it with a *capacity reinvestment*: more layers, wider FFN, or much longer training. The standard recipe is "GQA + FF_MULT=4 SwiGLU + more layers", not "GQA alone". We'll only revisit GQA if we plan to reinvest the savings in `FF_MULT=4` or `N_LAYERS=14`, and only after we've actually beaten the leaderboard with the dense `MTP=2 shared` recipe.
 
+## Inference Experiments
+
+A separate track from the 400-step training gate. These runs do **not** affect the leaderboard above — they measure end-to-end inference acceleration (wall-clock speedup, draft acceptance) on top of a frozen target checkpoint from the gate. CORE and BPB are not the scoring metrics here.
+
+### 2026-05-13: DFlash Speculative Decoding — First Baseline
+
+We trained the first DFlash drafter against the long-run target (CORE peak `~0.1001` at step 2000, the highest-quality target we currently have) and ran a correctness + speedup check at greedy temperature.
+
+Setup:
+
+```text
+target  /runs/text-diffusion-8gpu--2026-05-10--05-42pm/checkpoint.pt
+        d_model=768, n_layers=12, n_heads=6
+        ~135M trunk params (legacy MTP head stripped at load)
+
+drafter /runs/dflash-drafter-d2-h4-b16-on-long-d12-mtp1/checkpoint.pt
+        DFlash, n_draft_layers=2, n_heads=4, block_size=16
+        target_layer_ids=(1, 9)
+        owned params = 15,335,424 (= 11.3% of target trunk;
+                                     embed_tokens / lm_head are shared with target)
+```
+
+Drafter training command (the new `draft` mode in `speed_run.sh`):
+
+```bash
+RUN_NAME=dflash-drafter-d2-h4-b16-on-long-d12-mtp1 \
+TARGET_CHECKPOINT=/runs/text-diffusion-8gpu--2026-05-10--05-42pm/checkpoint.pt \
+  bash speed_run.sh draft 4gpu
+# defaults: OBJECTIVE=dflash, MAX_STEPS=400, BLOCK_SIZE=16, N_DRAFT_LAYERS=2
+```
+
+Inference test (greedy, prompt = `"The capital of France is"`, `gen_length=256`):
+
+```text
+== plain AR ==
+  tokens generated:   256        wall: 3681 ms      69.5 tok/s
+
+== speculative · DFlash (block_size = 16) ==
+  tokens generated:   256
+  target forwards:    177
+  drafter forwards:   176
+  drafts proposed:    2582
+  drafts accepted:     79
+  acceptance rate:    3.1%
+  avg accepted/block: 1.45 (over 176 blocks)
+  wall:               2872 ms        89.1 tok/s
+  speedup vs AR:      1.28x
+
+OK (dflash): matches plain AR token-for-token on the first 262 tokens.
+```
+
+The implementation is correct — bit-identical output to plain AR at `T=0` over all 256 generated tokens. The speedup is modest.
+
+#### Reading the numbers
+
+The headline number is **`avg accepted/block = 1.45` out of `block_size = 16`**. The drafter nails the very next token most of the time and then loses the thread fast — the classic "block too wide, drafter too weak" pattern for first-pass spec-decode. With each block costing exactly one target verify forward, the theoretical speedup ceiling at this acceptance is `~1.45x`; the measured `1.28x` is what's left after counting the per-block drafter forwards and constant overhead.
+
+Three diagnoses:
+
+1. **Block size overshoots drafter lookahead.** Drafter correctness decays geometrically with position-within-block. With `acc/block = 1.45` we're effectively wasting `~14.5` of the 16 draft slots per block. Smaller `block_size` should give an immediate "free" speedup with no retraining.
+2. **Drafter is small *and* under-trained.** Owned params = 15.3M (`~11%` of target), only 2 layers, and trained at the default `MAX_STEPS=400`. The DFlash paper trains drafters at `3–5×` the target's training length; ours saw far less than the target's 1.28B tokens. The single highest-leverage knob is drafter training length, followed by drafter capacity.
+3. **Hardware caveat.** The Modal spec-decode run logged `[flash_attention] using SDPA: FA3 is unavailable on this device`. The wall-time was measured on the attention-fallback path, not the H100/FA3 path the drafter was trained against. The `1.28x` *ratio* is fair (both AR and spec share the fallback), but the absolute `89.1 tok/s` is **not** the throughput we should quote. Re-run pinned to H100 once we've found the right config.
+
+#### Decision
+
+Defer judgment on DFlash until two cheap follow-ups have run:
+
+1. **Block-size sweep on the current checkpoint** (no retraining, ~30s/setting). Test `block_size ∈ {2, 4, 8, 12, 16}` to find the empirical optimum for the existing drafter. With `avg_accepted=1.45` today the optimum is almost certainly `block_size ≈ 4`; expect `1.28x → ~1.5–1.7x` for free.
+2. **Retrain a longer / wider drafter.** `N_DRAFT_LAYERS=4`, `BLOCK_SIZE=8`, `MAX_STEPS=2000`. Target: `≥2x` speedup with `acc/block ≥ 3` on H100/FA3.
+
+This experiment does not move the 400-step gate. The gate continues to govern training-quality decisions; inference experiments live and die on their own metrics here.
+
 ## Lessons Learned
 
 1. **Dropout is not free with SwiGLU.** The standard `dropout=0.1` carryover from nanoGPT silently destroys generalization once the FFN becomes multiplicative-gated. If you change MLP architecture, recheck dropout.
