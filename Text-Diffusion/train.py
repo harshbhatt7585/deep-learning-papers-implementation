@@ -743,6 +743,94 @@ def estimate_core_metrics(
 
 
 @torch.no_grad()
+def sample_text_dflash(
+    drafter_model: torch.nn.Module,
+    tokenizer: Tokenizer,
+    args: argparse.Namespace,
+    runtime: Runtime,
+) -> tuple[str, dict[str, float]]:
+    """Spec-decode sampling for the DFlash drafter.
+
+    DFlash analogue of ``sample_text``: runs the drafter against the frozen
+    target on each prompt in ``SAMPLE_PROMPTS`` via ``speculate_dflash`` and
+    reports both the generated text and a small batch of acceptance metrics.
+
+    Why this matters during training:
+
+      1. Qualitative — confirms the drafter is actually producing target-like
+         text and not collapsing into a mode (e.g. EOS-spam, repetition).
+      2. Quantitative — tracks ``acceptance_rate`` and ``accepted_per_block``
+         step-by-step. These are the metrics we'll be scored on at inference;
+         seeing them as a training curve is the fastest way to spot
+         under/over-training and bad hyperparameters.
+
+    Temperature is pinned to 0.0 so acceptance is a clean signal (no sampling
+    noise). The drafter is set to ``eval()`` for the duration and returned to
+    ``train()`` before this function exits.
+    """
+    from spec_decode import speculate_dflash
+
+    if _DFLASH_TARGET is None:
+        raise RuntimeError(
+            "dflash sampling requires _DFLASH_TARGET; was build_model not called?"
+        )
+
+    source_drafter = unwrap_model(drafter_model)
+    drafter_model.eval()
+
+    samples: list[str] = []
+    total_drafts_accepted = 0
+    total_drafts_proposed = 0
+    total_committed = 0  # sum of (acceptance_length + 1) across blocks
+    total_blocks = 0
+    total_target_forwards = 0
+    total_tokens_generated = 0
+
+    block_size = source_drafter.config.block_size
+    for prompt in SAMPLE_PROMPTS:
+        prompt_ids = torch.tensor(
+            tokenizer.encode(prompt, add_bos=True),
+            dtype=torch.long,
+            device=runtime.device,
+        )
+        output, stats = speculate_dflash(
+            _DFLASH_TARGET,
+            source_drafter,
+            prompt_ids,
+            gen_length=args.sample_length,
+            block_size=block_size,
+            temperature=0.0,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+        samples.append(tokenizer.decode(output.detach().cpu(), skip_special=False))
+        total_drafts_accepted += stats.drafts_accepted
+        total_drafts_proposed += stats.drafts_proposed
+        total_committed += sum(stats.per_step_accepted)
+        total_blocks += len(stats.per_step_accepted)
+        total_target_forwards += stats.target_forwards
+        total_tokens_generated += stats.tokens_generated
+
+    metrics = {
+        "sample_acceptance_rate": total_drafts_accepted / max(1, total_drafts_proposed),
+        "sample_accepted_per_block": total_committed / max(1, total_blocks),
+        "sample_tokens_per_forward": total_tokens_generated / max(1, total_target_forwards),
+        "sample_blocks": float(total_blocks),
+        "sample_block_size": float(block_size),
+    }
+    sample_str = "\n".join(samples)
+    log("samples:\n" + sample_str)
+    log(
+        "sample acceptance: "
+        f"rate={metrics['sample_acceptance_rate'] * 100:.1f}% "
+        f"accepted/block={metrics['sample_accepted_per_block']:.2f}/{block_size} "
+        f"tokens/forward={metrics['sample_tokens_per_forward']:.2f} "
+        f"(over {total_blocks} blocks)"
+    )
+    drafter_model.train()
+    return sample_str, metrics
+
+
+@torch.no_grad()
 def sample_text(
     model: torch.nn.Module,
     tokenizer: Tokenizer,
@@ -1091,24 +1179,45 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 )
 
         if (
-            args.objective != "dflash"
-            and is_main_process()
+            is_main_process()
             and args.sample_interval > 0
             and step_id % args.sample_interval == 0
         ):
-            sample = sample_text(model, data.tokenizer, args, runtime)
-            if wandb_run is not None:
-                import wandb
-
-                wandb_run.log({"sample/text": wandb.Html(f"<pre>{sample}</pre>")}, step=step_id)
-                log_wandb_sample_table(
-                    wandb_run,
-                    wandb_sample_table,
-                    step=step_id,
-                    sample=sample,
-                    eval_metrics=latest_eval_metrics,
-                    args=args,
+            if args.objective == "dflash":
+                sample, sample_metrics = sample_text_dflash(
+                    model, data.tokenizer, args, runtime
                 )
+                latest_eval_metrics = {
+                    **(latest_eval_metrics or {}),
+                    **sample_metrics,
+                }
+                if wandb_run is not None:
+                    import wandb
+
+                    wandb_run.log(
+                        {
+                            "sample/text": wandb.Html(f"<pre>{sample}</pre>"),
+                            **{
+                                f"sample/{key}": value
+                                for key, value in sample_metrics.items()
+                            },
+                        },
+                        step=step_id,
+                    )
+            else:
+                sample = sample_text(model, data.tokenizer, args, runtime)
+                if wandb_run is not None:
+                    import wandb
+
+                    wandb_run.log({"sample/text": wandb.Html(f"<pre>{sample}</pre>")}, step=step_id)
+                    log_wandb_sample_table(
+                        wandb_run,
+                        wandb_sample_table,
+                        step=step_id,
+                        sample=sample,
+                        eval_metrics=latest_eval_metrics,
+                        args=args,
+                    )
 
         if is_main_process() and args.save_interval > 0 and step_id % args.save_interval == 0:
             save_checkpoint(
