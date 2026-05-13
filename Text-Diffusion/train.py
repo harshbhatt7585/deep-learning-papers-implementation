@@ -210,13 +210,31 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
     )
     sample_len = sample_prompt_len + args.sample_length
     max_seq_len = max(args.seq_len, sample_len + args.sample_block_length)
+
+    n_heads = args.n_heads
+    if args.objective == "dflash" and args.d_model % n_heads != 0:
+        # DFlash drafter inherits the target's d_model at bind time
+        # (see `_build_dflash_drafter`), so this config is just a cosmetic
+        # placeholder for logging / wandb metadata. If the user-chosen
+        # n_heads doesn't divide the placeholder d_model (common when
+        # overriding N_HEADS to match the target's head_dim while leaving
+        # speed_run.sh's draft-mode D_MODEL=256 in place), fall back to the
+        # largest divisor of d_model that is <= n_heads so we don't crash.
+        # The drafter's *actual* n_heads (consumed by DFlashConfig) still
+        # comes straight from args.n_heads downstream — this only affects
+        # the unused placeholder config.
+        for candidate in range(n_heads, 0, -1):
+            if args.d_model % candidate == 0:
+                n_heads = candidate
+                break
+
     return TextDiffusionConfig(
         vocab_size=tokenizer.vocab_size,
         max_seq_len=max_seq_len,
         mask_token_id=tokenizer.mask_token_id,
         pad_token_id=tokenizer.pad_token_id,
         d_model=args.d_model,
-        n_heads=args.n_heads,
+        n_heads=n_heads,
         n_layers=args.n_layers,
         dropout=args.dropout,
         ff_mult=args.ff_mult,
@@ -287,6 +305,18 @@ def _load_frozen_target(
 def _build_dflash_config(args: argparse.Namespace, target: TextDiffusionModel) -> "Any":
     from dflash_model import DFlashConfig
 
+    # Force drafter n_heads to match the target. The drafter shares d_model
+    # with the target (it's bound at runtime), so n_heads completely determines
+    # head_dim -- and head_dim controls RoPE's per-channel rotation frequency.
+    # If the drafter's head_dim differs from the target's, the same absolute
+    # position gets a different rotation in each model, so the drafter has to
+    # learn its own positional code that is subtly inconsistent with the
+    # representation it cross-attends to in x_ctx. q_proj/o_proj parameter
+    # counts are identical (d_model -> d_model either way), so this is free.
+    # ``args.n_heads`` is ignored for the drafter (still respected by the
+    # cosmetic placeholder TextDiffusionConfig used for logging).
+    drafter_n_heads = target.config.n_heads
+    drafter_n_kv_heads = target.config.n_kv_heads or target.config.n_heads
     return DFlashConfig(
         target_d_model=target.config.d_model,
         target_vocab_size=target.config.vocab_size,
@@ -296,8 +326,8 @@ def _build_dflash_config(args: argparse.Namespace, target: TextDiffusionModel) -
         mask_token_id=target.config.mask_token_id,
         block_size=args.block_size,
         n_draft_layers=args.n_draft_layers,
-        n_heads=args.n_heads,
-        n_kv_heads=None,
+        n_heads=drafter_n_heads,
+        n_kv_heads=drafter_n_kv_heads,
         ff_mult=args.ff_mult,
         gated_mlp=args.gated_mlp,
         dropout=args.dropout,
@@ -446,10 +476,14 @@ def _build_dflash_drafter(args: argparse.Namespace, runtime: Runtime) -> torch.n
     drafter.bind(target)
     _DFLASH_TARGET = target
 
+    drafter_head_dim = drafter_config.d_model // drafter_config.n_heads
+    target_head_dim = target.config.d_model // target.config.n_heads
     log(
         f"[dflash] drafter built: d_model={drafter_config.d_model} "
         f"n_draft_layers={drafter_config.n_draft_layers} "
-        f"n_heads={drafter_config.n_heads} "
+        f"n_heads={drafter_config.n_heads} (head_dim={drafter_head_dim}, "
+        f"target head_dim={target_head_dim}) "
+        f"n_kv_heads={drafter_config.n_kv_heads} "
         f"target_layer_ids={drafter_config.target_layer_ids} "
         f"block_size={drafter_config.block_size} "
         f"owned_params={drafter.num_owned_parameters():,}"

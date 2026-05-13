@@ -331,6 +331,52 @@ def _sample_token(logits: torch.Tensor, temperature: float) -> torch.Tensor:
     return sampled.view(probs.shape[:-1])
 
 
+def _cache_seq_len(cache: list[tuple[torch.Tensor, torch.Tensor]]) -> int:
+    return 0 if not cache else cache[0][0].size(1)
+
+
+def _crop_cache(
+    cache: list[tuple[torch.Tensor, torch.Tensor]],
+    seq_len: int,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    return [(k[:, :seq_len, :, :].contiguous(), v[:, :seq_len, :, :].contiguous()) for k, v in cache]
+
+
+@torch.no_grad()
+def generate_causal_cached(
+    model: TextDiffusionModel,
+    prompt_ids: torch.Tensor,
+    *,
+    gen_length: int,
+    temperature: float = 0.0,
+    eos_token_id: int | None = None,
+) -> torch.Tensor:
+    """Autoregressive generation using the target KV cache."""
+    if prompt_ids.ndim == 1:
+        x = prompt_ids.unsqueeze(0).to(model.device)
+    else:
+        x = prompt_ids.to(model.device)
+
+    model.eval()
+    target_length = min(x.size(1) + gen_length, model.config.max_seq_len)
+    logits, cache = model(x, attention_mask=None, causal=True, use_cache=True)
+    while x.size(1) < target_length:
+        next_token = _sample_token(logits[:, -1, :], temperature).unsqueeze(-1)
+        x = torch.cat([x, next_token], dim=1)
+        if eos_token_id is not None and int(next_token[0, 0].item()) == eos_token_id:
+            break
+        if x.size(1) >= target_length:
+            break
+        logits, cache = model(
+            next_token,
+            attention_mask=None,
+            causal=True,
+            past_key_values=cache,
+            use_cache=True,
+        )
+    return x[0]
+
+
 @torch.no_grad()
 def speculate_dflash(
     target: TextDiffusionModel,
@@ -399,8 +445,8 @@ def speculate_dflash(
     target_length = min(prefix_ids.size(1) + gen_length, config.max_seq_len)
 
     # --- Prefill: target forward over the full prompt -----------------------
-    prefill_logits, prefill_hidden_list = target(
-        prefix_ids, attention_mask=None, causal=True, output_hidden_states=True
+    prefill_logits, prefill_hidden_list, target_cache = target(
+        prefix_ids, attention_mask=None, causal=True, output_hidden_states=True, use_cache=True
     )
     stats.target_forwards += 1
     target_hidden = extract_context_feature(prefill_hidden_list, layer_ids)  # (1, L, D_ctx)
@@ -442,24 +488,22 @@ def speculate_dflash(
             if verify_input.size(1) < 2:
                 break
 
-        # We run target on just the new block (no KV cache yet — Landing 1
-        # prioritises algorithmic correctness over inference speed). To keep
-        # the verify forward causally consistent with the full history we feed
-        # it the WHOLE sequence so far and read out only the new positions.
-        # This is functionally equivalent to a KV-cached incremental forward
-        # at the cost of recomputing prefix attention.
-        full_input = torch.cat([tokens[:, :-1], verify_input], dim=1)
-        target_logits, target_hidden_list_new = target(
-            full_input, attention_mask=None, causal=True, output_hidden_states=True
+        cache_len_before = _cache_seq_len(target_cache)
+        target_logits, target_hidden_list_new, verify_cache = target(
+            verify_input,
+            attention_mask=None,
+            causal=True,
+            output_hidden_states=True,
+            past_key_values=target_cache,
+            use_cache=True,
         )
         stats.target_forwards += 1
-        new_target_hidden_full = extract_context_feature(target_hidden_list_new, layer_ids)
+        verify_hidden_full = extract_context_feature(target_hidden_list_new, layer_ids)
 
-        # The verify forward consumed positions [tokens.size(1)-1, tokens.size(1)-1 + bs)
-        # of full_input. Logits/hidden at those positions are what we need.
-        verify_start = tokens.size(1) - 1
-        verify_logits = target_logits[:, verify_start : verify_start + verify_input.size(1), :]
-        verify_hidden = new_target_hidden_full[:, verify_start : verify_start + verify_input.size(1), :]
+        # The cached verify forward returns only the new block positions:
+        # position 0 is the anchor, positions 1.. are draft tokens.
+        verify_logits = target_logits
+        verify_hidden = verify_hidden_full
 
         # Target's argmax at each verify position; argmax-match against drafts.
         target_argmax = _sample_token(verify_logits, temperature)  # (1, bs)
@@ -499,6 +543,7 @@ def speculate_dflash(
         # next iter's verify forward will produce it (as that block's anchor).
         new_hidden = verify_hidden[:, : acceptance_length + 1, :]
         target_hidden = torch.cat([target_hidden, new_hidden], dim=1)
+        target_cache = _crop_cache(verify_cache, cache_len_before + acceptance_length + 1)
 
         if eos_token_id is not None:
             if int(bonus_token[0, 0].item()) == eos_token_id:
@@ -813,7 +858,7 @@ def main() -> None:
     # --- Warmup ---------------------------------------------------------------
     for _ in range(args.warmup):
         torch.manual_seed(args.seed)
-        _ = generate_causal(model, prompt_ids, gen_length=8, temperature=args.temperature)
+        _ = generate_causal_cached(model, prompt_ids, gen_length=8, temperature=args.temperature)
         if "mtp" in modes:
             torch.manual_seed(args.seed)
             _ = speculate_mtp(model, prompt_ids, gen_length=8, temperature=args.temperature)
@@ -827,7 +872,7 @@ def main() -> None:
 
     # --- Baseline: plain AR ---------------------------------------------------
     ar_ids, ar_time = _time_run(
-        lambda: generate_causal(model, prompt_ids, gen_length=args.gen_length, temperature=args.temperature),
+        lambda: generate_causal_cached(model, prompt_ids, gen_length=args.gen_length, temperature=args.temperature),
         args, device,
     )
     ar_generated = int(ar_ids.size(0) - prompt_ids.size(0))

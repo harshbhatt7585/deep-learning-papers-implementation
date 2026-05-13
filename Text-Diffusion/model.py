@@ -11,6 +11,9 @@ from torch.nn import functional as F
 from flash_attention import flash_attn
 
 
+KVCache = list[tuple[torch.Tensor, torch.Tensor]]
+
+
 @dataclass
 class TextDiffusionConfig:
     vocab_size: int
@@ -93,23 +96,35 @@ class SelfAttention(nn.Module):
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
-    ) -> torch.Tensor:
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         batch_size, seq_len, _ = x.shape
         q = self.c_q(x).view(batch_size, seq_len, self.n_heads, self.head_dim)
         k = self.c_k(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
         v = self.c_v(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
 
         cos, sin = cos_sin
-        q = apply_rotary_emb(q, cos[:, :seq_len], sin[:, :seq_len])
-        k = apply_rotary_emb(k, cos[:, :seq_len], sin[:, :seq_len])
+        past_len = 0 if past_key_value is None else past_key_value[0].size(1)
+        q = apply_rotary_emb(q, cos[:, past_len : past_len + seq_len], sin[:, past_len : past_len + seq_len])
+        k = apply_rotary_emb(k, cos[:, past_len : past_len + seq_len], sin[:, past_len : past_len + seq_len])
 
         q = norm(q) * 1.2
         k = norm(k) * 1.2
 
-        if attention_mask is None:
+        if past_key_value is not None:
+            past_k, past_v = past_key_value
+            k = torch.cat([past_k, k], dim=1)
+            v = torch.cat([past_v, v], dim=1)
+        present = (k, v) if use_cache else None
+
+        if attention_mask is None and past_key_value is None:
             y = flash_attn.flash_attn_func(q, k, v, causal=causal)
             y = y.contiguous().view(batch_size, seq_len, self.d_model)
-            return self.c_proj(y)
+            y = self.c_proj(y)
+            if use_cache:
+                return y, present
+            return y
 
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
@@ -129,8 +144,12 @@ class SelfAttention(nn.Module):
             else:
                 raise ValueError("attention_mask must be 2D or 3D")
             attn_mask = attn_mask.to(device=x.device)
-        if causal:
-            causal_mask = torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device).tril()
+        total_len = k.size(-2)
+        needs_causal_mask = causal and not (past_len > 0 and seq_len == 1)
+        if needs_causal_mask:
+            query_pos = torch.arange(past_len, past_len + seq_len, device=x.device)
+            key_pos = torch.arange(total_len, device=x.device)
+            causal_mask = key_pos[None, :] <= query_pos[:, None]
             causal_mask = causal_mask[None, None, :, :]
             attn_mask = causal_mask if attn_mask is None else attn_mask & causal_mask
 
@@ -141,10 +160,13 @@ class SelfAttention(nn.Module):
                 v,
                 attn_mask=attn_mask,
                 dropout_p=0.0,
-                is_causal=causal and attn_mask is None,
+                is_causal=needs_causal_mask and attn_mask is None,
             )
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
-        return self.c_proj(y)
+        y = self.c_proj(y)
+        if use_cache:
+            return y, present
+        return y
 
 
 class MLP(nn.Module):
@@ -188,9 +210,24 @@ class TransformerBlock(nn.Module):
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
-    ) -> torch.Tensor:
-        x = x + self.attn(norm(x), cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        attn_out = self.attn(
+            norm(x),
+            cos_sin=cos_sin,
+            attention_mask=attention_mask,
+            causal=causal,
+            past_key_value=past_key_value,
+            use_cache=use_cache,
+        )
+        present = None
+        if use_cache:
+            attn_out, present = attn_out
+        x = x + attn_out
         x = x + self.mlp(norm(x))
+        if use_cache:
+            return x, present
         return x
 
 
@@ -228,7 +265,16 @@ class TextDiffusionModel(nn.Module):
         causal: bool = False,
         return_hidden: bool = False,
         output_hidden_states: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, list[torch.Tensor]]:
+        past_key_values: KVCache | None = None,
+        use_cache: bool = False,
+    ) -> (
+        torch.Tensor
+        | tuple[torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, list[torch.Tensor]]
+        | tuple[torch.Tensor, KVCache]
+        | tuple[torch.Tensor, torch.Tensor, KVCache]
+        | tuple[torch.Tensor, list[torch.Tensor], KVCache]
+    ):
         """Standard forward.
 
         ``return_hidden=True`` adds the final post-norm hidden state to the return tuple.
@@ -241,12 +287,18 @@ class TextDiffusionModel(nn.Module):
             raise ValueError(f"input_ids must be 2D, got shape {tuple(input_ids.shape)}")
 
         batch_size, seq_len = input_ids.shape
-        if seq_len > self.config.max_seq_len:
-            raise ValueError(f"seq_len {seq_len} exceeds max_seq_len {self.config.max_seq_len}")
+        past_len = 0 if past_key_values is None else past_key_values[0][0].size(1)
+        total_len = past_len + seq_len
+        if total_len > self.config.max_seq_len:
+            raise ValueError(f"seq_len {total_len} exceeds max_seq_len {self.config.max_seq_len}")
+        if past_key_values is not None and len(past_key_values) != len(self.blocks):
+            raise ValueError(
+                f"past_key_values has {len(past_key_values)} layers, expected {len(self.blocks)}"
+            )
 
         x = norm(self.token_emb(input_ids))
         x = self.drop(x)
-        cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
+        cos_sin = (self.cos[:, :total_len], self.sin[:, :total_len])
 
         hidden_states_list: list[torch.Tensor] | None = None
         if output_hidden_states:
@@ -254,17 +306,37 @@ class TextDiffusionModel(nn.Module):
             # index i (i>=1) is the output of block i-1.
             hidden_states_list = [x]
 
-        for block in self.blocks:
-            x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
+        present_key_values: KVCache | None = [] if use_cache else None
+        for idx, block in enumerate(self.blocks):
+            past = None if past_key_values is None else past_key_values[idx]
+            block_out = block(
+                x,
+                cos_sin=cos_sin,
+                attention_mask=attention_mask,
+                causal=causal,
+                past_key_value=past,
+                use_cache=use_cache,
+            )
+            if use_cache:
+                x, present = block_out
+                present_key_values.append(present)
+            else:
+                x = block_out
             if output_hidden_states:
                 hidden_states_list.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
         if output_hidden_states:
+            if use_cache:
+                return logits, hidden_states_list, present_key_values
             return logits, hidden_states_list
         if return_hidden:
+            if use_cache:
+                return logits, x, present_key_values
             return logits, x
+        if use_cache:
+            return logits, present_key_values
         return logits
 
     @torch.no_grad()

@@ -88,6 +88,8 @@ class DFlashConfig:
             self.n_kv_heads = self.n_heads
         if self.target_d_model % self.n_heads != 0:
             raise ValueError("target_d_model must be divisible by drafter n_heads")
+        if self.n_kv_heads > self.n_heads or self.n_heads % self.n_kv_heads != 0:
+            raise ValueError("n_kv_heads must divide n_heads")
         if (self.target_d_model // self.n_heads) % 2 != 0:
             raise ValueError("attention head_dim must be even for rotary embeddings")
         if self.block_size < 2:
@@ -406,6 +408,16 @@ class DFlashDraftModel(nn.Module):
                 "increase config.max_seq_len."
             )
 
+        # Match our target's convention: TextDiffusionModel (nanochat-style)
+        # applies RMSNorm to the embedding before the stack so the residual
+        # stream operates at unit magnitude end-to-end. Because the drafter
+        # shares ``lm_head`` with the target via :meth:`bind`, the drafter's
+        # final hidden state must live in the same scale the lm_head was
+        # trained on -- which is unit-norm. Skipping this norm makes the
+        # residual stream ~sqrt(d_model) larger than the layers' deltas, so
+        # the drafter degenerates into "small corrections on a pass-through
+        # embedding" and val_loss saturates ~0.4 nats higher (see BLOG entry
+        # "tried no-embed-norm, reverted").
         x = norm(self.embed_tokens(input_ids))
         x = self.drop(x)
 
