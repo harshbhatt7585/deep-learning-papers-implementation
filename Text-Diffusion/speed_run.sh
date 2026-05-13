@@ -42,7 +42,7 @@ if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
 
   if [[ -z "${TARGET_CHECKPOINT:-}" ]]; then
     echo "[speed_run] ERROR: MODE=${MODE} requires TARGET_CHECKPOINT=<path/to/target/checkpoint.pt>" >&2
-    echo "             Example: TARGET_CHECKPOINT=runs/text-diffusion-mtp1-relu2/checkpoint.pt \\" >&2
+    echo "             Example: TARGET_CHECKPOINT=/runs/text-diffusion-mtp1-relu2/checkpoint.pt \\" >&2
     echo "                       bash speed_run.sh draft 4gpu" >&2
     exit 64
   fi

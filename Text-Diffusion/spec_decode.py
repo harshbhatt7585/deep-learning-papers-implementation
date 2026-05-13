@@ -533,6 +533,14 @@ def _clean_state_dict(state: dict) -> dict:
 
 def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) -> tuple[TextDiffusionModel, dict]:
     """Load a training checkpoint and rebuild the (target) model on ``device``."""
+    if not Path(checkpoint_path).exists():
+        raise SystemExit(
+            f"[spec_decode] target checkpoint not found: {checkpoint_path}\n"
+            f"  -> If you're on a Modal container, run 'modal run modal_train.py::list_runs' from your Mac\n"
+            f"     to discover the actual checkpoint paths on the runs volume.\n"
+            f"  -> If you're running locally, download the checkpoint first via\n"
+            f"     'modal volume get text-diffusion-runs <run-name>/checkpoint.pt'."
+        )
     blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in blob:
         raise KeyError(
@@ -544,9 +552,19 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
         config = cfg_dict
     else:
         config = TextDiffusionConfig(**cfg_dict)
+    cleaned = _clean_state_dict(blob["model_state"])
+    mtp_weight = cleaned.get("mtp_heads.0.weight")
+    if (
+        mtp_weight is not None
+        and tuple(mtp_weight.shape) != (config.d_model, config.d_model)
+    ):
+        print(
+            "[spec_decode] target checkpoint uses legacy full-vocab MTP heads; "
+            "ignoring MTP heads for target loading"
+        )
+        config.n_mtp_heads = 0
 
     model = TextDiffusionModel(config).to(device)
-    cleaned = _clean_state_dict(blob["model_state"])
     missing, unexpected = model.load_state_dict(cleaned, strict=False)
     if missing:
         print(f"[spec_decode] missing keys when loading checkpoint: {missing[:5]}{'...' if len(missing) > 5 else ''}")
@@ -564,6 +582,13 @@ def _build_dflash_drafter_from_checkpoint(
     """Load a DFlash drafter checkpoint, build the drafter, bind it to ``target``."""
     from dflash_model import DFlashConfig, DFlashDraftModel
 
+    if not Path(checkpoint_path).exists():
+        raise SystemExit(
+            f"[spec_decode] drafter checkpoint not found: {checkpoint_path}\n"
+            f"  -> Make sure you've trained a DFlash drafter via\n"
+            f"     'TARGET_CHECKPOINT=<path> bash speed_run.sh draft 4gpu' first.\n"
+            f"  -> Run 'modal run modal_train.py::list_runs' to discover existing drafter paths."
+        )
     blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in blob:
         raise KeyError(

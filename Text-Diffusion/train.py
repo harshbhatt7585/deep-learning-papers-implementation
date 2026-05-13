@@ -248,8 +248,6 @@ def _load_frozen_target(
         cfg = cfg_blob
     else:
         cfg = TextDiffusionConfig(**cfg_blob)
-
-    target = TextDiffusionModel(cfg).to(runtime.device)
     state = blob["model_state"]
     cleaned = {}
     for key, value in state.items():
@@ -258,6 +256,18 @@ def _load_frozen_target(
             if new_key.startswith(prefix):
                 new_key = new_key[len(prefix):]
         cleaned[new_key] = value
+    mtp_weight = cleaned.get("mtp_heads.0.weight")
+    if (
+        mtp_weight is not None
+        and tuple(mtp_weight.shape) != (cfg.d_model, cfg.d_model)
+    ):
+        log(
+            "[dflash] target checkpoint uses legacy full-vocab MTP heads; "
+            "ignoring MTP heads for DFlash target loading"
+        )
+        cfg.n_mtp_heads = 0
+
+    target = TextDiffusionModel(cfg).to(runtime.device)
     missing, unexpected = target.load_state_dict(cleaned, strict=False)
     if missing:
         log(f"[dflash] target missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")

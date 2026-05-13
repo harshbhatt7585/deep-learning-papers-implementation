@@ -17,6 +17,7 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 
 PROJECT_FILES = [
     "core_eval.py",
+    "dflash_model.py",
     "eval_core.py",
     "flash_attention.py",
     "model.py",
@@ -209,6 +210,13 @@ def run_train(
     if objective == "dflash":
         if not target_checkpoint:
             raise ValueError("--objective dflash requires --target-checkpoint")
+        if not os.path.exists(target_checkpoint):
+            raise SystemExit(
+                f"[modal_train] target checkpoint not found inside the container: {target_checkpoint}\n"
+                f"  -> Run 'modal run modal_train.py::list_runs' from your Mac to discover the\n"
+                f"     real path on the text-diffusion-runs volume, then pass it via\n"
+                f"     'TARGET_CHECKPOINT=<actual-path> bash speed_run.sh draft 4gpu'."
+            )
         command.extend([
             "--target-checkpoint", target_checkpoint,
             "--block-size", str(block_size),
@@ -523,6 +531,59 @@ def main(
 
 @app.function(
     image=image,
+    timeout=5 * 60,
+    volumes={"/runs": runs_volume},
+)
+def _list_runs_remote() -> list[dict]:
+    """List every run directory on the runs volume so users can discover what
+    actually got checkpointed before pointing spec_decode at it."""
+    import os
+    root = "/runs"
+    out = []
+    if not os.path.isdir(root):
+        return out
+    for name in sorted(os.listdir(root)):
+        run_dir = os.path.join(root, name)
+        if not os.path.isdir(run_dir):
+            continue
+        entry = {"run": name, "path": run_dir, "has_checkpoint": False, "size_mb": 0.0, "files": []}
+        ckpt = os.path.join(run_dir, "checkpoint.pt")
+        if os.path.exists(ckpt):
+            entry["has_checkpoint"] = True
+            entry["size_mb"] = round(os.path.getsize(ckpt) / 1e6, 2)
+        try:
+            entry["files"] = sorted(os.listdir(run_dir))[:10]
+        except Exception:
+            pass
+        out.append(entry)
+    return out
+
+
+@app.local_entrypoint()
+def list_runs() -> None:
+    """List every run directory on the Modal runs volume.
+
+    Use this to find a real target checkpoint path before invoking ``spec`` or
+    ``speed_run.sh draft``.
+
+    Example::
+
+        modal run modal_train.py::list_runs
+    """
+    entries = _list_runs_remote.remote()
+    if not entries:
+        print("[list_runs] no runs found on volume text-diffusion-runs.")
+        return
+    print(f"[list_runs] found {len(entries)} run directories on /runs:")
+    for e in entries:
+        marker = "ckpt" if e["has_checkpoint"] else "----"
+        print(f"  [{marker}] {e['path']:<70s}  size={e['size_mb']:>8.2f} MB")
+        if e["files"]:
+            print(f"         files: {', '.join(e['files'])}")
+
+
+@app.function(
+    image=image,
     gpu="A10G",
     timeout=60 * 60,
     volumes={
@@ -544,6 +605,16 @@ def run_spec_decode(
     mode: str = "auto",
     block_size: int = 16,
 ) -> None:
+    if not os.path.exists(checkpoint):
+        raise SystemExit(
+            f"[modal_train] target checkpoint not found inside the container: {checkpoint}\n"
+            f"  -> Run 'modal run modal_train.py::list_runs' to find the exact /runs path."
+        )
+    if drafter_checkpoint is not None and not os.path.exists(drafter_checkpoint):
+        raise SystemExit(
+            f"[modal_train] drafter checkpoint not found inside the container: {drafter_checkpoint}\n"
+            f"  -> Run 'modal run modal_train.py::list_runs' to find the exact /runs path."
+        )
     command = [
         "python",
         "-m",
