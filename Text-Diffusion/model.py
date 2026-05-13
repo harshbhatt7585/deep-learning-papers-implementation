@@ -227,7 +227,16 @@ class TextDiffusionModel(nn.Module):
         *,
         causal: bool = False,
         return_hidden: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        output_hidden_states: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, list[torch.Tensor]]:
+        """Standard forward.
+
+        ``return_hidden=True`` adds the final post-norm hidden state to the return tuple.
+        ``output_hidden_states=True`` adds a *list* of per-layer hidden states (one per
+        TransformerBlock output) instead — used by DFlash to capture intermediate
+        target features for the drafter. The two flags are mutually exclusive; if both
+        are set, the per-layer list takes precedence.
+        """
         if input_ids.ndim != 2:
             raise ValueError(f"input_ids must be 2D, got shape {tuple(input_ids.shape)}")
 
@@ -239,11 +248,21 @@ class TextDiffusionModel(nn.Module):
         x = self.drop(x)
         cos_sin = (self.cos[:, :seq_len], self.sin[:, :seq_len])
 
+        hidden_states_list: list[torch.Tensor] | None = None
+        if output_hidden_states:
+            # Match DFlash's convention: index 0 is the post-embedding state,
+            # index i (i>=1) is the output of block i-1.
+            hidden_states_list = [x]
+
         for block in self.blocks:
             x = block(x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal)
+            if output_hidden_states:
+                hidden_states_list.append(x)
 
         x = norm(x)
         logits = self.lm_head(x)
+        if output_hidden_states:
+            return logits, hidden_states_list
         if return_hidden:
             return logits, x
         return logits

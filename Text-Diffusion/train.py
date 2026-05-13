@@ -140,9 +140,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--target-tokens", type=int, default=-1)
     parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
-    parser.add_argument("--objective", choices=["diffusion", "causal_mtp"], default="diffusion")
+    parser.add_argument("--objective", choices=["diffusion", "causal_mtp", "dflash"], default="diffusion")
     parser.add_argument("--mtp-heads", type=int, default=None)
     parser.add_argument("--mtp-loss-weight", type=float, default=None)
+
+    # DFlash drafter training (Chen et al. 2026, "Block Diffusion for Flash
+    # Speculative Decoding"). When --objective=dflash, we freeze a target
+    # checkpoint, run it in eval mode each step to extract intermediate hidden
+    # states, and train a small block-diffusion drafter on top. The drafter
+    # shares the target's token_emb and lm_head; only its own layers train.
+    parser.add_argument("--target-checkpoint", type=Path, default=None,
+                        help="dflash: path to frozen target checkpoint.pt (required for --objective dflash)")
+    parser.add_argument("--block-size", type=int, default=16,
+                        help="dflash: drafter block size (1 anchor + bs-1 mask slots). Default matches DFlash paper.")
+    parser.add_argument("--n-draft-layers", type=int, default=2,
+                        help="dflash: number of drafter decoder layers")
 
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--d-model", type=int, default=256)
@@ -210,6 +222,76 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         ff_mult=args.ff_mult,
         gated_mlp=args.gated_mlp,
         n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DFlash drafter training plumbing
+# ---------------------------------------------------------------------------
+# The frozen target is held at module scope so train_one_step / eval / sample
+# can reach it without threading it through every helper signature. It's only
+# set when --objective dflash is selected, and only the main training entry
+# point (build_model -> _build_dflash) writes to it.
+_DFLASH_TARGET: TextDiffusionModel | None = None
+
+
+def _load_frozen_target(
+    checkpoint_path: Path,
+    runtime: Runtime,
+) -> TextDiffusionModel:
+    """Load a target TextDiffusionModel checkpoint into eval/frozen mode."""
+    blob = torch.load(checkpoint_path, map_location=runtime.device, weights_only=False)
+    cfg_blob = blob.get("config")
+    if cfg_blob is None:
+        raise KeyError(f"target checkpoint {checkpoint_path} has no 'config' key")
+    if isinstance(cfg_blob, TextDiffusionConfig):
+        cfg = cfg_blob
+    else:
+        cfg = TextDiffusionConfig(**cfg_blob)
+
+    target = TextDiffusionModel(cfg).to(runtime.device)
+    state = blob["model_state"]
+    cleaned = {}
+    for key, value in state.items():
+        new_key = key
+        for prefix in ("module.", "_orig_mod."):
+            if new_key.startswith(prefix):
+                new_key = new_key[len(prefix):]
+        cleaned[new_key] = value
+    missing, unexpected = target.load_state_dict(cleaned, strict=False)
+    if missing:
+        log(f"[dflash] target missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+    if unexpected:
+        log(f"[dflash] target unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+    target.eval()
+    for param in target.parameters():
+        param.requires_grad = False
+    log(
+        f"[dflash] target loaded from {checkpoint_path}: "
+        f"d_model={cfg.d_model} n_layers={cfg.n_layers} n_heads={cfg.n_heads} "
+        f"params={sum(p.numel() for p in target.parameters()):,}"
+    )
+    return target
+
+
+def _build_dflash_config(args: argparse.Namespace, target: TextDiffusionModel) -> "Any":
+    from dflash_model import DFlashConfig
+
+    return DFlashConfig(
+        target_d_model=target.config.d_model,
+        target_vocab_size=target.config.vocab_size,
+        target_n_layers=target.config.n_layers,
+        target_n_heads=target.config.n_heads,
+        target_pad_token_id=target.config.pad_token_id,
+        mask_token_id=target.config.mask_token_id,
+        block_size=args.block_size,
+        n_draft_layers=args.n_draft_layers,
+        n_heads=args.n_heads,
+        n_kv_heads=None,
+        ff_mult=args.ff_mult,
+        gated_mlp=args.gated_mlp,
+        dropout=args.dropout,
+        max_seq_len=max(args.seq_len, target.config.max_seq_len),
     )
 
 
@@ -314,6 +396,8 @@ def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime
 
 
 def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: Runtime) -> torch.nn.Module:
+    if args.objective == "dflash":
+        return _build_dflash_drafter(args, runtime)
     model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
@@ -332,8 +416,58 @@ def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: 
     return model
 
 
+def _build_dflash_drafter(args: argparse.Namespace, runtime: Runtime) -> torch.nn.Module:
+    """Load+freeze a target, build a DFlash drafter, bind, return drafter.
+
+    Side effect: sets the module-level ``_DFLASH_TARGET`` reference so
+    ``train_one_step`` / eval can reach the frozen target without threading.
+    """
+    global _DFLASH_TARGET
+    from dflash_model import DFlashDraftModel
+
+    if args.target_checkpoint is None:
+        raise SystemExit("--objective dflash requires --target-checkpoint <path>")
+    if not args.target_checkpoint.exists():
+        raise SystemExit(f"--target-checkpoint not found: {args.target_checkpoint}")
+
+    target = _load_frozen_target(args.target_checkpoint, runtime)
+    drafter_config = _build_dflash_config(args, target)
+    drafter = DFlashDraftModel(drafter_config).to(runtime.device)
+    drafter.bind(target)
+    _DFLASH_TARGET = target
+
+    log(
+        f"[dflash] drafter built: d_model={drafter_config.d_model} "
+        f"n_draft_layers={drafter_config.n_draft_layers} "
+        f"n_heads={drafter_config.n_heads} "
+        f"target_layer_ids={drafter_config.target_layer_ids} "
+        f"block_size={drafter_config.block_size} "
+        f"owned_params={drafter.num_owned_parameters():,}"
+    )
+
+    # Drafter is small — torch.compile is optional and FP8 won't help much
+    # (most layers are below the 128-dim FP8 threshold). Wrap in DDP if needed.
+    if args.compile:
+        log("[dflash] compiling drafter with torch.compile(dynamic=False)")
+        drafter = torch.compile(drafter, mode=args.compile_mode, dynamic=False)
+    if is_dist():
+        ddp_kwargs = {"device_ids": [runtime.local_rank]} if runtime.device.type == "cuda" else {}
+        drafter = DDP(drafter, **ddp_kwargs)
+    return drafter
+
+
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
     source_model = unwrap_model(model)
+    if args.objective == "dflash":
+        # Drafter has a different module layout (no token_emb / lm_head /
+        # blocks). Sidestep the muon/aurora group construction and use plain
+        # AdamW over the drafter's owned parameters.
+        return torch.optim.AdamW(
+            source_model.parameters(),
+            lr=args.lr,
+            betas=(0.9, 0.95),
+            weight_decay=0.01,
+        )
     if args.optimizer in {"muon", "aurora"}:
         model_dim = source_model.config.d_model
         dmodel_lr_scale = (model_dim / 768) ** -0.5
@@ -475,6 +609,38 @@ def estimate_eval_metrics(
 ) -> dict[str, float]:
     model.eval()
     source_model = unwrap_model(model)
+
+    if args.objective == "dflash":
+        # Drafter eval: dflash_loss over a few val batches, plus mean
+        # acceptance-proxy (drafter argmax == ground-truth at masked positions).
+        from dflash_model import dflash_loss
+
+        if _DFLASH_TARGET is None:
+            raise RuntimeError("dflash eval requires _DFLASH_TARGET")
+        total_loss = 0.0
+        total_acc = 0.0
+        total_valid = 0
+        for _ in range(args.eval_batches):
+            batch = get_batch(
+                data,
+                batch_size=args.batch_size,
+                seq_len=args.seq_len,
+                runtime=runtime,
+            )
+            with autocast_context(runtime.device, args.amp_dtype):
+                loss, metrics = dflash_loss(source_model, _DFLASH_TARGET, batch)
+            n_valid = int(metrics["dflash_valid_positions"].item())
+            total_loss += float(loss.item()) * max(1, n_valid)
+            total_acc += float(metrics["dflash_acceptance_proxy"].item()) * max(1, n_valid)
+            total_valid += max(1, n_valid)
+        model.train()
+        return {
+            "loss": total_loss / max(1, total_valid),
+            "masked_bpb": 0.0,  # not meaningful for dflash; keep key for logger compatibility
+            "masked_tokens": float(total_valid),
+            "dflash_acceptance_proxy": total_acc / max(1, total_valid),
+        }
+
     total_loss = 0.0
     total_masked_tokens = 0
     total_bytes = 0
@@ -752,6 +918,18 @@ def train_one_step(
                         batch,
                         mtp_loss_weight=args.mtp_loss_weight,
                     )
+                elif args.objective == "dflash":
+                    from dflash_model import dflash_loss
+
+                    if _DFLASH_TARGET is None:
+                        raise RuntimeError(
+                            "dflash objective requires _DFLASH_TARGET; was build_model not called?"
+                        )
+                    loss, _metrics = dflash_loss(
+                        source_model,
+                        _DFLASH_TARGET,
+                        batch,
+                    )
                 else:
                     noised, labels = make_masked_inputs(
                         batch,
@@ -881,7 +1059,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 },
             )
 
-        if args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
+        if args.objective != "dflash" and args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
             core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
             latest_eval_metrics = {
                 **(latest_eval_metrics or {}),
@@ -902,7 +1080,12 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     },
                 )
 
-        if is_main_process() and args.sample_interval > 0 and step_id % args.sample_interval == 0:
+        if (
+            args.objective != "dflash"
+            and is_main_process()
+            and args.sample_interval > 0
+            and step_id % args.sample_interval == 0
+        ):
             sample = sample_text(model, data.tokenizer, args, runtime)
             if wandb_run is not None:
                 import wandb

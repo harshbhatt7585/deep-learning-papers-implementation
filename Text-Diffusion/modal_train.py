@@ -153,6 +153,10 @@ def run_train(
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
+    # --- DFlash drafter flags (used only when objective == "dflash") -------
+    target_checkpoint: str | None = None,
+    block_size: int = 16,
+    n_draft_layers: int = 2,
 ) -> None:
     command = [
         "torchrun",
@@ -202,6 +206,14 @@ def run_train(
         command.append("--gated-mlp")
     if resume:
         command.extend(["--resume", resume])
+    if objective == "dflash":
+        if not target_checkpoint:
+            raise ValueError("--objective dflash requires --target-checkpoint")
+        command.extend([
+            "--target-checkpoint", target_checkpoint,
+            "--block-size", str(block_size),
+            "--n-draft-layers", str(n_draft_layers),
+        ])
     if eval_interval is not None:
         command.extend(["--eval-interval", str(eval_interval)])
     if core_metric_every is not None:
@@ -424,6 +436,10 @@ def main(
     download_only: bool = False,
     overwrite_tokens: bool = False,
     stream_nanochat: bool = False,
+    # --- DFlash drafter flags (only used with --objective dflash) ---------
+    target_checkpoint: str | None = None,
+    block_size: int = 16,
+    n_draft_layers: int = 2,
 ) -> None:
     gpu_type = gpu_type.upper().replace("_", "-")
     if gpu_type == "A100-80GB":
@@ -499,6 +515,9 @@ def main(
         compile=compile,
         fp8=fp8,
         wandb=wandb,
+        target_checkpoint=target_checkpoint,
+        block_size=block_size,
+        n_draft_layers=n_draft_layers,
     )
 
 
@@ -520,6 +539,10 @@ def run_spec_decode(
     tokenizer_dir: str | None = None,
     seed: int = 0,
     warmup: int = 1,
+    # --- DFlash spec-decode args (optional) -------------------------------
+    drafter_checkpoint: str | None = None,
+    mode: str = "auto",
+    block_size: int = 16,
 ) -> None:
     command = [
         "python",
@@ -537,9 +560,15 @@ def run_spec_decode(
         str(seed),
         "--warmup",
         str(warmup),
+        "--mode",
+        mode,
+        "--block-size",
+        str(block_size),
     ]
     if tokenizer_dir is not None:
         command += ["--tokenizer-dir", tokenizer_dir]
+    if drafter_checkpoint is not None:
+        command += ["--drafter-checkpoint", drafter_checkpoint]
     subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
 
 
@@ -552,14 +581,25 @@ def spec(
     tokenizer_dir: str | None = None,
     seed: int = 0,
     warmup: int = 1,
+    drafter_checkpoint: str | None = None,
+    mode: str = "auto",
+    block_size: int = 16,
 ) -> None:
-    """Run the Medusa-style speculative decoding smoke test on a Modal H100.
+    """Run the speculative-decoding smoke test on a Modal A10G.
 
-    Example:
+    MTP-only (target has MTP heads, no drafter)::
+
         modal run modal_train.py::spec \\
-            --checkpoint /runs/bench-h100-bf16-4gpu-d12-mtp1-swiglu-ff3-drop0-400/checkpoint.pt \\
-            --prompt "The capital of France is" \\
-            --gen-length 64
+            --checkpoint /runs/text-diffusion-mtp1-relu2/checkpoint.pt \\
+            --prompt "The capital of France is" --gen-length 64
+
+    DFlash (target + DFlash drafter checkpoint)::
+
+        modal run modal_train.py::spec \\
+            --checkpoint /runs/text-diffusion-mtp1-relu2/checkpoint.pt \\
+            --drafter-checkpoint /runs/text-diffusion-dflash-drafter-.../checkpoint.pt \\
+            --mode dflash --block-size 16 \\
+            --prompt "The capital of France is" --gen-length 64
     """
     run_spec_decode.remote(
         checkpoint=checkpoint,
@@ -569,4 +609,7 @@ def spec(
         tokenizer_dir=tokenizer_dir,
         seed=seed,
         warmup=warmup,
+        drafter_checkpoint=drafter_checkpoint,
+        mode=mode,
+        block_size=block_size,
     )
