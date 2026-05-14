@@ -302,7 +302,9 @@ class TextDiffusionModel(nn.Module):
             )
 
         if input_ids.ndim == 3:
-            x = norm(self.token_emb(input_ids).mean(dim=2))
+            # TST: average bag embeddings in fp32 (paper Appendix A) then cast back.
+            emb = self.token_emb(input_ids)
+            x = norm(emb.float().mean(dim=2).to(emb.dtype))
         else:
             x = norm(self.token_emb(input_ids))
         x = self.drop(x)

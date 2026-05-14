@@ -1177,8 +1177,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     resolve_training_horizon(args, model)
     if args.tst_bag_size < 1:
         raise ValueError("--tst-bag-size must be >= 1")
-    if not 0.0 <= args.tst_ratio <= 1.0:
-        raise ValueError("--tst-ratio must be in [0, 1]")
+    if not 0.0 <= args.tst_ratio < 1.0:
+        raise ValueError("--tst-ratio must be in [0, 1) — recovery phase requires ratio < 1")
     if args.tst_ratio > 0.0 and args.objective != "causal_mtp":
         raise ValueError("TST pretraining is currently supported only with --objective causal_mtp recovery")
     optimizer = build_optimizer(args, model, runtime)
