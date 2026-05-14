@@ -2,7 +2,28 @@
 
 A living blog for the text diffusion / text-MTP experiments. The goal is to keep a clear record of what changed, what ran, what worked, and what still needs to be tested.
 
-All numbers below are at the **fixed 400-step gate** (`MAX_STEPS=400`, `BATCH_SIZE=32`, `SEQ_LEN=2048`), with `tokens_per_step = 524,288` (`8×1` or `4×2` grad-accum). Reference target: **nanochat D12 CORE ≈ 0.1059**.
+Reference target: **nanochat D12 CORE ≈ 0.1059**. The 400-step gate uses `MAX_STEPS=400`, `BATCH_SIZE=32`, `SEQ_LEN=2048`, with `tokens_per_step = 524,288` (`8×1` or `4×2` grad-accum).
+
+## Best Runs — Overall
+
+This table mixes short gates and long runs, so use the **Budget** column before comparing directly. It answers: "what are the strongest runs we've seen so far?"
+
+| # | Run | Budget | MLP | MTP design | Hardware | Val Loss | BPB | **CORE** | Notes |
+| ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
+| 1 | **MTP2 + TST s4 r0.3 d12** | ratio-12 long run | SwiGLU ff=3 | shared × 2 + TST | 8× H100 FP8 compile | 3.0028 | 0.9446 | **0.1133** | Beats public nanochat d12 CORE/BPB; more raw-token exposure from TST |
+| 2 | nanochat d12 public reference | d12 reference | nanochat | causal LM | 8× H100 | — | 0.9825 | 0.1059 | External reference |
+| 3 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Best 400-step gate |
+| 4 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
+| 5 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
+| 6 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
+| 7 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
+| 8 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
+
+Reading the overall table:
+
+- The long-run MTP2+TST d12 run is the first result above the public nanochat d12 reference (`CORE=0.1133` vs `0.1059`).
+- The best 400-step gate is still the older H100 FP8 MTP2 ReLU² full-vocab run (`CORE=0.0710`).
+- TST is promising for longer runs, but the 400-step TST gates did not beat the best short-run CORE.
 
 ## Leaderboard — 400-Step Gate
 
