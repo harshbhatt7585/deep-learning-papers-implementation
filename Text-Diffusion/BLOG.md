@@ -16,6 +16,8 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 | 4 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~185M (≈143M active) |
 | 5 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | ~143M |
 | 6 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
+| — | H100 bf16 SwiGLU MTP2 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 2 + TST | 4× H100 | 3.5873 | 1.1281 | 0.0626 | ~144M |
+| — | H100 bf16 SwiGLU MTP3 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 3 + TST | 4× H100 | 3.5751 | 1.1254 | 0.0563 | ~144M |
 | — | Tied embeddings | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5672 | 1.1210 | 0.0615 | ~160M |
 | — | MTP-shared first attempt | ReLU² ff=4 | shared × 1 | 8× A100 | 3.5363 | 1.1105 | 0.0585 | ~136M |
 | — | SwiGLU MTP1 + **GQA-2** (rejected) | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5335 | 1.1123 | 0.0459 | ~140M |
@@ -26,6 +28,7 @@ Reading the leaderboard:
 - The top score (`0.0710`) is still held by the heaviest config: 2× full-vocab MTP heads (≈50M extra params) and ReLU² FFN.
 - The new SwiGLU + shared-MTP + dropout=0 result (`0.0688`) lands **tied for #3 on half the GPUs and ~50M fewer MTP params**, which is the most parameter-efficient point on the board. It's the right direction to scale up.
 - The first Token Superposition Training gate (`s=4`, `r=0.3`) improved val loss/BPB versus the efficient baseline but landed just below it on CORE (`0.0685` vs `0.0688`). It is promising but not promoted yet.
+- TST plus extra shared MTP heads is not promoted: MTP2 landed at `CORE=0.0626`, and MTP3 improved val loss again (`3.5751`) but hurt BPB and CORE (`0.0563`). More shared MTP heads are cheap parameter-wise but not free optimization-wise.
 - The "MTP-shared first attempt" (`0.0585`), "SwiGLU + GQA-2" (`0.0459`), and "SwiGLU dropout=0.1" (`0.0447`) rows are kept in the table on purpose: they are the controlled stepping stones that show what *not* to do. Details in §SwiGLU and §GQA-2 below.
 
 ## 2026-05-10: From Diffusion To Text-MTP
@@ -539,8 +542,14 @@ Result:
 | --- | ---: | ---: | ---: |
 | SwiGLU MTP1 shared baseline | 3.5866 | 1.1246 | 0.0688 |
 | TST s4 r0.3 + SwiGLU MTP1 recovery | 3.5789 | 1.1222 | 0.0685 |
+| TST s4 r0.3 + SwiGLU MTP2 recovery | 3.5873 | 1.1281 | 0.0626 |
+| TST s4 r0.3 + SwiGLU MTP3 recovery | 3.5751 | 1.1254 | 0.0563 |
 
 Interpretation: TST recovered validation loss and BPB slightly better than the efficient baseline, but did not cleanly beat CORE. Samples remained rough and repetitive, suggesting `120` TST steps plus `280` recovery steps may not be enough recovery at the 400-step gate. Next cheap gate: `TST_RATIO=0.2`, keeping `TST_BAG_SIZE=4`, so the model gets `80` TST steps and `320` normal recovery steps.
+
+MTP2/MTP3 follow-up: we kept the same TST schedule and changed only the number of shared MTP heads (microbatch reduced to `BATCH_SIZE=16`, `GRAD_ACCUM_STEPS=4` where needed to keep global tokens/step fixed). MTP2 landed at `val_loss=3.5873`, `BPB=1.1281`, `CORE=0.0626`; MTP3 landed at `val_loss=3.5751`, `BPB=1.1254`, `CORE=0.0563`. The likely read is that extra shared MTP offsets add future-token auxiliary pressure that can smooth continuation modeling but hurts answer-token discrimination at this scale. MTP1 remains the TST winner.
+
+FLOP-saving attempt: we also tried `MTP_HEADS=3`, `TST_RATIO=0.2`, `MAX_STEPS=250`, which gives `50` TST steps and `200` recovery steps (`400` raw-token-step equivalents but only `250` optimizer/FLOP steps). It failed the gate (`val_loss=3.8484`, `BPB=1.2077`, `CORE=0.0097`). Same raw-token accounting is not the same as same training quality; the model needed more actual recovery updates.
 
 ## Lessons Learned
 
