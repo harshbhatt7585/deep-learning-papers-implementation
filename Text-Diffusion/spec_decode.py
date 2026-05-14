@@ -5,9 +5,12 @@ Two independent algorithms share this module:
 ### Mode 1: ``speculate_mtp`` — MTP heads as drafters (Medusa-style)
 
 Drafts come from the *target's own* auxiliary MTP heads. Acceptance uses the
-Leviathan ratio test, so output is bit-identical to plain AR at any temperature.
-K = number of MTP heads, fixed at training time. Each outer step does exactly
-two target forwards (draft + verify). See ``speculate_mtp`` below.
+Leviathan ratio test. At temperature=0 the output is token-identical to plain
+AR. At temperature>0 it preserves the target distribution when the same
+sampling transform is used for target and draft probabilities, but it will not
+be token-identical because the random draws are consumed in a different order.
+K = number of MTP heads, fixed at training time. The verifier uses the target
+KV cache instead of recomputing the full prefix.
 
 ### Mode 2: ``speculate_dflash`` — block-diffusion drafter (faithful to Chen et al. 2026)
 
@@ -206,6 +209,10 @@ def _mtp_draft_dists(
     return draft_probs
 
 
+def _append_token(tokens: torch.Tensor, token: torch.Tensor) -> torch.Tensor:
+    return torch.cat([tokens, token.reshape(1, 1)], dim=1)
+
+
 @torch.no_grad()
 def speculate_mtp(
     model: TextDiffusionModel,
@@ -259,57 +266,78 @@ def speculate_mtp(
         stats.target_forwards = stats.tokens_generated
         return out, stats
 
+    logits, hidden, target_cache = model(
+        prefix,
+        attention_mask=None,
+        causal=True,
+        return_hidden=True,
+        use_cache=True,
+    )
+    stats.target_forwards += 1
+    last_logits = logits[:, -1, :]
+    last_hidden = hidden[:, -1:, :]
+
     finished = False
     while prefix.size(1) < target_length and not finished:
         accepted_this_step = 0
 
-        # --- 1. Draft forward ---------------------------------------------------
-        logits, hidden = model(prefix, attention_mask=None, causal=True, return_hidden=True)
-        stats.target_forwards += 1
-
-        p_main = _probs_from_logits(logits[:, -1, :], temperature, top_k=top_k, top_p=top_p)  # (1, V)
+        # --- 1. Main token + MTP drafts ----------------------------------------
+        # The main token comes from the target distribution at the current last
+        # processed token. The MTP heads propose the following K tokens from the
+        # same hidden state; this proposal is later corrected by the verifier.
+        p_main = _probs_from_logits(last_logits, temperature, top_k=top_k, top_p=top_p)  # (1, V)
         y_main = _sample_from_probs(p_main)  # (1,)
 
         draft_probs = _mtp_draft_dists(
-            model, hidden[:, -1:, :], temperature, top_k=top_k, top_p=top_p
+            model, last_hidden, temperature, top_k=top_k, top_p=top_p
         )  # list of (1, V)
         draft_tokens = [_sample_from_probs(q) for q in draft_probs]  # list of (1,)
 
-        # --- 2. Verify forward --------------------------------------------------
         extension = torch.cat(
             [y_main.unsqueeze(-1)] + [tok.unsqueeze(-1) for tok in draft_tokens],
             dim=-1,
         )  # (1, K+1)
-
-        max_extension = config.max_seq_len - prefix.size(1)
-        if max_extension <= 0:
-            break
-        if extension.size(1) > max_extension:
-            extension = extension[:, :max_extension]
+        remaining = target_length - prefix.size(1)
+        if extension.size(1) > remaining:
+            extension = extension[:, :remaining]
             draft_tokens = draft_tokens[: extension.size(1) - 1]
             draft_probs = draft_probs[: extension.size(1) - 1]
 
-        extended = torch.cat([prefix, extension], dim=1)
-        logits_v = model(extended, attention_mask=None, causal=True)
+        # --- 2. Verify forward --------------------------------------------------
+        cache_len_before = _cache_seq_len(target_cache)
+        logits_v, hidden_v, verify_cache = model(
+            extension,
+            attention_mask=None,
+            causal=True,
+            past_key_values=target_cache,
+            return_hidden=True,
+            use_cache=True,
+        )
         stats.target_forwards += 1
 
-        prefix_end = prefix.size(1)
-
-        # Commit y_main: it was sampled from the target's true main-head distribution.
-        prefix = torch.cat([prefix, y_main.unsqueeze(-1)], dim=1)
+        # Commit y_main: it was sampled from the target's true main-head
+        # distribution. The verifier forward has already computed its KV state.
+        prefix = _append_token(prefix, y_main)
         stats.tokens_generated += 1
+        processed_from_verify = 1
+        pending_unprocessed: torch.Tensor | None = None
+
         if eos_token_id is not None and int(y_main[0].item()) == eos_token_id:
             stats.per_step_accepted.append(accepted_this_step)
             break
         if prefix.size(1) >= target_length:
+            target_cache = _crop_cache(verify_cache, cache_len_before + processed_from_verify)
+            last_logits = logits_v[:, processed_from_verify - 1, :]
+            last_hidden = hidden_v[:, processed_from_verify - 1 : processed_from_verify, :]
             stats.per_step_accepted.append(accepted_this_step)
             break
 
         # Verify drafts left-to-right.
         all_accepted = True
         for k, (y_k, q_k) in enumerate(zip(draft_tokens, draft_probs)):
-            target_pos = prefix_end + k
-            p_true = _probs_from_logits(logits_v[:, target_pos, :], temperature, top_k=top_k, top_p=top_p)
+            # Local verifier position k predicts the next token after
+            # [y_main, accepted draft_0, ..., accepted draft_{k-1}].
+            p_true = _probs_from_logits(logits_v[:, k, :], temperature, top_k=top_k, top_p=top_p)
             stats.drafts_proposed += 1
 
             q_y = q_k.gather(-1, y_k.unsqueeze(-1)).squeeze(-1).clamp(min=1e-12)
@@ -318,10 +346,11 @@ def speculate_mtp(
             u = torch.rand_like(accept_prob)
 
             if bool((u < accept_prob).item()):
-                prefix = torch.cat([prefix, y_k.unsqueeze(-1)], dim=1)
+                prefix = _append_token(prefix, y_k)
                 stats.tokens_generated += 1
                 stats.drafts_accepted += 1
                 accepted_this_step += 1
+                processed_from_verify += 1
                 if eos_token_id is not None and int(y_k[0].item()) == eos_token_id:
                     finished = True
                     break
@@ -333,8 +362,9 @@ def speculate_mtp(
                 residual_sum = residual.sum(dim=-1, keepdim=True).clamp(min=1e-12)
                 residual = residual / residual_sum
                 y_corrected = _sample_from_probs(residual)
-                prefix = torch.cat([prefix, y_corrected.unsqueeze(-1)], dim=1)
+                prefix = _append_token(prefix, y_corrected)
                 stats.tokens_generated += 1
+                pending_unprocessed = y_corrected
                 all_accepted = False
                 if eos_token_id is not None and int(y_corrected[0].item()) == eos_token_id:
                     finished = True
@@ -342,14 +372,35 @@ def speculate_mtp(
 
         # Bonus token if every draft passed.
         if all_accepted and not finished and prefix.size(1) < target_length:
-            bonus_pos = prefix_end + len(draft_tokens)
+            bonus_pos = len(draft_tokens)
             if bonus_pos < logits_v.size(1):
                 p_bonus = _probs_from_logits(logits_v[:, bonus_pos, :], temperature, top_k=top_k, top_p=top_p)
                 y_bonus = _sample_from_probs(p_bonus)
-                prefix = torch.cat([prefix, y_bonus.unsqueeze(-1)], dim=1)
+                prefix = _append_token(prefix, y_bonus)
                 stats.tokens_generated += 1
+                pending_unprocessed = y_bonus
                 if eos_token_id is not None and int(y_bonus[0].item()) == eos_token_id:
                     finished = True
+
+        # Keep verifier KV only for tokens that were actually part of the
+        # verifier input and committed. Correction/bonus tokens are sampled from
+        # verifier logits but do not have KV state until we run them once below.
+        target_cache = _crop_cache(verify_cache, cache_len_before + processed_from_verify)
+        last_logits = logits_v[:, processed_from_verify - 1, :]
+        last_hidden = hidden_v[:, processed_from_verify - 1 : processed_from_verify, :]
+
+        if pending_unprocessed is not None and not finished and prefix.size(1) < target_length:
+            logits_next, hidden_next, target_cache = model(
+                pending_unprocessed.reshape(1, 1),
+                attention_mask=None,
+                causal=True,
+                past_key_values=target_cache,
+                return_hidden=True,
+                use_cache=True,
+            )
+            stats.target_forwards += 1
+            last_logits = logits_next[:, -1, :]
+            last_hidden = hidden_next[:, -1:, :]
 
         stats.per_step_accepted.append(accepted_this_step)
 
