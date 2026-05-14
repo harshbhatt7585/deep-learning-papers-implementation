@@ -551,6 +551,44 @@ MTP2/MTP3 follow-up: we kept the same TST schedule and changed only the number o
 
 FLOP-saving attempt: we also tried `MTP_HEADS=3`, `TST_RATIO=0.2`, `MAX_STEPS=250`, which gives `50` TST steps and `200` recovery steps (`400` raw-token-step equivalents but only `250` optimizer/FLOP steps). It failed the gate (`val_loss=3.8484`, `BPB=1.2077`, `CORE=0.0097`). Same raw-token accounting is not the same as same training quality; the model needed more actual recovery updates.
 
+## 2026-05-14: Long D12 MTP2 + TST Run
+
+We ran the first long D12-scale TST configuration after the 400-step gates:
+
+```bash
+GPU_TYPE=H100
+FP8=1
+COMPILE=1
+OBJECTIVE=causal_mtp
+MTP_HEADS=2
+MTP_LOSS_WEIGHT=0.15
+TST_BAG_SIZE=4
+TST_RATIO=0.3
+D_MODEL=768
+N_LAYERS=12
+N_HEADS=6
+GATED_MLP=1
+FF_MULT=3
+OPTIMIZER=muon
+BATCH_SIZE=32
+SEQ_LEN=2048
+TARGET_PARAM_DATA_RATIO=12
+RUN_CONFIG=8gpu
+```
+
+Run: `mtp2-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu`
+
+Result at step `3200`:
+
+| Run | Val Loss | BPB | CORE |
+| --- | ---: | ---: | ---: |
+| nanochat d12 public reference | — | 0.9825 | 0.1059 |
+| MTP2 + TST s4 r0.3 d12 | 3.0028 | 0.9446 | 0.1133 |
+
+This is the first run that clearly beats the public nanochat d12 CORE reference (`0.1133` vs `0.1059`) and also improves BPB (`0.9446` vs `0.9825`). The samples improved substantially on simple factual prompts (`France -> Paris`, `gold -> Au`, `hot -> cold`), though arithmetic still fails.
+
+Caveat: this is not a strict same-token comparison to nanochat d12. The public nanochat d12 table reports about `1.08B` training tokens, while this run used roughly `1.72B` latent training tokens (`~143M params * 12`) and about `3.26B` effective raw-token exposure from TST. The fair claim is: at the same d12 model scale and D12-style latent-token budget, MTP2+TST beats the nanochat d12 reference on CORE and BPB.
+
 ## Lessons Learned
 
 1. **Dropout is not free with SwiGLU.** The standard `dropout=0.1` carryover from nanoGPT silently destroys generalization once the FFN becomes multiplicative-gated. If you change MLP architecture, recheck dropout.
@@ -580,6 +618,8 @@ Priorities, roughly in order:
 
 ## Current Position
 
-The current best 400-step gate score is `CORE = 0.0710` (H100 FP8 MTP2 ReLU², full-vocab MTP heads). The current best **per-parameter and per-GPU** efficiency is `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0 — same neighborhood, dramatically cheaper. The nanochat D12 reference (`~0.1059`) is still ahead but no longer feels out of reach: closing the gap is about scaling the SwiGLU+shared-MTP recipe back up to 8 GPUs and/or running longer than 400 steps.
+The current best 400-step gate score is `CORE = 0.0710` (H100 FP8 MTP2 ReLU², full-vocab MTP heads). The current best **per-parameter and per-GPU** 400-step efficiency is `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0 — same neighborhood, dramatically cheaper.
+
+The long-run best is now `CORE = 0.1133`, `BPB = 0.9446` from `mtp2-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu`, which beats the public nanochat d12 reference (`CORE ≈ 0.1059`, `BPB = 0.9825`). This is not a strict same-token comparison because TST increases effective raw-token exposure, but it is a strong result at the d12 model scale.
 
 GQA in either flavor (-2 over SwiGLU MTP1, -3 over ReLU² MTP2) has now been tested twice and rejected both times. Attention stays full multi-head (`N_HEADS=6, N_KV_HEADS=6`) on the recommended pretraining config. Any future GQA attempt should be paired with a capacity-reinvestment knob (`FF_MULT=4` or `N_LAYERS=14`), not run as a standalone change.
