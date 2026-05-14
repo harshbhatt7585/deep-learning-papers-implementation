@@ -124,7 +124,39 @@ class SpecStats:
         }
 
 
-def _probs_from_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+def _filter_logits(
+    logits: torch.Tensor,
+    *,
+    top_k: int | None = None,
+    top_p: float | None = None,
+) -> torch.Tensor:
+    if top_k is not None:
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        kth_values = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1).values[..., -1, None]
+        logits = logits.masked_fill(logits < kth_values, float("-inf"))
+    if top_p is not None and top_p < 1.0:
+        if not 0.0 < top_p <= 1.0:
+            raise ValueError("top_p must be in (0, 1]")
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        sorted_probs = F.softmax(sorted_logits.float(), dim=-1)
+        cumulative_probs = sorted_probs.cumsum(dim=-1)
+        remove_sorted = cumulative_probs > top_p
+        remove_sorted[..., 1:] = remove_sorted[..., :-1].clone()
+        remove_sorted[..., 0] = False
+        sorted_logits = sorted_logits.masked_fill(remove_sorted, float("-inf"))
+        logits = torch.full_like(logits, float("-inf"))
+        logits.scatter_(-1, sorted_indices, sorted_logits)
+    return logits
+
+
+def _probs_from_logits(
+    logits: torch.Tensor,
+    temperature: float,
+    *,
+    top_k: int | None = None,
+    top_p: float | None = None,
+) -> torch.Tensor:
     """Convert (..., V) logits into (..., V) probabilities.
 
     At temperature=0 we return a one-hot at argmax, which makes the Leviathan
@@ -136,7 +168,8 @@ def _probs_from_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor
         return probs
     if temperature < 0.0:
         raise ValueError("temperature must be non-negative")
-    return F.softmax(logits.float() / temperature, dim=-1)
+    filtered = _filter_logits(logits.float() / temperature, top_k=top_k, top_p=top_p)
+    return F.softmax(filtered, dim=-1)
 
 
 def _sample_from_probs(probs: torch.Tensor) -> torch.Tensor:
@@ -153,6 +186,8 @@ def _mtp_draft_dists(
     model: TextDiffusionModel,
     hidden_last: torch.Tensor,
     temperature: float,
+    top_k: int | None = None,
+    top_p: float | None = None,
 ) -> list[torch.Tensor]:
     """Run each MTP head on the last-position hidden state and return draft probs.
 
@@ -167,7 +202,7 @@ def _mtp_draft_dists(
     for mtp in model.mtp_heads:
         h = norm(mtp(hidden_last))
         logits = model.lm_head(h)[:, 0, :]
-        draft_probs.append(_probs_from_logits(logits, temperature))
+        draft_probs.append(_probs_from_logits(logits, temperature, top_k=top_k, top_p=top_p))
     return draft_probs
 
 
@@ -178,6 +213,8 @@ def speculate_mtp(
     *,
     gen_length: int,
     temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
     eos_token_id: int | None = None,
 ) -> tuple[torch.Tensor, SpecStats]:
     """Generate ``gen_length`` tokens using the target model's MTP heads as drafters.
@@ -214,6 +251,8 @@ def speculate_mtp(
             prefix[0],
             gen_length=gen_length,
             temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
             eos_token_id=eos_token_id,
         )
         stats.tokens_generated = int(out.size(0) - prefix.size(1))
@@ -228,10 +267,12 @@ def speculate_mtp(
         logits, hidden = model(prefix, attention_mask=None, causal=True, return_hidden=True)
         stats.target_forwards += 1
 
-        p_main = _probs_from_logits(logits[:, -1, :], temperature)  # (1, V)
+        p_main = _probs_from_logits(logits[:, -1, :], temperature, top_k=top_k, top_p=top_p)  # (1, V)
         y_main = _sample_from_probs(p_main)  # (1,)
 
-        draft_probs = _mtp_draft_dists(model, hidden[:, -1:, :], temperature)  # list of (1, V)
+        draft_probs = _mtp_draft_dists(
+            model, hidden[:, -1:, :], temperature, top_k=top_k, top_p=top_p
+        )  # list of (1, V)
         draft_tokens = [_sample_from_probs(q) for q in draft_probs]  # list of (1,)
 
         # --- 2. Verify forward --------------------------------------------------
@@ -268,7 +309,7 @@ def speculate_mtp(
         all_accepted = True
         for k, (y_k, q_k) in enumerate(zip(draft_tokens, draft_probs)):
             target_pos = prefix_end + k
-            p_true = _probs_from_logits(logits_v[:, target_pos, :], temperature)
+            p_true = _probs_from_logits(logits_v[:, target_pos, :], temperature, top_k=top_k, top_p=top_p)
             stats.drafts_proposed += 1
 
             q_y = q_k.gather(-1, y_k.unsqueeze(-1)).squeeze(-1).clamp(min=1e-12)
@@ -303,7 +344,7 @@ def speculate_mtp(
         if all_accepted and not finished and prefix.size(1) < target_length:
             bonus_pos = prefix_end + len(draft_tokens)
             if bonus_pos < logits_v.size(1):
-                p_bonus = _probs_from_logits(logits_v[:, bonus_pos, :], temperature)
+                p_bonus = _probs_from_logits(logits_v[:, bonus_pos, :], temperature, top_k=top_k, top_p=top_p)
                 y_bonus = _sample_from_probs(p_bonus)
                 prefix = torch.cat([prefix, y_bonus.unsqueeze(-1)], dim=1)
                 stats.tokens_generated += 1
@@ -320,12 +361,19 @@ def speculate_mtp(
 # ---------------------------------------------------------------------------
 
 
-def _sample_token(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+def _sample_token(
+    logits: torch.Tensor,
+    temperature: float,
+    *,
+    top_k: int | None = None,
+    top_p: float | None = None,
+) -> torch.Tensor:
     """Greedy at T=0, multinomial otherwise. ``logits`` is ``(..., V)``; returns
     ``logits.shape[:-1]`` long tensor."""
     if temperature == 0.0:
         return logits.argmax(dim=-1)
-    probs = F.softmax(logits.float() / temperature, dim=-1)
+    filtered = _filter_logits(logits.float() / temperature, top_k=top_k, top_p=top_p)
+    probs = F.softmax(filtered, dim=-1)
     flat = probs.reshape(-1, probs.size(-1))
     sampled = torch.multinomial(flat, num_samples=1).squeeze(-1)
     return sampled.view(probs.shape[:-1])
@@ -349,6 +397,8 @@ def generate_causal_cached(
     *,
     gen_length: int,
     temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
     eos_token_id: int | None = None,
 ) -> torch.Tensor:
     """Autoregressive generation using the target KV cache."""
@@ -361,7 +411,7 @@ def generate_causal_cached(
     target_length = min(x.size(1) + gen_length, model.config.max_seq_len)
     logits, cache = model(x, attention_mask=None, causal=True, use_cache=True)
     while x.size(1) < target_length:
-        next_token = _sample_token(logits[:, -1, :], temperature).unsqueeze(-1)
+        next_token = _sample_token(logits[:, -1, :], temperature, top_k=top_k, top_p=top_p).unsqueeze(-1)
         x = torch.cat([x, next_token], dim=1)
         if eos_token_id is not None and int(next_token[0, 0].item()) == eos_token_id:
             break
@@ -386,6 +436,8 @@ def speculate_dflash(
     gen_length: int,
     block_size: int = 16,
     temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
     eos_token_id: int | None = None,
 ) -> tuple[torch.Tensor, SpecStats]:
     """Block-diffusion speculative decoding (DFlash, Chen et al. 2026).
@@ -452,7 +504,9 @@ def speculate_dflash(
     target_hidden = extract_context_feature(prefill_hidden_list, layer_ids)  # (1, L, D_ctx)
 
     # First sampled token comes from the prefill's last-position logits.
-    first_token = _sample_token(prefill_logits[:, -1, :], temperature).unsqueeze(-1)  # (1, 1)
+    first_token = _sample_token(
+        prefill_logits[:, -1, :], temperature, top_k=top_k, top_p=top_p
+    ).unsqueeze(-1)  # (1, 1)
     tokens = torch.cat([prefix_ids, first_token], dim=1)
     stats.tokens_generated += 1
     if eos_token_id is not None and int(first_token[0, 0].item()) == eos_token_id:
@@ -476,7 +530,7 @@ def speculate_dflash(
         draft_logits = drafter(block_input, target_hidden=target_hidden, logits_start=1)
         # (1, bs-1, V) — predictions at the masked positions only.
         stats.drafter_forwards += 1
-        draft_tokens = _sample_token(draft_logits, temperature)  # (1, bs-1)
+        draft_tokens = _sample_token(draft_logits, temperature, top_k=top_k, top_p=top_p)  # (1, bs-1)
 
         # --- 2. Target verify forward ----------------------------------------
         verify_input = torch.cat([last_token, draft_tokens], dim=1)  # (1, bs)
@@ -506,7 +560,7 @@ def speculate_dflash(
         verify_hidden = verify_hidden_full
 
         # Target's argmax at each verify position; argmax-match against drafts.
-        target_argmax = _sample_token(verify_logits, temperature)  # (1, bs)
+        target_argmax = _sample_token(verify_logits, temperature, top_k=top_k, top_p=top_p)  # (1, bs)
 
         # Compare drafts (positions 1..bs-1 of verify_input) with target's argmax
         # at positions 0..bs-2 of verify_logits. cumprod gives the longest
@@ -747,6 +801,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", type=str, default="The capital of France is")
     parser.add_argument("--gen-length", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.0, help="0.0 = greedy (output must match AR exactly)")
+    parser.add_argument("--top-k", type=int, default=None, help="optional top-k filter for temperature sampling")
+    parser.add_argument("--top-p", type=float, default=None, help="optional nucleus filter for temperature sampling")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--warmup", type=int, default=1, help="number of warmup runs before timing")
@@ -858,21 +914,30 @@ def main() -> None:
     # --- Warmup ---------------------------------------------------------------
     for _ in range(args.warmup):
         torch.manual_seed(args.seed)
-        _ = generate_causal_cached(model, prompt_ids, gen_length=8, temperature=args.temperature)
+        _ = generate_causal_cached(
+            model, prompt_ids, gen_length=8,
+            temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+        )
         if "mtp" in modes:
             torch.manual_seed(args.seed)
-            _ = speculate_mtp(model, prompt_ids, gen_length=8, temperature=args.temperature)
+            _ = speculate_mtp(
+                model, prompt_ids, gen_length=8,
+                temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+            )
         if "dflash" in modes and drafter is not None:
             torch.manual_seed(args.seed)
             _ = speculate_dflash(
                 model, drafter, prompt_ids,
                 gen_length=8, block_size=min(args.block_size, 8),
-                temperature=args.temperature,
+                temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
             )
 
     # --- Baseline: plain AR ---------------------------------------------------
     ar_ids, ar_time = _time_run(
-        lambda: generate_causal_cached(model, prompt_ids, gen_length=args.gen_length, temperature=args.temperature),
+        lambda: generate_causal_cached(
+            model, prompt_ids, gen_length=args.gen_length,
+            temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+        ),
         args, device,
     )
     ar_generated = int(ar_ids.size(0) - prompt_ids.size(0))
@@ -888,7 +953,10 @@ def main() -> None:
 
     if "mtp" in modes:
         (spec_ids, stats), spec_time = _time_run(
-            lambda: speculate_mtp(model, prompt_ids, gen_length=args.gen_length, temperature=args.temperature),
+            lambda: speculate_mtp(
+                model, prompt_ids, gen_length=args.gen_length,
+                temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+            ),
             args, device,
         )
         results["mtp"] = (spec_ids, stats, spec_time)
@@ -899,7 +967,7 @@ def main() -> None:
             lambda: speculate_dflash(
                 model, drafter, prompt_ids,
                 gen_length=args.gen_length, block_size=args.block_size,
-                temperature=args.temperature,
+                temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
             ),
             args, device,
         )

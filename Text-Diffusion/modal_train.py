@@ -607,6 +607,8 @@ def run_spec_decode(
     prompt: str = "The capital of France is",
     gen_length: int = 64,
     temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
     tokenizer_dir: str | None = None,
     seed: int = 0,
     warmup: int = 1,
@@ -646,6 +648,10 @@ def run_spec_decode(
         "--block-size",
         str(block_size),
     ]
+    if top_k is not None:
+        command += ["--top-k", str(top_k)]
+    if top_p is not None:
+        command += ["--top-p", str(top_p)]
     if tokenizer_dir is not None:
         command += ["--tokenizer-dir", tokenizer_dir]
     if drafter_checkpoint is not None:
@@ -659,6 +665,8 @@ def spec(
     prompt: str = "The capital of France is",
     gen_length: int = 64,
     temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
     tokenizer_dir: str | None = None,
     seed: int = 0,
     warmup: int = 1,
@@ -687,6 +695,8 @@ def spec(
         prompt=prompt,
         gen_length=gen_length,
         temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
         tokenizer_dir=tokenizer_dir,
         seed=seed,
         warmup=warmup,
