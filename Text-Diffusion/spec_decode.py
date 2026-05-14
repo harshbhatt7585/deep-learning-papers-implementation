@@ -185,28 +185,50 @@ def _sample_from_probs(probs: torch.Tensor) -> torch.Tensor:
     return sampled.view(probs.shape[:-1])
 
 
-def _mtp_draft_dists(
+def _mtp_draft_probs_and_tokens(
     model: TextDiffusionModel,
     hidden_last: torch.Tensor,
+    first_token: torch.Tensor,
     temperature: float,
     top_k: int | None = None,
     top_p: float | None = None,
-) -> list[torch.Tensor]:
-    """Run each MTP head on the last-position hidden state and return draft probs.
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Run MTP self-drafting heads and sample proposed future tokens.
 
     Args:
         hidden_last: (B, 1, D) hidden state from the target's final norm at the
             last token of the prefix.
 
     Returns:
-        list of (B, V) probability tensors, one per MTP head.
+        (draft_probs, draft_tokens), each one entry per MTP head.
     """
     draft_probs: list[torch.Tensor] = []
-    for mtp in model.mtp_heads:
-        h = norm(mtp(hidden_last))
-        logits = model.lm_head(h)[:, 0, :]
-        draft_probs.append(_probs_from_logits(logits, temperature, top_k=top_k, top_p=top_p))
-    return draft_probs
+    draft_tokens: list[torch.Tensor] = []
+    if model.config.mtp_arch == "deepseek":
+        previous_hidden = hidden_last
+        previous_token = first_token
+        for mtp in model.mtp_heads:
+            h = mtp(
+                previous_hidden,
+                previous_token.reshape(1, 1),
+                token_emb=model.token_emb,
+                cos_sin=(model.cos[:, :1], model.sin[:, :1]),
+            )
+            logits = model.lm_head(h)[:, 0, :]
+            probs = _probs_from_logits(logits, temperature, top_k=top_k, top_p=top_p)
+            token = _sample_from_probs(probs)
+            draft_probs.append(probs)
+            draft_tokens.append(token)
+            previous_hidden = h
+            previous_token = token
+    else:
+        for mtp in model.mtp_heads:
+            h = norm(mtp(hidden_last))
+            logits = model.lm_head(h)[:, 0, :]
+            probs = _probs_from_logits(logits, temperature, top_k=top_k, top_p=top_p)
+            draft_probs.append(probs)
+            draft_tokens.append(_sample_from_probs(probs))
+    return draft_probs, draft_tokens
 
 
 def _append_token(tokens: torch.Tensor, token: torch.Tensor) -> torch.Tensor:
@@ -288,10 +310,9 @@ def speculate_mtp(
         p_main = _probs_from_logits(last_logits, temperature, top_k=top_k, top_p=top_p)  # (1, V)
         y_main = _sample_from_probs(p_main)  # (1,)
 
-        draft_probs = _mtp_draft_dists(
-            model, last_hidden, temperature, top_k=top_k, top_p=top_p
-        )  # list of (1, V)
-        draft_tokens = [_sample_from_probs(q) for q in draft_probs]  # list of (1,)
+        draft_probs, draft_tokens = _mtp_draft_probs_and_tokens(
+            model, last_hidden, y_main, temperature, top_k=top_k, top_p=top_p
+        )
 
         extension = torch.cat(
             [y_main.unsqueeze(-1)] + [tok.unsqueeze(-1) for tok in draft_tokens],

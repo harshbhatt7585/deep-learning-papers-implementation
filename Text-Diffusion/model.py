@@ -27,6 +27,7 @@ class TextDiffusionConfig:
     dropout: float = 0.1
     ff_mult: int = 4
     n_mtp_heads: int = 0
+    mtp_arch: str = "linear"
     gated_mlp: bool = False
 
     def __post_init__(self) -> None:
@@ -40,6 +41,8 @@ class TextDiffusionConfig:
             raise ValueError("attention head_dim must be even for rotary embeddings")
         if self.n_mtp_heads < 0:
             raise ValueError("n_mtp_heads must be non-negative")
+        if self.mtp_arch not in {"linear", "deepseek"}:
+            raise ValueError("mtp_arch must be 'linear' or 'deepseek'")
 
 
 def norm(x: torch.Tensor) -> torch.Tensor:
@@ -231,6 +234,34 @@ class TransformerBlock(nn.Module):
         return x
 
 
+class DeepSeekMTPModule(nn.Module):
+    """DeepSeek-style MTP depth.
+
+    Each depth consumes the previous hidden state plus the embedding of the
+    previous token on the drafted path, projects them back to d_model, then runs
+    one causal transformer block. The shared lm_head outside this module turns
+    the returned hidden state into next-token logits.
+    """
+
+    def __init__(self, config: TextDiffusionConfig) -> None:
+        super().__init__()
+        self.eh_proj = Linear(2 * config.d_model, config.d_model, bias=False)
+        self.block = TransformerBlock(config)
+
+    def forward(
+        self,
+        previous_hidden: torch.Tensor,
+        token_ids: torch.Tensor,
+        *,
+        token_emb: nn.Embedding,
+        cos_sin: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        token_hidden = norm(token_emb(token_ids))
+        x = self.eh_proj(torch.cat([norm(previous_hidden), token_hidden], dim=-1))
+        x = self.block(x, cos_sin=cos_sin, causal=True)
+        return norm(x)
+
+
 class TextDiffusionModel(nn.Module):
     """Small bidirectional Transformer denoiser for masked text diffusion."""
 
@@ -241,13 +272,17 @@ class TextDiffusionModel(nn.Module):
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
         self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
-        # DeepSeek-V3 style multi-token prediction heads: each MTP head is a
-        # small (d_model -> d_model) projection whose output is normed and then
-        # projected to vocab by the *shared* lm_head. This keeps the auxiliary
-        # signal but avoids carrying one full-vocab matrix per MTP offset.
-        self.mtp_heads = nn.ModuleList(
-            [Linear(config.d_model, config.d_model, bias=False) for _ in range(config.n_mtp_heads)]
-        )
+        if config.mtp_arch == "deepseek":
+            self.mtp_heads = nn.ModuleList(
+                [DeepSeekMTPModule(config) for _ in range(config.n_mtp_heads)]
+            )
+        else:
+            # Medusa-style shared-vocab future heads: each MTP head is a small
+            # d_model -> d_model projection whose output is normed and then
+            # projected to vocab by the shared lm_head.
+            self.mtp_heads = nn.ModuleList(
+                [Linear(config.d_model, config.d_model, bias=False) for _ in range(config.n_mtp_heads)]
+            )
         cos, sin = self._precompute_rotary_embeddings(config.max_seq_len, config.d_model // config.n_heads)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
@@ -355,10 +390,8 @@ class TextDiffusionModel(nn.Module):
         nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
 
         scale = 3**0.5 * self.config.d_model**-0.5
-        for head in self.mtp_heads:
-            nn.init.uniform_(head.weight, -scale, scale)
 
-        for block in self.blocks:
+        def init_block(block: TransformerBlock) -> None:
             nn.init.uniform_(block.attn.c_q.weight, -scale, scale)
             nn.init.uniform_(block.attn.c_k.weight, -scale, scale)
             nn.init.uniform_(block.attn.c_v.weight, -scale, scale)
@@ -369,6 +402,16 @@ class TextDiffusionModel(nn.Module):
             else:
                 nn.init.uniform_(block.mlp.c_fc.weight, -0.4 * scale, 0.4 * scale)
             nn.init.zeros_(block.mlp.c_proj.weight)
+
+        for head in self.mtp_heads:
+            if isinstance(head, DeepSeekMTPModule):
+                nn.init.uniform_(head.eh_proj.weight, -scale, scale)
+                init_block(head.block)
+            else:
+                nn.init.uniform_(head.weight, -scale, scale)
+
+        for block in self.blocks:
+            init_block(block)
 
     def _precompute_rotary_embeddings(
         self,
@@ -443,10 +486,30 @@ def causal_mtp_loss(
     )
     loss = main_loss
     aux_losses = []
-    for offset, head in enumerate(model.mtp_heads, start=2):
+    mtp_hidden: torch.Tensor | None = None
+    for depth, head in enumerate(model.mtp_heads, start=1):
+        offset = depth + 1
         if input_ids.size(1) <= offset:
             break
-        h_offset = norm(head(hidden[:, :-offset, :]))
+        if model.config.mtp_arch == "deepseek":
+            if depth == 1:
+                previous_hidden = hidden[:, :-offset, :]
+            else:
+                previous_hidden = mtp_hidden[:, :-1, :]
+            token_ids = input_ids[:, depth:-1]
+            cos_sin = (
+                model.cos[:, : previous_hidden.size(1)],
+                model.sin[:, : previous_hidden.size(1)],
+            )
+            mtp_hidden = head(
+                previous_hidden,
+                token_ids,
+                token_emb=model.token_emb,
+                cos_sin=cos_sin,
+            )
+            h_offset = mtp_hidden
+        else:
+            h_offset = norm(head(hidden[:, :-offset, :]))
         aux_logits = model.lm_head(h_offset)
         aux_loss = F.cross_entropy(
             aux_logits.contiguous().view(-1, aux_logits.size(-1)),

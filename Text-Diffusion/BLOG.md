@@ -12,18 +12,19 @@ This table mixes short gates and long runs, so use the **Budget** column before 
 | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
 | 1 | **MTP2 + TST s4 r0.3 d12** | ratio-12 long run | SwiGLU ff=3 | shared × 2 + TST | 8× H100 FP8 compile | 3.0028 | 0.9446 | **0.1133** | Beats public nanochat d12 CORE/BPB; more raw-token exposure from TST |
 | 2 | nanochat d12 public reference | d12 reference | nanochat | causal LM | 8× H100 | — | 0.9825 | 0.1059 | External reference |
-| 3 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Best 400-step gate |
-| 4 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
-| 5 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
-| 6 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
-| 7 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
-| 8 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
+| 3 | **H100 bf16 DeepSeek-MTP2 + TST s4 r0.3** | 400-step gate | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 4× H100 | 3.5576 | 1.1165 | **0.0737** | New best 400-step gate; first short run above 0.071 |
+| 4 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Previous best 400-step gate |
+| 5 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
+| 6 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
+| 7 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
+| 8 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
+| 9 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
 
 Reading the overall table:
 
 - The long-run MTP2+TST d12 run is the first result above the public nanochat d12 reference (`CORE=0.1133` vs `0.1059`).
-- The best 400-step gate is still the older H100 FP8 MTP2 ReLU² full-vocab run (`CORE=0.0710`).
-- TST is promising for longer runs, but the 400-step TST gates did not beat the best short-run CORE.
+- The best 400-step gate is now DeepSeek-style MTP2 + TST (`CORE=0.0737`), beating the older H100 FP8 MTP2 ReLU² full-vocab run (`0.0710`) while using 4× H100 bf16.
+- TST alone did not beat the old short-run CORE, but TST plus DeepSeek-style MTP2 did.
 
 ## Leaderboard — 400-Step Gate
 
@@ -31,12 +32,13 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 
 | # | Run | MLP | MTP design | Hardware | Val Loss | BPB | **CORE** | Params |
 | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
-| 1 | **H100 FP8 MTP2 ReLU²** | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | **0.0710** | ~185M |
-| 2 | A100 MTP1 ReLU² | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | ~160M |
-| 3 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | ~143M |
-| 4 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~185M (≈143M active) |
-| 5 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | ~143M |
-| 6 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
+| 1 | **H100 bf16 DeepSeek-MTP2 + TST s4 r0.3** | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 4× H100 | 3.5576 | 1.1165 | **0.0737** | ~160M |
+| 2 | H100 FP8 MTP2 ReLU² | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | ~185M |
+| 3 | A100 MTP1 ReLU² | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | ~160M |
+| 4 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | ~143M |
+| 5 | H100 FP8 MoE top-1 | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | ~185M (≈143M active) |
+| 6 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | ~143M |
+| 7 | H100 FP8 GQA3 | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | ~178M |
 | — | H100 bf16 SwiGLU MTP2 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 2 + TST | 4× H100 | 3.5873 | 1.1281 | 0.0626 | ~144M |
 | — | H100 bf16 SwiGLU MTP3 shared + TST s4 r0.3 | SwiGLU ff=3 | shared × 3 + TST | 4× H100 | 3.5751 | 1.1254 | 0.0563 | ~144M |
 | — | Tied embeddings | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5672 | 1.1210 | 0.0615 | ~160M |
@@ -46,8 +48,9 @@ Current best is in bold. All runs are `d_model=768`, `n_layers=12`, causal-MTP o
 
 Reading the leaderboard:
 
-- The top score (`0.0710`) is still held by the heaviest config: 2× full-vocab MTP heads (≈50M extra params) and ReLU² FFN.
-- The new SwiGLU + shared-MTP + dropout=0 result (`0.0688`) lands **tied for #3 on half the GPUs and ~50M fewer MTP params**, which is the most parameter-efficient point on the board. It's the right direction to scale up.
+- The top score (`0.0737`) is now held by the DeepSeek-style MTP2 + TST run. This is the first 400-step gate above the old `0.0710` ceiling.
+- The previous top score (`0.0710`) came from the heaviest config: 2× full-vocab MTP heads (≈50M extra params) and ReLU² FFN.
+- The SwiGLU + shared-MTP + dropout=0 result (`0.0688`) remains the cheap non-TST baseline on half the GPUs and ~50M fewer MTP params than the old full-vocab MTP2 run.
 - The first Token Superposition Training gate (`s=4`, `r=0.3`) improved val loss/BPB versus the efficient baseline but landed just below it on CORE (`0.0685` vs `0.0688`). It is promising but not promoted yet.
 - TST plus extra shared MTP heads is not promoted: MTP2 landed at `CORE=0.0626`, and MTP3 improved val loss again (`3.5751`) but hurt BPB and CORE (`0.0563`). More shared MTP heads are cheap parameter-wise but not free optimization-wise.
 - The "MTP-shared first attempt" (`0.0585`), "SwiGLU + GQA-2" (`0.0459`), and "SwiGLU dropout=0.1" (`0.0447`) rows are kept in the table on purpose: they are the controlled stepping stones that show what *not* to do. Details in §SwiGLU and §GQA-2 below.
@@ -565,12 +568,17 @@ Result:
 | TST s4 r0.3 + SwiGLU MTP1 recovery | 3.5789 | 1.1222 | 0.0685 |
 | TST s4 r0.3 + SwiGLU MTP2 recovery | 3.5873 | 1.1281 | 0.0626 |
 | TST s4 r0.3 + SwiGLU MTP3 recovery | 3.5751 | 1.1254 | 0.0563 |
+| TST s4 r0.3 + **DeepSeek-style MTP2** recovery | **3.5576** | **1.1165** | **0.0737** |
 
-Interpretation: TST recovered validation loss and BPB slightly better than the efficient baseline, but did not cleanly beat CORE. Samples remained rough and repetitive, suggesting `120` TST steps plus `280` recovery steps may not be enough recovery at the 400-step gate. Next cheap gate: `TST_RATIO=0.2`, keeping `TST_BAG_SIZE=4`, so the model gets `80` TST steps and `320` normal recovery steps.
+Interpretation before DeepSeek-MTP: TST recovered validation loss and BPB slightly better than the efficient baseline, but the shared-linear MTP variants did not cleanly beat CORE. Samples remained rough and repetitive, suggesting that cheap parallel shared-linear MTP heads were the weak link, not only the TST schedule.
 
-MTP2/MTP3 follow-up: we kept the same TST schedule and changed only the number of shared MTP heads (microbatch reduced to `BATCH_SIZE=16`, `GRAD_ACCUM_STEPS=4` where needed to keep global tokens/step fixed). MTP2 landed at `val_loss=3.5873`, `BPB=1.1281`, `CORE=0.0626`; MTP3 landed at `val_loss=3.5751`, `BPB=1.1254`, `CORE=0.0563`. The likely read is that extra shared MTP offsets add future-token auxiliary pressure that can smooth continuation modeling but hurts answer-token discrimination at this scale. MTP1 remains the TST winner.
+MTP2/MTP3 shared-linear follow-up: we kept the same TST schedule and changed only the number of cheap shared-linear MTP heads (microbatch reduced to `BATCH_SIZE=16`, `GRAD_ACCUM_STEPS=4` where needed to keep global tokens/step fixed). MTP2 landed at `val_loss=3.5873`, `BPB=1.1281`, `CORE=0.0626`; MTP3 landed at `val_loss=3.5751`, `BPB=1.1254`, `CORE=0.0563`. The likely read is that extra shared-linear MTP offsets add future-token auxiliary pressure that can smooth continuation modeling but hurts answer-token discrimination at this scale.
 
 FLOP-saving attempt: we also tried `MTP_HEADS=3`, `TST_RATIO=0.2`, `MAX_STEPS=250`, which gives `50` TST steps and `200` recovery steps (`400` raw-token-step equivalents but only `250` optimizer/FLOP steps). It failed the gate (`val_loss=3.8484`, `BPB=1.2077`, `CORE=0.0097`). Same raw-token accounting is not the same as same training quality; the model needed more actual recovery updates.
+
+DeepSeek-style MTP2 follow-up: replacing the cheap parallel shared-linear MTP heads with sequential DeepSeek-like MTP modules changed the 400-step picture. The run `mtp2-deepseek-tst-s4-r03-400step-swiglu-ff3-h100-bf16-4gpu-bs16` used `MTP_ARCH=deepseek`, `MTP_HEADS=2`, `MTP_LOSS_WEIGHT=0.15`, `TST_BAG_SIZE=4`, `TST_RATIO=0.3`, `BATCH_SIZE=16`, `GRAD_ACCUM_STEPS=4`, `GATED_MLP=1`, `FF_MULT=3`. It landed at `val_loss=3.5576`, `BPB=1.1165`, `CORE=0.0737`, around `555k tok/s` during recovery. This is now the best 400-step gate result, beating the older full-vocab ReLU² MTP2 run (`0.0737` vs `0.0710`) while using the 4× H100 bf16 setup.
+
+The likely reason is structural, not just parameter count: DeepSeek-style MTP conditions each future depth on the previous drafted token path (`h_t + token_{t+1} -> token_{t+2}`, then MTP hidden + `token_{t+2} -> token_{t+3}`), whereas the shared-linear heads predict all offsets independently from the same original hidden state. That gives the auxiliary objective a more realistic future-token dependency and appears to improve CORE at the gate.
 
 ## 2026-05-14: Long D12 MTP2 + TST Run
 
@@ -624,14 +632,11 @@ Caveat: this is not a strict same-token comparison to nanochat d12. The public n
 
 Priorities, roughly in order:
 
-1. **Beat the leaderboard with SwiGLU + 8 GPUs.** Same config as today's #3 run but `RUN_CONFIG=8gpu` and either:
-   - `MTP_HEADS=2  MTP_LOSS_WEIGHT=0.15` (more auxiliary signal, ~free with shared MTP)
-   - or `FF_MULT=4` SwiGLU (extra FFN capacity, ~+8M params)
-   The cheaper test is MTP=2 first.
+1. **Promote DeepSeek-MTP2 + TST.** The 400-step gate finally beat `CORE=0.0710`; next test is the same architecture at ratio-8 or ratio-12 with `MTP_ARCH=deepseek`, `MTP_HEADS=2`, `TST_BAG_SIZE=4`, `TST_RATIO=0.3`.
 
 2. **Pure causal LM baseline** (`MTP_HEADS=0`) at the 400-step gate, so we can finally attribute the MTP contribution rather than guessing.
 
-3. **Promote a winner to ratio-8.** Whichever variant beats `CORE=0.0710` at the gate gets the full `TARGET_PARAM_DATA_RATIO=8` schedule.
+3. **Run an ablation without TST.** DeepSeek-style MTP2 may be carrying most of the gain; test `TST_BAG_SIZE=1`, `TST_RATIO=0` at the same 400-step gate.
 
 4. **Re-test tied embeddings, but with tuned init and embedding LR.** The first tied attempt assumed the untied hyperparameters transfer cleanly — they don't.
 
@@ -639,7 +644,7 @@ Priorities, roughly in order:
 
 ## Current Position
 
-The current best 400-step gate score is `CORE = 0.0710` (H100 FP8 MTP2 ReLU², full-vocab MTP heads). The current best **per-parameter and per-GPU** 400-step efficiency is `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0 — same neighborhood, dramatically cheaper.
+The current best 400-step gate score is `CORE = 0.0737` from `mtp2-deepseek-tst-s4-r03-400step-swiglu-ff3-h100-bf16-4gpu-bs16`. This replaces the old H100 FP8 MTP2 ReLU² full-vocab result (`CORE = 0.0710`) as the short-run leader. The current best **cheap non-TST baseline** remains `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0.
 
 The long-run best is now `CORE = 0.1133`, `BPB = 0.9446` from `mtp2-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu`, which beats the public nanochat d12 reference (`CORE ≈ 0.1059`, `BPB = 0.9825`). This is not a strict same-token comparison because TST increases effective raw-token exposure, but it is a strong result at the d12 model scale.
 

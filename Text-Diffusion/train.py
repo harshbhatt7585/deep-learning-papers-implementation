@@ -66,6 +66,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "nanochat_tokenizer_batch_size": 128,
     "mask_prob": 0.30,
     "mtp_heads": 3,
+    "mtp_arch": "linear",
     "mtp_loss_weight": 0.3,
     "tst_bag_size": 1,
     "tst_ratio": 0.0,
@@ -144,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
     parser.add_argument("--objective", choices=["diffusion", "causal_mtp", "dflash"], default="diffusion")
     parser.add_argument("--mtp-heads", type=int, default=None)
+    parser.add_argument("--mtp-arch", choices=["linear", "deepseek"], default=None)
     parser.add_argument("--mtp-loss-weight", type=float, default=None)
     parser.add_argument("--tst-bag-size", type=int, default=None)
     parser.add_argument(
@@ -189,6 +191,7 @@ def parse_args() -> argparse.Namespace:
     sample_interval = parsed.sample_interval
     nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
     mtp_heads = parsed.mtp_heads
+    mtp_arch = parsed.mtp_arch
     mtp_loss_weight = parsed.mtp_loss_weight
     tst_bag_size = parsed.tst_bag_size
     tst_ratio = parsed.tst_ratio
@@ -205,6 +208,8 @@ def parse_args() -> argparse.Namespace:
         args.nanochat_tokenizer_vocab_size = nanochat_tokenizer_vocab_size
     if mtp_heads is not None:
         args.mtp_heads = mtp_heads
+    if mtp_arch is not None:
+        args.mtp_arch = mtp_arch
     if mtp_loss_weight is not None:
         args.mtp_loss_weight = mtp_loss_weight
     if tst_bag_size is not None:
@@ -254,6 +259,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         dropout=args.dropout,
         ff_mult=args.ff_mult,
         gated_mlp=args.gated_mlp,
+        mtp_arch=args.mtp_arch,
         n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
     )
 
@@ -656,10 +662,30 @@ def causal_mtp_cross_entropy(
     logits, hidden = model(input_ids, attention_mask=None, causal=True, return_hidden=True)
     main_loss = causal_cross_entropy(logits, input_ids)
     loss = main_loss
-    for offset, head in enumerate(source_model.mtp_heads, start=2):
+    mtp_hidden: torch.Tensor | None = None
+    for depth, head in enumerate(source_model.mtp_heads, start=1):
+        offset = depth + 1
         if input_ids.size(1) <= offset:
             break
-        h_offset = norm(head(hidden[:, :-offset, :]))
+        if source_model.config.mtp_arch == "deepseek":
+            if depth == 1:
+                previous_hidden = hidden[:, :-offset, :]
+            else:
+                previous_hidden = mtp_hidden[:, :-1, :]
+            token_ids = input_ids[:, depth:-1]
+            cos_sin = (
+                source_model.cos[:, : previous_hidden.size(1)],
+                source_model.sin[:, : previous_hidden.size(1)],
+            )
+            mtp_hidden = head(
+                previous_hidden,
+                token_ids,
+                token_emb=source_model.token_emb,
+                cos_sin=cos_sin,
+            )
+            h_offset = mtp_hidden
+        else:
+            h_offset = norm(head(hidden[:, :-offset, :]))
         aux_logits = source_model.lm_head(h_offset)
         aux_loss = F.cross_entropy(
             aux_logits.contiguous().view(-1, aux_logits.size(-1)),
@@ -701,7 +727,9 @@ def token_superposition_cross_entropy(
     target_logit_sum = logits.gather(-1, target_bags).sum(dim=-1)
     loss = (log_den.float() - target_logit_sum.float() / bag_size).mean()
     if len(source_model.mtp_heads) > 0:
-        loss = loss + logits.new_zeros(()) * sum(head.weight.sum() for head in source_model.mtp_heads)
+        loss = loss + logits.new_zeros(()) * sum(
+            param.sum() for param in source_model.mtp_heads.parameters()
+        )
     return loss
 
 
@@ -1000,7 +1028,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
     log(f"objective: {args.objective}")
     if args.objective == "causal_mtp":
-        log(f"mtp: heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")
+        log(f"mtp: arch={config.mtp_arch} heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")
     if args.tst_steps > 0:
         log(
             "tst: "
