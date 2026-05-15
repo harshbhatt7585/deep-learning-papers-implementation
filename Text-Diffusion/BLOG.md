@@ -10,19 +10,20 @@ This table mixes short gates and long runs, so use the **Budget** column before 
 
 | # | Run | Budget | MLP | MTP design | Hardware | Val Loss | BPB | **CORE** | Notes |
 | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| 1 | **MTP2 + TST s4 r0.3 d12** | ratio-12 long run | SwiGLU ff=3 | shared × 2 + TST | 8× H100 FP8 compile | 3.0028 | 0.9446 | **0.1133** | Beats public nanochat d12 CORE/BPB; more raw-token exposure from TST |
-| 2 | nanochat d12 public reference | d12 reference | nanochat | causal LM | 8× H100 | — | 0.9825 | 0.1059 | External reference |
-| 3 | **H100 bf16 DeepSeek-MTP2 + TST s4 r0.3** | 400-step gate | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 4× H100 | 3.5576 | 1.1165 | **0.0737** | New best 400-step gate; first short run above 0.071 |
-| 4 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Previous best 400-step gate |
-| 5 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
-| 6 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
-| 7 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
-| 8 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
-| 9 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
+| 1 | **DeepSeek-MTP2 + TST s4 r0.3 d12** | ratio-12 long run | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 8× H100 FP8 compile | **2.9866** | **0.9387** | **0.1162** | New long-run best; eval at step 3600, final checkpoint at step 3663 |
+| 2 | MTP2 + TST s4 r0.3 d12 | ratio-12 long run | SwiGLU ff=3 | shared × 2 + TST | 8× H100 FP8 compile | 3.0028 | 0.9446 | 0.1133 | Previous long-run best; beats public nanochat d12 CORE/BPB |
+| 3 | nanochat d12 public reference | d12 reference | nanochat | causal LM | 8× H100 | — | 0.9825 | 0.1059 | External reference |
+| 4 | **H100 bf16 DeepSeek-MTP2 + TST s4 r0.3** | 400-step gate | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 4× H100 | 3.5576 | 1.1165 | **0.0737** | New best 400-step gate; first short run above 0.071 |
+| 5 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Previous best 400-step gate |
+| 6 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
+| 7 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
+| 8 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
+| 9 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
+| 10 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
 
 Reading the overall table:
 
-- The long-run MTP2+TST d12 run is the first result above the public nanochat d12 reference (`CORE=0.1133` vs `0.1059`).
+- The long-run DeepSeek-MTP2+TST d12 run is the current best result (`CORE=0.1162`, `BPB=0.9387`), above both the shared-linear D12 run (`CORE=0.1133`) and the public nanochat d12 reference (`CORE=0.1059`).
 - The best 400-step gate is now DeepSeek-style MTP2 + TST (`CORE=0.0737`), beating the older H100 FP8 MTP2 ReLU² full-vocab run (`0.0710`) while using 4× H100 bf16.
 - TST alone did not beat the old short-run CORE, but TST plus DeepSeek-style MTP2 did.
 
@@ -580,7 +581,7 @@ DeepSeek-style MTP2 follow-up: replacing the cheap parallel shared-linear MTP he
 
 The likely reason is structural, not just parameter count: DeepSeek-style MTP conditions each future depth on the previous drafted token path (`h_t + token_{t+1} -> token_{t+2}`, then MTP hidden + `token_{t+2} -> token_{t+3}`), whereas the shared-linear heads predict all offsets independently from the same original hidden state. That gives the auxiliary objective a more realistic future-token dependency and appears to improve CORE at the gate.
 
-## 2026-05-14: Long D12 MTP2 + TST Run
+## 2026-05-14/15: Long D12 MTP2 + TST Runs
 
 We ran the first long D12-scale TST configuration after the 400-step gates:
 
@@ -616,7 +617,53 @@ Result at step `3200`:
 
 This is the first run that clearly beats the public nanochat d12 CORE reference (`0.1133` vs `0.1059`) and also improves BPB (`0.9446` vs `0.9825`). The samples improved substantially on simple factual prompts (`France -> Paris`, `gold -> Au`, `hot -> cold`), though arithmetic still fails.
 
-Caveat: this is not a strict same-token comparison to nanochat d12. The public nanochat d12 table reports about `1.08B` training tokens, while this run used roughly `1.72B` latent training tokens (`~143M params * 12`) and about `3.26B` effective raw-token exposure from TST. The fair claim is: at the same d12 model scale and D12-style latent-token budget, MTP2+TST beats the nanochat d12 reference on CORE and BPB.
+After the 400-step DeepSeek-MTP2 gate became the new short-run leader, we promoted the same idea to the D12 TST schedule:
+
+```bash
+GPU_TYPE=H100
+FP8=1
+COMPILE=1
+OBJECTIVE=causal_mtp
+MTP_ARCH=deepseek
+MTP_HEADS=2
+MTP_LOSS_WEIGHT=0.15
+TST_BAG_SIZE=4
+TST_RATIO=0.3
+GATED_MLP=1
+FF_MULT=3
+BATCH_SIZE=32
+SEQ_LEN=2048
+TRAIN_SHARDS=170
+TARGET_PARAM_DATA_RATIO=12
+EVAL_INTERVAL=600
+CORE_METRIC_EVERY=600
+SAMPLE_INTERVAL=600
+RUN_CONFIG=8gpu
+```
+
+Run: `mtp2-deepseek-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu-bs32`
+
+Result at the last eval, step `3600`:
+
+| Run | Val Loss | BPB | CORE |
+| --- | ---: | ---: | ---: |
+| nanochat d12 public reference | — | 0.9825 | 0.1059 |
+| shared-linear MTP2 + TST s4 r0.3 d12 | 3.0028 | 0.9446 | 0.1133 |
+| **DeepSeek-MTP2 + TST s4 r0.3 d12** | **2.9866** | **0.9387** | **0.1162** |
+
+This is the new long-run best. It improves CORE by `+0.0029` over the shared-linear D12 run and `+0.0103` over the public nanochat d12 reference. It also improves BPB to `0.9387`, below both shared-linear MTP2+TST (`0.9446`) and nanochat d12 (`0.9825`).
+
+The run trained to step `3663`; the final checkpoint was saved at:
+
+```text
+/runs/mtp2-deepseek-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu-bs32/checkpoint.pt
+```
+
+The last logged CORE eval was at step `3600`, only `63` steps before the final checkpoint, so it is effectively the finish-line score. The late recovery speed was noisy with `LOG_INTERVAL=1` (`~0.4M` to `~0.8M tok/s` in the printed per-step logs), but the final quality moved in the right direction.
+
+Sample quality is still not solved: the model knows some short facts (`hot -> cold`, `gold -> Au`) but still produces factual errors and repetition (`France -> Bourbon`, repeated gold definition, broken arithmetic). The important result is that the DeepSeek-style MTP auxiliary path improved both BPB and CORE at the D12 scale, not that generations are production-quality yet.
+
+Caveat: this is not a strict same-token comparison to nanochat d12. The public nanochat d12 table reports about `1.08B` training tokens. The shared-linear D12 run used roughly `1.72B` latent training tokens (`~143M params * 12`) and about `3.26B` effective raw-token exposure from TST. The DeepSeek-MTP2 D12 run used roughly `1.92B` latent training tokens (`~160M params * 12`) and about `3.65B` effective raw-token exposure from TST. The fair claim is: at the same d12 model scale and D12-style parameter-data ratio, MTP2+TST beats the nanochat d12 reference on CORE and BPB, with the best result coming from the DeepSeek-style auxiliary path.
 
 ## Lessons Learned
 
@@ -632,11 +679,11 @@ Caveat: this is not a strict same-token comparison to nanochat d12. The public n
 
 Priorities, roughly in order:
 
-1. **Promote DeepSeek-MTP2 + TST.** The 400-step gate finally beat `CORE=0.0710`; next test is the same architecture at ratio-8 or ratio-12 with `MTP_ARCH=deepseek`, `MTP_HEADS=2`, `TST_BAG_SIZE=4`, `TST_RATIO=0.3`.
+1. **Ablate DeepSeek-MTP2 without TST.** The promoted D12 run beat the shared-linear D12 run; next we need `MTP_ARCH=deepseek`, `MTP_HEADS=2`, `TST_BAG_SIZE=1`, `TST_RATIO=0` to separate the MTP gain from the TST raw-token-exposure gain.
 
 2. **Pure causal LM baseline** (`MTP_HEADS=0`) at the 400-step gate, so we can finally attribute the MTP contribution rather than guessing.
 
-3. **Run an ablation without TST.** DeepSeek-style MTP2 may be carrying most of the gain; test `TST_BAG_SIZE=1`, `TST_RATIO=0` at the same 400-step gate.
+3. **Use coarser throughput logging for long runs.** Set `LOG_INTERVAL=20` or higher so per-step data-loader/compile/distributed jitter does not dominate the printed `tok/s`.
 
 4. **Re-test tied embeddings, but with tuned init and embedding LR.** The first tied attempt assumed the untied hyperparameters transfer cleanly — they don't.
 
@@ -646,6 +693,6 @@ Priorities, roughly in order:
 
 The current best 400-step gate score is `CORE = 0.0737` from `mtp2-deepseek-tst-s4-r03-400step-swiglu-ff3-h100-bf16-4gpu-bs16`. This replaces the old H100 FP8 MTP2 ReLU² full-vocab result (`CORE = 0.0710`) as the short-run leader. The current best **cheap non-TST baseline** remains `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0.
 
-The long-run best is now `CORE = 0.1133`, `BPB = 0.9446` from `mtp2-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu`, which beats the public nanochat d12 reference (`CORE ≈ 0.1059`, `BPB = 0.9825`). This is not a strict same-token comparison because TST increases effective raw-token exposure, but it is a strong result at the d12 model scale.
+The long-run best is now `CORE = 0.1162`, `BPB = 0.9387` from `mtp2-deepseek-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu-bs32`, with the final eval at step `3600` and final checkpoint at step `3663`. This beats both the shared-linear MTP2+TST D12 run (`CORE = 0.1133`, `BPB = 0.9446`) and the public nanochat d12 reference (`CORE ≈ 0.1059`, `BPB = 0.9825`). This is not a strict same-token comparison because TST increases effective raw-token exposure, but it is the strongest result so far at the d12 model scale.
 
 GQA in either flavor (-2 over SwiGLU MTP1, -3 over ReLU² MTP2) has now been tested twice and rejected both times. Attention stays full multi-head (`N_HEADS=6, N_KV_HEADS=6`) on the recommended pretraining config. Any future GQA attempt should be paired with a capacity-reinvestment knob (`FF_MULT=4` or `N_LAYERS=14`), not run as a standalone change.
