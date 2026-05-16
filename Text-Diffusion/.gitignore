@@ -1,5 +1,6 @@
 .venv/
 .uv-cache/
+.ruff_cache/
 __pycache__/
 *.py[cod]
 runs/

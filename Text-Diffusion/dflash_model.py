@@ -28,18 +28,16 @@ correctness of the algorithm.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.nn.attention import sdpa_kernel
 
 from model import (
     Linear,
     SDPA_BACKENDS,
-    TextDiffusionConfig,
     TextDiffusionModel,
     apply_rotary_emb,
     norm,

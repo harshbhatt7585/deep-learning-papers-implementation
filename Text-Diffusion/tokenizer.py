@@ -25,7 +25,7 @@ NANOCHAT_SPECIAL_TOKENS = [
 
 @dataclass
 class NanochatTokenizer:
-    """Nanochat-style 32K byte-level BPE tokenizer with diffusion specials."""
+    """Nanochat-style 32K byte-level BPE tokenizer with training specials."""
 
     tokenizer: object
 

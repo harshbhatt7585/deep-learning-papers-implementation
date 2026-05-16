@@ -1015,7 +1015,7 @@ def main() -> None:
     ar_generated = int(ar_ids.size(0) - prompt_ids.size(0))
 
     print()
-    print(f"== plain AR ==")
+    print("== plain AR ==")
     print(f"  tokens generated: {ar_generated}")
     print(f"  wall time:        {ar_time*1000:.1f} ms ({ar_generated/ar_time:.1f} tok/s)")
     print(f"  output: {_format_ids(ar_ids, tokenizer)}")
