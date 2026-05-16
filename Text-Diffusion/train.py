@@ -17,9 +17,7 @@ from flash_attention import describe_attention_backend
 from model import (
     TextDiffusionConfig,
     TextDiffusionModel,
-    generate,
     generate_causal,
-    make_masked_inputs,
     norm,
 )
 from nanochat_optim import DistMuonAdamW, MuonAdamW
@@ -64,7 +62,6 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "nanochat_tokenizer_doc_cap": 10_000,
     "nanochat_tokenizer_threads": 4,
     "nanochat_tokenizer_batch_size": 128,
-    "mask_prob": 0.30,
     "mtp_heads": 3,
     "mtp_arch": "linear",
     "mtp_loss_weight": 0.3,
@@ -85,9 +82,6 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "save_interval": 1000,
     "sample_prompt": "The ",
     "sample_length": 128,
-    "sample_block_length": 32,
-    "sample_steps": 32,
-    "sample_threshold": 0.5,
     "sample_temperature": 0.6,
     "sample_top_k": 50,
     "sample_top_p": None,
@@ -121,7 +115,7 @@ def with_internal_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the tiny text diffusion model.")
+    parser = argparse.ArgumentParser(description="Train the text MTP model.")
 
     parser.add_argument("--data", type=Path, help="Plain text dataset path.")
     parser.add_argument("--nanochat", action="store_true", help="Use nanochat's ClimbMix parquet dataset.")
@@ -143,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--target-tokens", type=int, default=-1)
     parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
-    parser.add_argument("--objective", choices=["diffusion", "causal_mtp", "dflash"], default="diffusion")
+    parser.add_argument("--objective", choices=["causal_mtp", "dflash"], default="causal_mtp")
     parser.add_argument("--mtp-heads", type=int, default=None)
     parser.add_argument("--mtp-arch", choices=["linear", "deepseek"], default=None)
     parser.add_argument("--mtp-loss-weight", type=float, default=None)
@@ -229,7 +223,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         for prompt in [args.sample_prompt, *SAMPLE_PROMPTS]
     )
     sample_len = sample_prompt_len + args.sample_length
-    max_seq_len = max(args.seq_len, sample_len + args.sample_block_length)
+    max_seq_len = max(args.seq_len, sample_len)
 
     n_heads = args.n_heads
     if args.objective == "dflash" and args.d_model % n_heads != 0:
@@ -639,11 +633,6 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
     return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
-def masked_cross_entropy(logits: torch.Tensor, labels: torch.Tensor, *, reduction: str = "mean") -> torch.Tensor:
-    masked = labels != -100
-    return F.cross_entropy(logits[masked], labels[masked], reduction=reduction)
-
-
 def causal_cross_entropy(logits: torch.Tensor, input_ids: torch.Tensor, *, reduction: str = "mean") -> torch.Tensor:
     return F.cross_entropy(
         logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
@@ -776,13 +765,13 @@ def estimate_eval_metrics(
         model.train()
         return {
             "loss": total_loss / max(1, total_valid),
-            "masked_bpb": 0.0,  # not meaningful for dflash; keep key for logger compatibility
-            "masked_tokens": float(total_valid),
+            "bpb": 0.0,  # not meaningful for dflash; keep key shape consistent
+            "tokens": float(total_valid),
             "dflash_acceptance_proxy": total_acc / max(1, total_valid),
         }
 
     total_loss = 0.0
-    total_masked_tokens = 0
+    total_tokens = 0
     total_bytes = 0
 
     for _ in range(args.eval_batches):
@@ -794,23 +783,12 @@ def estimate_eval_metrics(
         )
         with autocast_context(runtime.device, args.amp_dtype):
             with disable_fp8(source_model):
-                if args.objective == "causal_mtp":
-                    logits = source_model(batch, attention_mask=None, causal=True)
-                    loss_sum = causal_cross_entropy(logits, batch, reduction="sum")
-                    token_count = batch.numel() - batch.size(0)
-                else:
-                    noised, labels = make_masked_inputs(
-                        batch,
-                        mask_token_id=source_model.config.mask_token_id,
-                        pad_token_id=source_model.config.pad_token_id,
-                        mask_prob=args.mask_prob,
-                    )
-                    logits = source_model(noised, attention_mask=None)
-                    loss_sum = masked_cross_entropy(logits, labels, reduction="sum")
-                    token_count = int((labels != -100).sum().item())
+                logits = source_model(batch, attention_mask=None, causal=True)
+                loss_sum = causal_cross_entropy(logits, batch, reduction="sum")
+                token_count = batch.numel() - batch.size(0)
 
         total_loss += float(loss_sum.item())
-        total_masked_tokens += token_count
+        total_tokens += token_count
         total_bytes += sum(
             len(tokenizer.decode(row.detach().cpu().tolist()).encode("utf-8"))
             for row in batch
@@ -819,7 +797,7 @@ def estimate_eval_metrics(
     model.train()
     totals_device = torch.device("cpu") if runtime.device.type == "mps" else runtime.device
     totals = torch.tensor(
-        [total_loss, total_masked_tokens, total_bytes],
+        [total_loss, total_tokens, total_bytes],
         dtype=torch.float64,
         device=totals_device,
     )
@@ -827,12 +805,12 @@ def estimate_eval_metrics(
         dist.all_reduce(totals, op=dist.ReduceOp.SUM)
 
     total_loss = float(totals[0].item())
-    total_masked_tokens = max(1.0, float(totals[1].item()))
+    total_tokens = max(1.0, float(totals[1].item()))
     total_bytes = max(1.0, float(totals[2].item()))
     return {
-        "loss": total_loss / total_masked_tokens,
-        "masked_bpb": total_loss / (math.log(2) * total_bytes),
-        "masked_tokens": total_masked_tokens,
+        "loss": total_loss / total_tokens,
+        "bpb": total_loss / (math.log(2) * total_bytes),
+        "tokens": total_tokens,
     }
 
 
@@ -976,30 +954,15 @@ def sample_text(
             device=runtime.device,
         )
         with disable_fp8(source_model):
-            if args.objective == "causal_mtp":
-                output = generate_causal(
-                    source_model,
-                    prompt_ids,
-                    gen_length=args.sample_length,
-                    temperature=args.sample_temperature,
-                    top_k=args.sample_top_k,
-                    top_p=args.sample_top_p,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-            else:
-                output = generate(
-                    source_model,
-                    prompt_ids,
-                    gen_length=args.sample_length,
-                    block_length=args.sample_block_length,
-                    steps=args.sample_steps,
-                    threshold=args.sample_threshold,
-                    editing_threshold=None,
-                    temperature=args.sample_temperature,
-                    top_k=args.sample_top_k,
-                    top_p=args.sample_top_p,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
+            output = generate_causal(
+                source_model,
+                prompt_ids,
+                gen_length=args.sample_length,
+                temperature=args.sample_temperature,
+                top_k=args.sample_top_k,
+                top_p=args.sample_top_p,
+                eos_token_id=tokenizer.eos_token_id,
+            )
         samples.append(tokenizer.decode(output.detach().cpu(), skip_special=False))
 
     sample = "\n".join(samples)
@@ -1053,7 +1016,7 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(
         "sample: "
         f"interval={args.sample_interval} "
-        f"steps={args.sample_steps} "
+        f"length={args.sample_length} "
         f"temperature={args.sample_temperature} "
         f"top_k={args.sample_top_k} "
         f"top_p={args.sample_top_p}"
@@ -1077,12 +1040,9 @@ def create_wandb_sample_table(wandb_run):
             "prompt",
             "generated_text",
             "eval_loss",
-            "eval_masked_bpb",
-            "eval_masked_tokens",
+            "eval_bpb",
+            "eval_tokens",
             "sample_length",
-            "block_length",
-            "steps",
-            "threshold",
             "temperature",
             "top_k",
             "top_p",
@@ -1108,12 +1068,9 @@ def log_wandb_sample_table(
         args.sample_prompt,
         sample,
         metrics.get("loss"),
-        metrics.get("masked_bpb"),
-        metrics.get("masked_tokens"),
+        metrics.get("bpb"),
+        metrics.get("tokens"),
         args.sample_length,
-        args.sample_block_length,
-        args.sample_steps,
-        args.sample_threshold,
         args.sample_temperature,
         args.sample_top_k,
         args.sample_top_p,
@@ -1133,7 +1090,6 @@ def train_one_step(
 ) -> float:
     optimizer.zero_grad(set_to_none=True)
     source_model = unwrap_model(model)
-    config = source_model.config
     step_loss = 0.0
 
     for micro_step in range(args.grad_accum_steps):
@@ -1179,14 +1135,7 @@ def train_one_step(
                         batch,
                     )
                 else:
-                    noised, labels = make_masked_inputs(
-                        batch,
-                        mask_token_id=config.mask_token_id,
-                        pad_token_id=config.pad_token_id,
-                        mask_prob=args.mask_prob,
-                    )
-                    logits = model(noised, attention_mask=None)
-                    loss = masked_cross_entropy(logits, labels)
+                    raise ValueError(f"unsupported objective: {args.objective}")
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
         step_loss += loss.detach().item()
@@ -1307,7 +1256,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 f"step {step_id:05d} "
                 f"train_loss {step_loss:.4f} "
                 f"val_loss {eval_metrics['loss']:.4f} "
-                f"masked_bpb {eval_metrics['masked_bpb']:.4f} "
+                f"bpb {eval_metrics['bpb']:.4f} "
                 f"lr {lr:.2e}"
             )
             log_train_metrics(
@@ -1315,8 +1264,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 step_id,
                 {
                     "eval/loss": eval_metrics["loss"],
-                    "eval/masked_bpb": eval_metrics["masked_bpb"],
-                    "eval/masked_tokens": eval_metrics["masked_tokens"],
+                    "eval/bpb": eval_metrics["bpb"],
+                    "eval/tokens": eval_metrics["tokens"],
                     "eval/train_loss_at_eval": step_loss,
                     "train/lr": lr,
                 },

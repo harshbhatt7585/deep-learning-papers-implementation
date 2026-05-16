@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import torch
@@ -263,7 +262,7 @@ class DeepSeekMTPModule(nn.Module):
 
 
 class TextDiffusionModel(nn.Module):
-    """Small bidirectional Transformer denoiser for masked text diffusion."""
+    """Decoder-only Transformer used for causal LM, MTP, TST, and DFlash targets."""
 
     def __init__(self, config: TextDiffusionConfig) -> None:
         super().__init__()
@@ -427,49 +426,6 @@ class TextDiffusionModel(nn.Module):
         return cos[None, :, None, :], sin[None, :, None, :]
 
 
-def make_masked_inputs(
-    input_ids: torch.Tensor,
-    *,
-    mask_token_id: int,
-    pad_token_id: int,
-    mask_prob: float = 0.3,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if not 0.0 < mask_prob < 1.0:
-        raise ValueError("mask_prob must be between 0 and 1")
-
-    valid_tokens = input_ids != pad_token_id
-    random_mask = torch.rand(input_ids.shape, device=input_ids.device) < mask_prob
-    mask_positions = random_mask & valid_tokens
-
-    noised = input_ids.clone()
-    noised[mask_positions] = mask_token_id
-
-    labels = torch.full_like(input_ids, -100)
-    labels[mask_positions] = input_ids[mask_positions]
-    return noised, labels
-
-
-def diffusion_loss(
-    model: TextDiffusionModel,
-    input_ids: torch.Tensor,
-    *,
-    mask_prob: float = 0.3,
-) -> torch.Tensor:
-    config = model.config
-    noised, labels = make_masked_inputs(
-        input_ids,
-        mask_token_id=config.mask_token_id,
-        pad_token_id=config.pad_token_id,
-        mask_prob=mask_prob,
-    )
-    attention_mask = noised != config.pad_token_id
-    if bool(attention_mask.all()):
-        attention_mask = None
-    logits = model(noised, attention_mask=attention_mask)
-    masked = labels != -100
-    return F.cross_entropy(logits[masked], labels[masked])
-
-
 def causal_mtp_loss(
     model: TextDiffusionModel,
     input_ids: torch.Tensor,
@@ -522,17 +478,6 @@ def causal_mtp_loss(
     if aux_losses:
         metrics["mtp_loss"] = torch.stack([aux.detach() for aux in aux_losses]).mean()
     return loss, metrics
-
-
-def build_block_diffusion_attention_mask(
-    *,
-    seq_len: int,
-    block_length: int,
-    device: torch.device,
-) -> torch.Tensor:
-
-    block_ids = torch.arange(seq_len, device=device) // block_length
-    return block_ids[:, None] >= block_ids[None, :]
 
 
 def _sample_tokens(
@@ -615,104 +560,6 @@ def generate_causal(
             break
 
     return x[0]
-
-
-@torch.no_grad()
-def generate(
-    model: TextDiffusionModel,
-    prompt_ids: torch.Tensor,
-    *,
-    gen_length: int,
-    block_length: int = 8,
-    steps: int = 8,
-    threshold: float = 0.7,
-    editing_threshold: float | None = 0.9,
-    max_post_steps: int = 16,
-    temperature: float = 0.0,
-    top_k: int | None = None,
-    top_p: float | None = None,
-    eos_token_id: int | None = None,
-) -> torch.Tensor:
-    """Block-wise diffusion generation: fill masks from left blocks to right blocks."""
-
-    if prompt_ids.ndim == 1:
-        prompt_ids = prompt_ids.unsqueeze(0)
-
-    model.eval()
-    config = model.config
-    prompt_ids = prompt_ids.to(model.device)
-    prompt_len = prompt_ids.shape[1]
-    requested_len = prompt_len + gen_length
-    num_blocks = math.ceil(requested_len / block_length)
-    total_len = num_blocks * block_length
-
-    transfer_count = max(1, math.ceil(block_length / steps))
-    full_attention_mask = build_block_diffusion_attention_mask(
-        seq_len=total_len,
-        block_length=block_length,
-        device=model.device,
-    ).unsqueeze(0)
-
-    x = torch.full((1, total_len), config.mask_token_id, dtype=torch.long, device=model.device)
-    x[:, :prompt_len] = prompt_ids
-    first_generation_block = prompt_len // block_length
-
-    for block_idx in range(first_generation_block, num_blocks):
-        block_start = block_idx * block_length
-        block_end = (block_idx + 1) * block_length
-        active_slice = slice(block_start, block_end)
-        prompt_in_block = torch.zeros(block_length, dtype=torch.bool, device=model.device)
-        if block_start < prompt_len:
-            prompt_in_block[: prompt_len - block_start] = True
-
-        for step in range(steps + max_post_steps):
-            old_block = x[:, active_slice].clone()
-            active_masks = old_block == config.mask_token_id
-
-            attention_mask = full_attention_mask[:, :block_end, :block_end]
-            logits = model(x[:, :block_end], attention_mask=attention_mask)
-            block_logits = logits[:, active_slice, :]
-            candidates, confidence = _sample_tokens(
-                block_logits,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-            )
-
-            accept = torch.zeros_like(active_masks)
-            if active_masks.any():
-                high_confidence = (confidence > threshold) & active_masks
-                accept |= high_confidence
-                if accept.sum() == 0:
-                    masked_confidence = confidence.masked_fill(~active_masks, float("-inf"))
-                    _, idx = torch.topk(
-                        masked_confidence[0],
-                        k=min(transfer_count, int(active_masks.sum().item())),
-                    )
-                    accept[0, idx] = True
-
-            if editing_threshold is not None:
-                editable = ~active_masks & ~prompt_in_block.unsqueeze(0)
-                changed = candidates != old_block
-                accept |= editable & changed & (confidence > editing_threshold)
-
-            if accept.any():
-                updated_block = x[:, active_slice].clone()
-                updated_block[accept] = candidates[accept]
-                x[:, active_slice] = updated_block
-
-            if not active_masks.any():
-                break
-            if step >= steps - 1 and editing_threshold is None:
-                break
-
-        if eos_token_id is not None:
-            generated = x[0, prompt_len:min(block_end, requested_len)]
-            eos_positions = (generated == eos_token_id).nonzero(as_tuple=True)[0]
-            if len(eos_positions) > 0:
-                return x[0, : prompt_len + int(eos_positions[0]) + 1]
-
-    return x[0, :requested_len]
 
 
 def main() -> None:

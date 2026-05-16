@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from model import TextDiffusionConfig, TextDiffusionModel, generate, generate_causal
+from model import TextDiffusionConfig, TextDiffusionModel, generate_causal
 from tokenizer import NanochatTokenizer
 
 
@@ -39,13 +39,10 @@ def load_checkpoint(checkpoint_dir: Path, device: torch.device):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sample from a trained text diffusion checkpoint.")
+    parser = argparse.ArgumentParser(description="Sample from a trained causal/MTP checkpoint.")
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--prompt", type=str, default="Hello ")
     parser.add_argument("--gen-length", type=int, default=128)
-    parser.add_argument("--block-length", type=int, default=32)
-    parser.add_argument("--steps", type=int, default=32)
-    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=None)
@@ -55,31 +52,20 @@ def main() -> None:
     model, tokenizer, checkpoint = load_checkpoint(args.checkpoint_dir, device)
     prompt_ids = torch.tensor(tokenizer.encode(args.prompt), dtype=torch.long, device=device)
 
-    objective = checkpoint.get("args", {}).get("objective", "diffusion")
-    if objective == "causal_mtp":
-        output = generate_causal(
-            model,
-            prompt_ids,
-            gen_length=args.gen_length,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            top_p=args.top_p,
-            eos_token_id=tokenizer.eos_token_id,
+    objective = checkpoint.get("args", {}).get("objective", "causal_mtp")
+    if objective != "causal_mtp":
+        raise ValueError(
+            f"unsupported objective {objective!r}; use spec_decode.py for speculative decoding"
         )
-    else:
-        output = generate(
-            model,
-            prompt_ids,
-            gen_length=args.gen_length,
-            block_length=args.block_length,
-            steps=args.steps,
-            threshold=args.threshold,
-            editing_threshold=None,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            top_p=args.top_p,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+    output = generate_causal(
+        model,
+        prompt_ids,
+        gen_length=args.gen_length,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        top_p=args.top_p,
+        eos_token_id=tokenizer.eos_token_id,
+    )
 
     print(f"loaded checkpoint step: {checkpoint['step']}")
     print(f"objective: {objective}")
