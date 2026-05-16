@@ -52,11 +52,6 @@ def main() -> None:
     model, tokenizer, checkpoint = load_checkpoint(args.checkpoint_dir, device)
     prompt_ids = torch.tensor(tokenizer.encode(args.prompt), dtype=torch.long, device=device)
 
-    objective = checkpoint.get("args", {}).get("objective", "causal_mtp")
-    if objective != "causal_mtp":
-        raise ValueError(
-            f"unsupported objective {objective!r}; use spec_decode.py for speculative decoding"
-        )
     output = generate_causal(
         model,
         prompt_ids,
@@ -68,7 +63,6 @@ def main() -> None:
     )
 
     print(f"loaded checkpoint step: {checkpoint['step']}")
-    print(f"objective: {objective}")
     print(tokenizer.decode(output.detach().cpu()))
 
 

@@ -136,7 +136,7 @@ def run_train(
     core_metric_every: int | None = None,
     sample_interval: int | None = None,
     optimizer: str = "adamw",
-    objective: str = "causal_mtp",
+    dflash: bool = False,
     mtp_heads: int = 3,
     mtp_arch: str = "linear",
     mtp_loss_weight: float = 0.3,
@@ -157,7 +157,7 @@ def run_train(
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
-    # --- DFlash drafter flags (used only when objective == "dflash") -------
+    # --- DFlash drafter flags (used only with --dflash) --------------------
     target_checkpoint: str | None = None,
     block_size: int = 16,
     n_draft_layers: int = 2,
@@ -179,8 +179,6 @@ def run_train(
         str(grad_accum_steps),
         "--optimizer",
         optimizer,
-        "--objective",
-        objective,
         "--mtp-heads",
         str(mtp_heads),
         "--mtp-arch",
@@ -216,9 +214,9 @@ def run_train(
         command.append("--gated-mlp")
     if resume:
         command.extend(["--resume", resume])
-    if objective == "dflash":
+    if dflash:
         if not target_checkpoint:
-            raise ValueError("--objective dflash requires --target-checkpoint")
+            raise ValueError("--dflash requires --target-checkpoint")
         if not os.path.exists(target_checkpoint):
             raise SystemExit(
                 f"[modal_train] target checkpoint not found inside the container: {target_checkpoint}\n"
@@ -227,6 +225,7 @@ def run_train(
                 f"     'TARGET_CHECKPOINT=<actual-path> bash speed_run.sh draft 4gpu'."
             )
         command.extend([
+            "--dflash",
             "--target-checkpoint", target_checkpoint,
             "--block-size", str(block_size),
             "--n-draft-layers", str(n_draft_layers),
@@ -427,7 +426,7 @@ def main(
     core_metric_every: int | None = None,
     sample_interval: int | None = None,
     optimizer: str = "adamw",
-    objective: str = "causal_mtp",
+    dflash: bool = False,
     mtp_heads: int = 3,
     mtp_arch: str = "linear",
     mtp_loss_weight: float = 0.3,
@@ -456,7 +455,7 @@ def main(
     download_only: bool = False,
     overwrite_tokens: bool = False,
     stream_nanochat: bool = False,
-    # --- DFlash drafter flags (only used with --objective dflash) ---------
+    # --- DFlash drafter flags (only used with --dflash) --------------------
     target_checkpoint: str | None = None,
     block_size: int = 16,
     n_draft_layers: int = 2,
@@ -515,7 +514,7 @@ def main(
         core_metric_every=core_metric_every,
         sample_interval=sample_interval,
         optimizer=optimizer,
-        objective=objective,
+        dflash=dflash,
         mtp_heads=mtp_heads,
         mtp_arch=mtp_arch,
         mtp_loss_weight=mtp_loss_weight,

@@ -43,9 +43,9 @@ target distribution — same trade-off as the reference.
 ### Training a dflash drafter
 
 Use ``speed_run.sh draft`` (parallel to ``speed_run.sh train``). The ``draft``
-mode wires up ``--objective dflash`` with sensible drafter defaults and
-requires a frozen target checkpoint via ``TARGET_CHECKPOINT``. The drafter
-inherits the target's ``d_model`` and ``vocab_size`` by construction.
+mode wires up ``--dflash`` with sensible drafter defaults and requires a frozen
+target checkpoint via ``TARGET_CHECKPOINT``. The drafter inherits the target's
+``d_model`` and ``vocab_size`` by construction.
 
 Example::
 
@@ -777,7 +777,7 @@ def _build_dflash_drafter_from_checkpoint(
         raise SystemExit(
             f"drafter checkpoint at {checkpoint_path} does not look like a DFlash drafter "
             f"(config keys: {list(cfg_dict.keys()) if isinstance(cfg_dict, dict) else type(cfg_dict)}). "
-            "If you trained a standalone-diffusion drafter, re-train with --objective dflash."
+            "If you trained a standalone-diffusion drafter, re-train with speed_run.sh draft."
         )
 
     if cfg.target_d_model != target.config.d_model:

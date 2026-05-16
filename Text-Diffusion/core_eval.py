@@ -171,32 +171,6 @@ def stack_sequences(tokens: list[list[int]], pad_token_id: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def forward_diffusion_model(
-    model: TextDiffusionModel,
-    input_ids: torch.Tensor,
-    tokenizer: NanochatTokenizer,
-    start_indices: list[int],
-    end_indices: list[int],
-) -> tuple[torch.Tensor, torch.Tensor]:
-    labels = torch.full_like(input_ids, -100)
-    noised = input_ids.clone()
-    for row, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices)):
-        labels[row, start_idx:end_idx] = input_ids[row, start_idx:end_idx]
-        noised[row, start_idx:end_idx] = tokenizer.mask_token_id
-
-    attention_mask = input_ids != tokenizer.pad_token_id
-    logits = model(noised, attention_mask=attention_mask)
-    losses = torch.nn.functional.cross_entropy(
-        logits.view(-1, logits.size(-1)),
-        labels.view(-1),
-        ignore_index=-100,
-        reduction="none",
-    ).view_as(labels)
-    predictions = logits.argmax(dim=-1)
-    return losses, predictions
-
-
-@torch.no_grad()
 def forward_causal_model(
     model: TextDiffusionModel,
     input_ids: torch.Tensor,
@@ -230,7 +204,6 @@ def evaluate_example(
     data: list[dict[str, Any]],
     device: torch.device,
     task_meta: dict[str, Any],
-    objective: str = "diffusion",
 ) -> bool:
     item = data[idx]
     task_type = task_meta["task_type"]
@@ -262,10 +235,7 @@ def evaluate_example(
     tokens, start_indices, end_indices = cropped
 
     input_ids = stack_sequences(tokens, tokenizer.pad_token_id).to(device)
-    if objective == "causal_mtp":
-        losses, predictions = forward_causal_model(model, input_ids, tokenizer, start_indices, end_indices)
-    else:
-        losses, predictions = forward_diffusion_model(model, input_ids, tokenizer, start_indices, end_indices)
+    losses, predictions = forward_causal_model(model, input_ids, tokenizer, start_indices, end_indices)
 
     if task_type == "language_modeling":
         start_idx, end_idx = start_indices[0], end_indices[0]
@@ -287,7 +257,6 @@ def evaluate_task(
     data: list[dict[str, Any]],
     device: torch.device,
     task_meta: dict[str, Any],
-    objective: str = "diffusion",
 ) -> float:
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -295,7 +264,7 @@ def evaluate_task(
 
     for idx in range(rank, len(data), world_size):
         try:
-            is_correct = evaluate_example(idx, model, tokenizer, data, device, task_meta, objective)
+            is_correct = evaluate_example(idx, model, tokenizer, data, device, task_meta)
         except ValueError:
             is_correct = False
         correct[idx] = float(is_correct)
@@ -313,7 +282,6 @@ def evaluate_core(
     *,
     cache_dir: Path,
     max_per_task: int = -1,
-    objective: str = "diffusion",
 ) -> dict[str, Any]:
     try:
         import yaml
@@ -361,7 +329,7 @@ def evaluate_core(
         if max_per_task > 0:
             data = data[:max_per_task]
 
-        accuracy = evaluate_task(model, tokenizer, data, device, task_meta, objective)
+        accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
         random_baseline = random_baselines[label]
         centered = (accuracy - 0.01 * random_baseline) / (1.0 - 0.01 * random_baseline)
         results[label] = accuracy

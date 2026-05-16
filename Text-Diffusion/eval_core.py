@@ -11,7 +11,7 @@ from utils import cleanup_distributed, configure_cuda, is_main_process, setup_di
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a text diffusion checkpoint on nanochat CORE tasks.")
+    parser = argparse.ArgumentParser(description="Evaluate a text MTP checkpoint on nanochat CORE tasks.")
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--eval-cache-dir", type=Path, default=Path("data/core_eval"))
     parser.add_argument("--out-csv", type=Path, default=None)

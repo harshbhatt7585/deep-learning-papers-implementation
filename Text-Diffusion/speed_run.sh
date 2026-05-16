@@ -22,7 +22,6 @@ RUN_CONFIG="${RUN_CONFIG:-${2:-8gpu}}"
 # args.d_model below is harmlessly ignored by DFlashDraftModel; we keep the
 # default small so logging is honest about drafter scale.
 if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
-  : "${OBJECTIVE:=dflash}"           # block-diffusion drafter objective
   : "${MTP_HEADS:=0}"                # MTP heads irrelevant for dflash
   : "${BLOCK_SIZE:=16}"              # B from the paper (1 anchor + B-1 drafts)
   : "${N_DRAFT_LAYERS:=2}"           # 2 layers per DFlash defaults
@@ -73,7 +72,6 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-}"
 CORE_METRIC_EVERY="${CORE_METRIC_EVERY:-}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-}"
 OPTIMIZER="${OPTIMIZER:-muon}"
-OBJECTIVE="${OBJECTIVE:-causal_mtp}"
 MTP_HEADS="${MTP_HEADS:-3}"
 MTP_ARCH="${MTP_ARCH:-linear}"
 MTP_LOSS_WEIGHT="${MTP_LOSS_WEIGHT:-0.3}"
@@ -227,7 +225,6 @@ train() {
     --seq-len "${SEQ_LEN}"
     --grad-accum-steps "${GRAD_ACCUM_STEPS}"
     --optimizer "${OPTIMIZER}"
-    --objective "${OBJECTIVE}"
     --mtp-heads "${MTP_HEADS}"
     --mtp-arch "${MTP_ARCH}"
     --mtp-loss-weight "${MTP_LOSS_WEIGHT}"
@@ -251,8 +248,9 @@ train() {
   if [[ -n "${RESUME}" ]]; then
     command+=(--resume "${RESUME}")
   fi
-  if [[ "${OBJECTIVE}" == "dflash" ]]; then
+  if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
     command+=(
+      --dflash
       --target-checkpoint "${TARGET_CHECKPOINT}"
       --block-size "${BLOCK_SIZE:-16}"
       --n-draft-layers "${N_DRAFT_LAYERS:-2}"
@@ -289,14 +287,13 @@ case "${MODE}" in
     ;;
   draft|drafter)
     # DFlash drafter training. The drafter-specific defaults at the top of
-    # this script (OBJECTIVE=dflash, BLOCK_SIZE, N_DRAFT_LAYERS, ...) have
+    # this script (BLOCK_SIZE, N_DRAFT_LAYERS, ...) have
     # already been applied. train() builds a DFlashDraftModel bound to the
     # target loaded from TARGET_CHECKPOINT.
     echo "[speed_run] training dflash drafter:" >&2
     echo "  RUN_NAME=${RUN_NAME}" >&2
     echo "  target:  ${TARGET_CHECKPOINT}" >&2
     echo "  arch:    n_draft_layers=${N_DRAFT_LAYERS} n_heads=${N_HEADS} ff_mult=${FF_MULT} block_size=${BLOCK_SIZE}" >&2
-    echo "  obj:     ${OBJECTIVE}" >&2
     echo "  budget:  max_steps=${MAX_STEPS} batch=${BATCH_SIZE} seq_len=${SEQ_LEN}" >&2
     train
     ;;

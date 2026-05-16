@@ -137,7 +137,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--target-tokens", type=int, default=-1)
     parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
-    parser.add_argument("--objective", choices=["causal_mtp", "dflash"], default="causal_mtp")
     parser.add_argument("--mtp-heads", type=int, default=None)
     parser.add_argument("--mtp-arch", choices=["linear", "deepseek"], default=None)
     parser.add_argument("--mtp-loss-weight", type=float, default=None)
@@ -150,12 +149,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     # DFlash drafter training (Chen et al. 2026, "Block Diffusion for Flash
-    # Speculative Decoding"). When --objective=dflash, we freeze a target
+    # Speculative Decoding"). When --dflash is set, we freeze a target
     # checkpoint, run it in eval mode each step to extract intermediate hidden
     # states, and train a small block-diffusion drafter on top. The drafter
     # shares the target's token_emb and lm_head; only its own layers train.
+    parser.add_argument("--dflash", action="store_true", help="Train a DFlash drafter instead of the main MTP model.")
     parser.add_argument("--target-checkpoint", type=Path, default=None,
-                        help="dflash: path to frozen target checkpoint.pt (required for --objective dflash)")
+                        help="dflash: path to frozen target checkpoint.pt (required with --dflash)")
     parser.add_argument("--block-size", type=int, default=16,
                         help="dflash: drafter block size (1 anchor + bs-1 mask slots). Default matches DFlash paper.")
     parser.add_argument("--n-draft-layers", type=int, default=2,
@@ -226,7 +226,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
     max_seq_len = max(args.seq_len, sample_len)
 
     n_heads = args.n_heads
-    if args.objective == "dflash" and args.d_model % n_heads != 0:
+    if args.dflash and args.d_model % n_heads != 0:
         # DFlash drafter inherits the target's d_model at bind time
         # (see `_build_dflash_drafter`), so this config is just a cosmetic
         # placeholder for logging / wandb metadata. If the user-chosen
@@ -254,7 +254,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
         ff_mult=args.ff_mult,
         gated_mlp=args.gated_mlp,
         mtp_arch=args.mtp_arch,
-        n_mtp_heads=args.mtp_heads if args.objective == "causal_mtp" else 0,
+        n_mtp_heads=0 if args.dflash else args.mtp_heads,
     )
 
 
@@ -263,7 +263,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
 # ---------------------------------------------------------------------------
 # The frozen target is held at module scope so train_one_step / eval / sample
 # can reach it without threading it through every helper signature. It's only
-# set when --objective dflash is selected, and only the main training entry
+# set when --dflash is selected, and only the main training entry
 # point (build_model -> _build_dflash) writes to it.
 _DFLASH_TARGET: TextDiffusionModel | None = None
 
@@ -462,7 +462,7 @@ def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime
 
 
 def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: Runtime) -> torch.nn.Module:
-    if args.objective == "dflash":
+    if args.dflash:
         return _build_dflash_drafter(args, runtime)
     model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
     model = apply_fp8_training(model, args, runtime)
@@ -492,7 +492,7 @@ def _build_dflash_drafter(args: argparse.Namespace, runtime: Runtime) -> torch.n
     from dflash_model import DFlashDraftModel
 
     if args.target_checkpoint is None:
-        raise SystemExit("--objective dflash requires --target-checkpoint <path>")
+        raise SystemExit("--dflash requires --target-checkpoint <path>")
     if not args.target_checkpoint.exists():
         raise SystemExit(f"--target-checkpoint not found: {args.target_checkpoint}")
 
@@ -528,7 +528,7 @@ def _build_dflash_drafter(args: argparse.Namespace, runtime: Runtime) -> torch.n
 
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
     source_model = unwrap_model(model)
-    if args.objective == "dflash":
+    if args.dflash:
         # Drafter has a different module layout (no token_emb / lm_head /
         # blocks). Sidestep the muon/aurora group construction and use plain
         # AdamW over the drafter's owned parameters.
@@ -739,7 +739,7 @@ def estimate_eval_metrics(
     model.eval()
     source_model = unwrap_model(model)
 
-    if args.objective == "dflash":
+    if args.dflash:
         # Drafter eval: dflash_loss over a few val batches, plus mean
         # acceptance-proxy (drafter argmax == ground-truth at masked positions).
         from dflash_model import dflash_loss
@@ -838,7 +838,6 @@ def estimate_core_metrics(
             runtime.device,
             cache_dir=args.core_eval_cache_dir,
             max_per_task=args.core_eval_max_per_task,
-            objective=args.objective,
         )
     model.train()
     return {
@@ -989,8 +988,8 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusion
     log(f"val tokens: {data.val_tokens.numel():,}")
     log(f"vocab_size: {config.vocab_size:,}")
     log(f"parameters: {sum(p.numel() for p in unwrap_model(model).parameters()):,}")
-    log(f"objective: {args.objective}")
-    if args.objective == "causal_mtp":
+    log(f"mode: {'dflash' if args.dflash else 'causal_mtp'}")
+    if not args.dflash:
         log(f"mtp: arch={config.mtp_arch} heads={config.n_mtp_heads} loss_weight={args.mtp_loss_weight}")
     if args.tst_steps > 0:
         log(
@@ -1115,19 +1114,19 @@ def train_one_step(
                         batch,
                         bag_size=args.tst_bag_size,
                     )
-                elif args.objective == "causal_mtp":
+                elif not args.dflash:
                     loss = causal_mtp_cross_entropy(
                         model,
                         source_model,
                         batch,
                         mtp_loss_weight=args.mtp_loss_weight,
                     )
-                elif args.objective == "dflash":
+                elif args.dflash:
                     from dflash_model import dflash_loss
 
                     if _DFLASH_TARGET is None:
                         raise RuntimeError(
-                            "dflash objective requires _DFLASH_TARGET; was build_model not called?"
+                            "dflash training requires _DFLASH_TARGET; was build_model not called?"
                         )
                     loss, _metrics = dflash_loss(
                         source_model,
@@ -1135,7 +1134,7 @@ def train_one_step(
                         batch,
                     )
                 else:
-                    raise ValueError(f"unsupported objective: {args.objective}")
+                    raise RuntimeError("unreachable training mode")
                 scaled_loss = loss / args.grad_accum_steps
             scaler.scale(scaled_loss).backward()
         step_loss += loss.detach().item()
@@ -1156,8 +1155,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         raise ValueError("--tst-bag-size must be >= 1")
     if not 0.0 <= args.tst_ratio < 1.0:
         raise ValueError("--tst-ratio must be in [0, 1) — recovery phase requires ratio < 1")
-    if args.tst_ratio > 0.0 and args.objective != "causal_mtp":
-        raise ValueError("TST pretraining is currently supported only with --objective causal_mtp recovery")
+    if args.tst_ratio > 0.0 and args.dflash:
+        raise ValueError("TST pretraining is supported only for main causal MTP training")
     optimizer = build_optimizer(args, model, runtime)
     scaler = torch.amp.GradScaler(
         "cuda",
@@ -1224,7 +1223,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             tokens = current_tokens_per_step * args.log_interval
             tokens_per_second = tokens / max(elapsed, 1e-9)
             train_loss = running_loss / args.log_interval
-            phase = "tst" if use_tst_phase(args, step_id) else args.objective
+            phase = "tst" if use_tst_phase(args, step_id) else ("dflash" if args.dflash else "causal_mtp")
             log(f"step {step_id:05d} phase {phase} train_loss {train_loss:.4f} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
             raw_tokens_seen = step_id * args.tokens_per_step
             if args.tst_steps > 0:
@@ -1271,7 +1270,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 },
             )
 
-        if args.objective != "dflash" and args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
+        if not args.dflash and args.core_metric_every > 0 and step_id % args.core_metric_every == 0:
             core_metrics = estimate_core_metrics(model, data.tokenizer, args, runtime)
             latest_eval_metrics = {
                 **(latest_eval_metrics or {}),
@@ -1297,7 +1296,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             and args.sample_interval > 0
             and step_id % args.sample_interval == 0
         ):
-            if args.objective == "dflash":
+            if args.dflash:
                 sample, sample_metrics = sample_text_dflash(
                     model, data.tokenizer, args, runtime
                 )
