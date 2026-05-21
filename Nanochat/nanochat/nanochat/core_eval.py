@@ -109,6 +109,15 @@ def stack_sequences(tokens, pad_token_id):
     for i, x in enumerate(tokens):
         input_ids[i, :len(x)] = torch.tensor(x, dtype=torch.long)
     return input_ids
-    
+
+
+def batch_sequences_mc(tokenizer, prompts):
+    # In multiple choice, contexts are the same but the continuation is different (common prefix)
+    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())
+    # figure out the start and end of each continuation
+    answer_start_idx = find_common_length(tokens, direction="left")
+    start_indices = [answer_start_idx] * len(prompts)
+    end_indices = [len(x) for x in tokens]
+    return tokens, start_indices, end_indices
 
 
