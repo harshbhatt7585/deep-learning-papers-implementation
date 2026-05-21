@@ -54,5 +54,52 @@ def render_prompts_schema(item, continuation_delimiter, fewshot_examples=None):
 
 
 def render_prompts_lm(item, continuation_delimiter, fewshot_examples=None):
+    """
+    Render complete prompt for a language modeling task.
+    Notice that we manually trim the context in the template,
+    which in some datasets seems to have trailing whitespace (which we don't want).
+    """
+    template_str = """
+{%- for example in fewshot_examples -%}
+{{ example.context | trim }}{{ continuation_delimiter }}{{ example.continuation }}
+
+{% endfor -%}
+{{ item.context | trim }}{{ continuation_delimiter }}{% if include_continuation %}{{ item.continuation }}{% endif %}""".strip()
+    template = Template(template_str)
+    fewshot_examples = fewshot_examples or []
+    context = {
+        'fewshot_examples': fewshot_examples,
+        'continuation_delimiter': continuation_delimiter,
+        'item': item
+    }
+    # Return two prompts: without and with the continuation
+    prompt_without = template.render(include_continuation=False, **context)
+    prompt_with = template.render(include_continuation=True, **context)
+    # Due to the way the data seems to be stored, I think I need to strip in the case of LM here.
+    # Otherwise we may get trailing whitespaces in prompt_without (which get absorbed into the next
+    # token in prompt_with), meaning we don't get a nice and clean prefix in the token space
+    # to detect the final continuation. Tokenizers...
+    prompt_without = prompt_without.strip()
+    return [prompt_without, prompt_with]
+
+def find_common_length(token_sequences, direction="left"):
+    """
+    Find the length of the common prefix or suffix across token sequences
+    - direction: 'left' for prefix, 'right' for suffix
+    """
+
+    min_len = min(len(seq) for seq in token_sequences)
+    indices = {
+        'left': range(min_len),
+        'right': range(-1, -min_len-1, -1)
+    }[direction]
+
+    # Find the first position where the token sequences differ
+    for i, idx in enumerate(indices):
+        token = token_sequences[0][idx]
+        if not all(seq[idx] == token for seq in token_sequences):
+            return i
+    return min_len
+
 
 
