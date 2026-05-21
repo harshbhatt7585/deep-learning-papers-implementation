@@ -371,58 +371,58 @@ while True:
         last_step = bool(last_step_tensor.item())
 
 
-    if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
-        model.eval()
-        val_loader = build_val_loader()
-        eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
-        val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
-        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
-        if val_bpb < min_val_bpb:
-            min_val_bpb = val_bpb
+    # if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
+    #     model.eval()
+    #     val_loader = build_val_loader()
+    #     eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
+    #     val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+    #     print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
+    #     if val_bpb < min_val_bpb:
+    #         min_val_bpb = val_bpb
         
-        wandb_run.log({
-            "step": step,
-            "total_training_flops": flops_so_far,
-            "total_training_time": total_training_time,
-            "val/bpb": val_bpb
-        })
-        model.train()
+    #     wandb_run.log({
+    #         "step": step,
+    #         "total_training_flops": flops_so_far,
+    #         "total_training_time": total_training_time,
+    #         "val/bpb": val_bpb
+    #     })
+    #     model.train()
     
     # Once in a while: estimate that ChatCORE metrics (all ranks participate)
     # use the original uncompiled model because the inputs keep changing shape
-    chatcore_results = {}
-    if args.chatcore_every > 0 and (last_step or (step > 0 and step % args.chatcore_every == 0)):
-        model.eval()
-        engine = Engine(orig_model, tokenizer)
-        all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
-        categorical_tasks = {'ARC-Easy', 'ARC-Challenge', 'MMLU'}
-        baseline_accuracies = {
-            'ARC-Easy': 0.25, 'ARC-Challenge': 0.25, 'MMLU': 0.25,
-            'GSM8K': 0.0, 'HumanEval': 0.0, 'SpellingBee': 0.0,
-        }
-        task_results = {}
-        for task_name in all_tasks:
-            limit = args.chatcore_max_cat if task_name in categorical_tasks else args.chatcore_max_sample
-            max_problems = None if limit < 0 else limit # -1 means no limit
-            acc = run_chat_eval(task_name, orig_model, tokenizer, engine,
-                                batch_size=args.device_batch_size, max_problems=max_problems)
-            task_results[task_name] = acc
-            print0(f"  {task_name}: {100*acc:.2f}%")
+    # chatcore_results = {}
+    # if args.chatcore_every > 0 and (last_step or (step > 0 and step % args.chatcore_every == 0)):
+    #     model.eval()
+    #     engine = Engine(orig_model, tokenizer)
+    #     all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
+    #     categorical_tasks = {'ARC-Easy', 'ARC-Challenge', 'MMLU'}
+    #     baseline_accuracies = {
+    #         'ARC-Easy': 0.25, 'ARC-Challenge': 0.25, 'MMLU': 0.25,
+    #         'GSM8K': 0.0, 'HumanEval': 0.0, 'SpellingBee': 0.0,
+    #     }
+    #     task_results = {}
+    #     for task_name in all_tasks:
+    #         limit = args.chatcore_max_cat if task_name in categorical_tasks else args.chatcore_max_sample
+    #         max_problems = None if limit < 0 else limit # -1 means no limit
+    #         acc = run_chat_eval(task_name, orig_model, tokenizer, engine,
+    #                             batch_size=args.device_batch_size, max_problems=max_problems)
+    #         task_results[task_name] = acc
+    #         print0(f"  {task_name}: {100*acc:.2f}%")
         
-        # Compute ChatCORE metrics (mean centered accuracy, ranges from 0=random to 1=perfect)
-        def centered_mean(tasks):
-            return sum((task_results[t] - baseline_accuracies[t] / (1.0 - baseline_accuracies) for t in tasks))
-        chatcore = centered_mean(all_tasks)
-        chatcore_cat = centered_mean(categorical_tasks)
-        print0(f"Step {step:05d} | ChatCORE: {chatcore:.4f} | ChatCORE_cat: {chatcore_cat:.4f}")
-        wandb_run.log({
-            "step": step,
-            "total_training_flops": flops_so_far,
-            "chatcore_metric": chatcore,
-            "chatcore_cat": chatcore_cat,
-            **{f"chatcore/{task_name}": acc for task_name, acc in task_results.items()},
-        })
-        model.train()
+    #     # Compute ChatCORE metrics (mean centered accuracy, ranges from 0=random to 1=perfect)
+    #     def centered_mean(tasks):
+    #         return sum((task_results[t] - baseline_accuracies[t] / (1.0 - baseline_accuracies) for t in tasks))
+    #     chatcore = centered_mean(all_tasks)
+    #     chatcore_cat = centered_mean(categorical_tasks)
+    #     print0(f"Step {step:05d} | ChatCORE: {chatcore:.4f} | ChatCORE_cat: {chatcore_cat:.4f}")
+    #     wandb_run.log({
+    #         "step": step,
+    #         "total_training_flops": flops_so_far,
+    #         "chatcore_metric": chatcore,
+    #         "chatcore_cat": chatcore_cat,
+    #         **{f"chatcore/{task_name}": acc for task_name, acc in task_results.items()},
+    #     })
+    #     model.train()
 
 
     # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
@@ -452,6 +452,88 @@ while True:
         )
     if last_step:
         break
+
+    # single training step 
+    # evalaute the gradient
+    synchronize()
+    t0 = time.time()
+    model.train()
+    for micro_step in range(grad_accum_steps):
+        loss = model(x, y)
+        train_loss = loss.detach()
+        # print(train_loss)
+        loss = loss / grad_accum_steps
+        if scalar is not None:
+            scalar.scale(loss).backward()
+        else:
+            loss.backward()
+        # x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+        x, y = next(train_loader)
+        progress = max(progress, approx_progress) # only increase progress monotonically
+    
+    # step the optimizer
+    lrm = get_lr_multiplier(progress)
+    print("LRM:", lrm)
+    moun_momentum = get_muon_momentum(step)
+    for group in optimizer.param_groups:
+        group["lr"] = group["inital_lr"] * lrm
+        if group["kind"] == "moun":
+            group["momentum"] = moun_momentum
+
+    if scalar is not None:
+        scalar.unscale_(optimizer)
+        if is_ddp_initialized():
+            for v in scalar._found_inf_per_device(optimizer).values():
+                dist.all_reduce(v, op=dist.ReduceOp.MAX)
+            scalar.step(optimizer)
+            scalar.update()
+    else:
+        optimizer.step()
+    model.zero_grad(set_to_none=True)
+    synchronize()
+    t1 = time.time()
+    dt = t1 - t0
+
+    step += 1
+    
+    # logging
+    smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item() # EMA the training loss
+    debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step+1)) # debias the EMA
+    pct_done = 100 * progress
+    tok_per_sec = int(args.total_batch_size / dt)
+    flops_per_sec = num_flops_per_token * args.total_batch_size / dt
+    mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size) 
+    
+    if step > 10:
+        total_training_time += dt # only count the time after the first 10 steps
+    print0(f"step {step:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {current_epoch} | total time: {total_training_time/60:.2f}m")
+    if step % 10 == 0:
+        wandb_run.log({
+            "step": step,
+            "total_training_flops": flops_so_far,
+            "total_training_time": total_training_time,
+            "train/loss": debiased_smooth_loss,
+            "train/lrm": lrm,
+            "train/dt": dt,
+            "train/tok_per_sec": tok_per_sec,
+            "train/mfu": mfu,
+            "train/epoch": current_epoch,
+        })
+    
+    # The garbage collector spends ~500ms scanning for cycles quite frequently.
+    # We manually manage it to avoid these pauses during training.
+    if step == 1:
+        gc.collect() # manually collect a lot garbage from setup
+        gc.freeze() # freeze all currently surviving objects and exclude them from GC
+        gc.disable() # disable GC entirely except
+    elif step % 500 == 0:
+        gc.collect()
+
+
+
+
+
+    
 
 
 
