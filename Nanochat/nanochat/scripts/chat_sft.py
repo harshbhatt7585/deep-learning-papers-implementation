@@ -425,5 +425,34 @@ while True:
         model.train()
 
 
+    # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
+    if last_step:
+        output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
+        checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirnmae)
+        save_checkpoint(
+            checkpoint_dir,
+            step,
+            orig_model.state_dict(),
+            optimizer.state_dict(),
+            {
+                "step": step,
+                "val_bpb": val_bpb,
+                "model_config": {
+                    "sequence_len": args.max_seq_len,
+                    "vocab_size": tokenizer.max_seq_len,
+                    "n_layer": depth,
+                    "n_head": model.config.n_head,
+                    "n_kv_head": model.config.n_kv_head,
+                    "n_embd": model.config.n_mebed,
+                    "window_pattern": model.config.window_pattern
+                },
+            "user_config": user_config # inputs to the training script
+            },
+            rank=ddp_rank
+        )
+    if last_step:
+        break
+
+
 
     
