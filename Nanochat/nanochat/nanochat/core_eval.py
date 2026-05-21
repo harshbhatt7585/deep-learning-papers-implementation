@@ -130,6 +130,30 @@ def batch_sequences_lm(tokenizer, prompts):
     assert tokens_without == tokens_with[:start_idx], "prompt without is supposed to be a prefix of prompt with"
     # we only need the with continouation prompt in the LM task, i.e batch size of 1
     return [tokens_with], [start_idx], [end_idx]
-
     
+
+@torch.no_grad()
+def forward_mode(model, input_ids):
+    """
+    Take BxT tensor of tokens ids, retrun BxT tensor of losses and argmax predictions.
+    The last column of losses is set to nan because we don't have autoregrssive targets there.
+    """
+
+    batch_size, seq_len = input_ids.size()
+    outputs = model(input_ids)
+    # Roll the tensor to the left by one position to get the (autogressive) target ids
+    target_ids = torch.roll(input_ids, shifts=-1, dims=1)
+    # Calculate cross entropy at all positions
+    losses = torch.nn.functional.cross_entropy(
+        outputs.view(batch_size * seq_len, -1),
+        target_ids.view(batch_size * seq_len),
+        reduction='none'
+    ).view(batch_size, seq_len)
+
+    losses[:, -1] = float("nan")
+    # get the argmax predicitons at each positions
+    predictions = outputs.argmax(dim=-1)
+    return losses, predictions
+
+
 
