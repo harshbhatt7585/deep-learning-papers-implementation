@@ -121,3 +121,15 @@ def batch_sequences_mc(tokenizer, prompts):
     return tokens, start_indices, end_indices
 
 
+def batch_sequences_lm(tokenizer, prompts):
+    # In LM tasks, we have two prompts: without and with continouation
+    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())
+    tokens_without, tokens_with = tokens
+    start_idx, end_idx = len(tokens_without), len(tokens_with)
+    assert start_idx < end_idx, "prompt without is suposed to be  aprefix of prompt with"
+    assert tokens_without == tokens_with[:start_idx], "prompt without is supposed to be a prefix of prompt with"
+    # we only need the with continouation prompt in the LM task, i.e batch size of 1
+    return [tokens_with], [start_idx], [end_idx]
+
+    
+
