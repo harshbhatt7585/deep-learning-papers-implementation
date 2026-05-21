@@ -8,6 +8,8 @@ from jinja2 import Template
 import torch
 import torch.distributed as dist
 
+from tinytext.core_eval import batch_sequences_schema
+
 # Prompt rendering utilities
 
 def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None):
@@ -133,7 +135,7 @@ def batch_sequences_lm(tokenizer, prompts):
     
 
 @torch.no_grad()
-def forward_mode(model, input_ids):
+def forward_model(model, input_ids):
     """
     Take BxT tensor of tokens ids, retrun BxT tensor of losses and argmax predictions.
     The last column of losses is set to nan because we don't have autoregrssive targets there.
@@ -155,5 +157,88 @@ def forward_mode(model, input_ids):
     predictions = outputs.argmax(dim=-1)
     return losses, predictions
 
+
+@torch.no_grad()
+def evalaute_example(
+    idx,
+    model,
+    tokenizer,
+    data,
+    device,
+    task_meta
+):
+    """Evalaute a single example, return True if correct, False otherwise"""
+    item = data[idx]
+    task_type = task_meta["task_type"]
+    num_fewshot = task_meta["num_fewshot"]
+    continuation_delimiter = task_meta['continuation_delimiter']
+
+    # Sample few-shot examples  (excuding current item)
+    fewshot_examples = []
+    if num_fewshot > 0:
+        rng = random.Random(1234 + idx)
+        available_indices = [i for i in range(len(data)) if i!= idx]
+        fewshot_indices = rng.sample(available_indices, num_fewshot)
+        fewshot_examples = [data[i] for i in fewshot_indices]
+    
+    # Render prompts and batch sequences based on task type
+    if task_type == "multiple_choice":
+        prompts = render_prompts_mc(item, continuation_delimiter, fewshot_examples)
+        tokens, start_idx, end_idx = batch_sequences_mc(tokenizer, prompts)
+    elif task_type == "schema":
+        prompts = render_prompts_schema(item, continuation_delimiter, fewshot_examples)
+        tokens, start_idxs, end_idxs = batch_sequences_schema(tokenizer, prompts)
+    elif task_type == "language_modeling":
+        prompts = render_prompts_lm(item, continuation_delimiter, fewshot_examples)
+        tokens, start_idx, end_idxs = batch_sequences_lm(tokenizer, prompts)
+    else:
+        raise ValueError()
+    
+    # Some models can't forward sequences beyond a certain length (e.g. GPT-2)
+    # In these cases, we have to truncate sequences to max length and adjust the indices
+    if hasattr(model, "max_seq_len") and model.max_seq_len is not None:
+        max_tokens = model.max_seq_len
+        new_tokens, new_start_idxs, new_end_idxs = [], [], []
+        for t,s,e in zip(tokens, start_idxs, end_idxs):
+            if len(t) > max_tokens:
+                num_to_crop = len(t) - max_tokens
+                new_tokens.append((t[-max_tokens:])) # take the last max_tokens tokens
+                new_start_idxs.append(e - num_to_crop)
+                assert s - num_to_crop >= 0, "This should never happen right?"
+                assert e - num_to_crop >= 0, "This should never happen right?"
+            else:
+                new_tokens.append(t)
+                new_start_idxs.append(s)
+                new_end_idxs.append(e)
+        
+        tokens, start_idxs, end_idxs = new_tokens, new_start_idxs, new_end_idxs
+
+    # stack up all the sequences into a batch
+    pad_token_id = tokenizer.get_bos_token_id() # use BOS as pad token is ok
+    input_ids = stack_sequences(tokens, pad_token_id)
+    input_ids = input_ids.to(device)
+
+    # Forward the model, get the autoregressive loss and argmax prediction at each token
+    losses, predictions = forward_model(model, input_ids)
+
+
+    # See if the losses/predictions come out correctly 
+    if task_type == "language_modeling":
+        # language modeling task is curretly always batch size 1
+        si = start_idxs[0]
+        ei = end_idxs[0]
+        # predictions[i] predict input_ids[i+1] autoregressively
+        predicted_tokens = predictions[0, si-1:ei-1]
+        actual_tokens = input_ids[0, si:ei]
+        is_correct = torch.all(predicted_tokens == actual_tokens).item()
+    elif task_type in ["multuple_choice", "schema"]:
+        mean_losses = [losses[i, si-1:ei-1].mean().item()
+                            for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
+        pred_idx = mean_losses.index(min(mean_losses))
+        is_correct = pred_idx == item['gold']
+    else:
+        raise ValueError(f"Unsupported task type: {task_type}")
+    
+    return is_correct
 
 
