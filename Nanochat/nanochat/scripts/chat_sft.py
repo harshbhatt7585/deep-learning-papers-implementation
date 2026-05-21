@@ -530,10 +530,29 @@ while True:
         gc.collect()
 
 
+# print a few more stats
+print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
+print0(f"Total training time: {total_training_time/60:.2f}m")
+print0(f"Minimum validation bpb: {min_val_bpb:.4f}")
 
 
 
-    
+# Log to report
+from nanochat.report import get_report
+get_report().log(section="SFT", data=[
+    user_config, # CLI args
+    { # stats about the training setup
+        "Number of iterations": step,
+        "DDP world size": ddp_world_size,
+    },
+    { # stats about training outcomes
+        "Minimum validation bpb": min_val_bpb,
+    }
+])
+
+# cleanup
+wandb_run.finish() # wandb run finish
+compute_cleanup()
 
 
 
