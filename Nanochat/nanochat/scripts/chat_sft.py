@@ -371,58 +371,58 @@ while True:
         last_step = bool(last_step_tensor.item())
 
 
-    # if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
-    #     model.eval()
-    #     val_loader = build_val_loader()
-    #     eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
-    #     val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
-    #     print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
-    #     if val_bpb < min_val_bpb:
-    #         min_val_bpb = val_bpb
+    if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
+        model.eval()
+        val_loader = build_val_loader()
+        eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
+        val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
+        if val_bpb < min_val_bpb:
+            min_val_bpb = val_bpb
         
-    #     wandb_run.log({
-    #         "step": step,
-    #         "total_training_flops": flops_so_far,
-    #         "total_training_time": total_training_time,
-    #         "val/bpb": val_bpb
-    #     })
-    #     model.train()
+        wandb_run.log({
+            "step": step,
+            "total_training_flops": flops_so_far,
+            "total_training_time": total_training_time,
+            "val/bpb": val_bpb
+        })
+        model.train()
     
-    # Once in a while: estimate that ChatCORE metrics (all ranks participate)
-    # use the original uncompiled model because the inputs keep changing shape
-    # chatcore_results = {}
-    # if args.chatcore_every > 0 and (last_step or (step > 0 and step % args.chatcore_every == 0)):
-    #     model.eval()
-    #     engine = Engine(orig_model, tokenizer)
-    #     all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
-    #     categorical_tasks = {'ARC-Easy', 'ARC-Challenge', 'MMLU'}
-    #     baseline_accuracies = {
-    #         'ARC-Easy': 0.25, 'ARC-Challenge': 0.25, 'MMLU': 0.25,
-    #         'GSM8K': 0.0, 'HumanEval': 0.0, 'SpellingBee': 0.0,
-    #     }
-    #     task_results = {}
-    #     for task_name in all_tasks:
-    #         limit = args.chatcore_max_cat if task_name in categorical_tasks else args.chatcore_max_sample
-    #         max_problems = None if limit < 0 else limit # -1 means no limit
-    #         acc = run_chat_eval(task_name, orig_model, tokenizer, engine,
-    #                             batch_size=args.device_batch_size, max_problems=max_problems)
-    #         task_results[task_name] = acc
-    #         print0(f"  {task_name}: {100*acc:.2f}%")
+    Once in a while: estimate that ChatCORE metrics (all ranks participate)
+    use the original uncompiled model because the inputs keep changing shape
+    chatcore_results = {}
+    if args.chatcore_every > 0 and (last_step or (step > 0 and step % args.chatcore_every == 0)):
+        model.eval()
+        engine = Engine(orig_model, tokenizer)
+        all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
+        categorical_tasks = {'ARC-Easy', 'ARC-Challenge', 'MMLU'}
+        baseline_accuracies = {
+            'ARC-Easy': 0.25, 'ARC-Challenge': 0.25, 'MMLU': 0.25,
+            'GSM8K': 0.0, 'HumanEval': 0.0, 'SpellingBee': 0.0,
+        }
+        task_results = {}
+        for task_name in all_tasks:
+            limit = args.chatcore_max_cat if task_name in categorical_tasks else args.chatcore_max_sample
+            max_problems = None if limit < 0 else limit # -1 means no limit
+            acc = run_chat_eval(task_name, orig_model, tokenizer, engine,
+                                batch_size=args.device_batch_size, max_problems=max_problems)
+            task_results[task_name] = acc
+            print0(f"  {task_name}: {100*acc:.2f}%")
         
-    #     # Compute ChatCORE metrics (mean centered accuracy, ranges from 0=random to 1=perfect)
-    #     def centered_mean(tasks):
-    #         return sum((task_results[t] - baseline_accuracies[t] / (1.0 - baseline_accuracies) for t in tasks))
-    #     chatcore = centered_mean(all_tasks)
-    #     chatcore_cat = centered_mean(categorical_tasks)
-    #     print0(f"Step {step:05d} | ChatCORE: {chatcore:.4f} | ChatCORE_cat: {chatcore_cat:.4f}")
-    #     wandb_run.log({
-    #         "step": step,
-    #         "total_training_flops": flops_so_far,
-    #         "chatcore_metric": chatcore,
-    #         "chatcore_cat": chatcore_cat,
-    #         **{f"chatcore/{task_name}": acc for task_name, acc in task_results.items()},
-    #     })
-    #     model.train()
+        # Compute ChatCORE metrics (mean centered accuracy, ranges from 0=random to 1=perfect)
+        def centered_mean(tasks):
+            return sum((task_results[t] - baseline_accuracies[t] / (1.0 - baseline_accuracies) for t in tasks))
+        chatcore = centered_mean(all_tasks)
+        chatcore_cat = centered_mean(categorical_tasks)
+        print0(f"Step {step:05d} | ChatCORE: {chatcore:.4f} | ChatCORE_cat: {chatcore_cat:.4f}")
+        wandb_run.log({
+            "step": step,
+            "total_training_flops": flops_so_far,
+            "chatcore_metric": chatcore,
+            "chatcore_cat": chatcore_cat,
+            **{f"chatcore/{task_name}": acc for task_name, acc in task_results.items()},
+        })
+        model.train()
 
 
     # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
