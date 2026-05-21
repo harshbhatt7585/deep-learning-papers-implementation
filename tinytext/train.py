@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import time
 from contextlib import nullcontext
@@ -1344,6 +1345,15 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             )
             log(f"saved checkpoint: {args.out_dir / 'checkpoint.pt'}")
             log_train_metrics(wandb_run, step_id, {"checkpoint/step": step_id})
+
+        # The garbage collector spends ~500ms scanning for cycles quite frequently.
+        # We manually manage it to avoid these pauses during training.
+        if step == start_step:
+            gc.collect()  # manually collect a lot of garbage from setup
+            gc.freeze()  # freeze all currently surviving objects and exclude them from GC
+            gc.disable()  # disable GC entirely except:
+        elif step_id % 5000 == 0:
+            gc.collect()  # manually collect, just to be safe for very long runs
 
     if is_main_process():
         save_checkpoint(
