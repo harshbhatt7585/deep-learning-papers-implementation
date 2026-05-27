@@ -21,7 +21,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from core_eval import ensure_eval_bundle, evaluate_core
 from fp8 import disable_fp8
-from model import TextDiffusionConfig, TextDiffusionModel
+from model import TextDiffusionConfig, TextDiffusionModel, generate_causal
 from nanochat_optim import DistMuonAdamW, MuonAdamW
 from tokenizer import NanochatTokenizer
 from train import apply_fp8_training, fp8_module_filter
@@ -45,6 +45,21 @@ from utils import (
 
 IGNORE_INDEX = -100
 WORD_LIST_URL = "https://raw.githubusercontent.com/dwyl/english-words/refs/heads/master/words_alpha.txt"
+SAMPLE_USER_PROMPTS = [
+    "Write a short polite reply to: I am feeling nervous about an exam.",
+    "Explain photosynthesis in two sentences.",
+    (
+        "Multiple Choice question: What gas do plants absorb during photosynthesis?\n"
+        "- Oxygen=A\n"
+        "- Carbon dioxide=B\n"
+        "- Nitrogen=C\n"
+        "- Helium=D\n\n"
+        "Respond only with the letter of the correct answer."
+    ),
+    "Sarah has 3 bags with 4 apples each. She eats 2 apples. How many apples are left?",
+    "Spell the word: strawberry",
+    "How many r are in the word strawberry?",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,6 +84,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--core-every", "--chatcore-every", dest="core_every", type=int, default=-1)
     parser.add_argument("--core-eval-max-per-task", type=int, default=500)
     parser.add_argument("--core-eval-cache-dir", type=Path, default=Path("data/core_eval"))
+    parser.add_argument("--sample-every", type=int, default=200)
+    parser.add_argument("--sample-length", type=int, default=128)
+    parser.add_argument("--sample-temperature", type=float, default=0.6)
+    parser.add_argument("--sample-top-k", type=int, default=50)
+    parser.add_argument("--sample-top-p", type=float, default=None)
 
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="muon")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -646,6 +666,37 @@ def evaluate_core_metric(model: torch.nn.Module, tokenizer: NanochatTokenizer, a
     return {"core": float(results["core_metric"])}
 
 
+@torch.no_grad()
+def sample_text(model: torch.nn.Module, tokenizer: NanochatTokenizer, args: argparse.Namespace, runtime: Runtime) -> str:
+    source = unwrap_model(model)
+    source.eval()
+    samples = []
+    user_start = special_id(tokenizer, "<|user_start|>")
+    user_end = special_id(tokenizer, "<|user_end|>")
+    assistant_start = special_id(tokenizer, "<|assistant_start|>")
+    with disable_fp8(source):
+        for prompt in SAMPLE_USER_PROMPTS:
+            prompt_ids_list = [tokenizer.bos_token_id, user_start]
+            prompt_ids_list.extend(tokenizer.encode(prompt))
+            prompt_ids_list.extend([user_end, assistant_start])
+            prompt_ids = torch.tensor(prompt_ids_list, dtype=torch.long, device=runtime.device)
+            output = generate_causal(
+                source,
+                prompt_ids,
+                gen_length=args.sample_length,
+                temperature=args.sample_temperature,
+                top_k=args.sample_top_k,
+                top_p=args.sample_top_p,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+            decoded = tokenizer.decode(output.detach().cpu().tolist(), skip_special=False)
+            samples.append(f"USER:\n{prompt}\n\nMODEL:\n{decoded}")
+    sample = "\n\n---\n\n".join(samples)
+    log("samples:\n" + sample)
+    source.train()
+    return sample
+
+
 def log_wandb(wandb_run: Any, metrics: dict[str, float], step: int) -> None:
     if wandb_run is not None and is_main_process():
         wandb_run.log(metrics, step=step)
@@ -730,6 +781,13 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         smooth_loss = train_loss if step == 1 else 0.9 * smooth_loss + 0.1 * train_loss
         log(f"step {step:05d} train_loss {train_loss:.4f} smooth {smooth_loss:.4f} lr {lr:.2e} tok/s {valid_tokens / max(elapsed, 1e-9):,.0f}")
         log_wandb(wandb_run, {"train/loss": train_loss, "train/smooth_loss": smooth_loss, "train/lr": lr, "train/tokens": step * args.total_batch_size}, step)
+
+        if args.sample_every > 0 and step % args.sample_every == 0 and is_main_process():
+            sample = sample_text(model, tokenizer, args, runtime)
+            if wandb_run is not None:
+                import wandb
+
+                wandb_run.log({"sample/text": wandb.Html(f"<pre>{sample}</pre>")}, step=step)
 
         if is_main_process() and args.save_every > 0 and step % args.save_every == 0:
             save_checkpoint(out_dir=args.out_dir, model=model, tokenizer=tokenizer, optimizer=optimizer, scaler=scaler, step=step, args=args)
