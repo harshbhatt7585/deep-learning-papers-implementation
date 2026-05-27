@@ -433,12 +433,10 @@ class SFTBatcher:
         row_capacity = self.args.seq_len + 1
         rows: list[list[int]] = []
         masks: list[list[int]] = []
-        row_lengths: list[int] = []
 
         for _ in range(self.args.batch_size):
             row: list[int] = []
             mask_row: list[int] = []
-            content_len = 0
             while len(row) < row_capacity:
                 self.refill()
                 remaining = row_capacity - len(row)
@@ -449,7 +447,6 @@ class SFTBatcher:
                         best_idx = i
                         best_len = len(conv_ids)
                 if best_idx < 0:
-                    content_len = len(row)
                     row.extend([self.tokenizer.bos_token_id] * remaining)
                     mask_row.extend([0] * remaining)
                     break
@@ -457,10 +454,8 @@ class SFTBatcher:
                 row.extend(conv_ids)
                 mask_row.extend(conv_mask)
                 self.consumed += world_size()
-                content_len = len(row)
             rows.append(row[:row_capacity])
             masks.append(mask_row[:row_capacity])
-            row_lengths.append(min(content_len, row_capacity))
 
         self.it += 1
         if self.split == "train":
@@ -480,9 +475,6 @@ class SFTBatcher:
         y = batch[:, 1:].to(self.runtime.device, non_blocking=use_cuda).contiguous()
         target_mask = mask_tensor[:, 1:].to(self.runtime.device, non_blocking=use_cuda)
         y = y.masked_fill(~target_mask, IGNORE_INDEX)
-        for row_idx, content_len in enumerate(row_lengths):
-            if content_len < row_capacity:
-                y[row_idx, max(0, content_len - 1):] = IGNORE_INDEX
         return x, y
 
 
@@ -625,6 +617,9 @@ def sft_loss(model: torch.nn.Module, x: torch.Tensor, y: torch.Tensor) -> tuple[
 
 @torch.no_grad()
 def evaluate_sft(model: torch.nn.Module, batcher: SFTBatcher, args: argparse.Namespace, runtime: Runtime) -> dict[str, float]:
+    batcher.cursor = rank()
+    batcher.consumed = rank()
+    batcher.conv_buffer.clear()
     model.eval()
     total_loss = 0.0
     total_tokens = 0
@@ -762,7 +757,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     loss, valid = sft_loss(model, x, y)
                     scaled_loss = loss / args.grad_accum_steps
                 scaler.scale(scaled_loss).backward()
-            train_loss += float(loss.detach().item())
+            train_loss += float(loss.detach().item()) * valid
             valid_tokens += valid
 
         if is_dist():
@@ -777,7 +772,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         elapsed = time.time() - start
         total_time += elapsed
         step += 1
-        train_loss /= args.grad_accum_steps
+        train_loss /= max(1, valid_tokens)
         smooth_loss = train_loss if step == 1 else 0.9 * smooth_loss + 0.1 * train_loss
         log(f"step {step:05d} train_loss {train_loss:.4f} smooth {smooth_loss:.4f} lr {lr:.2e} tok/s {valid_tokens / max(elapsed, 1e-9):,.0f}")
         log_wandb(wandb_run, {"train/loss": train_loss, "train/smooth_loss": smooth_loss, "train/lr": lr, "train/tokens": step * args.total_batch_size}, step)
