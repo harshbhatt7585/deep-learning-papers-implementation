@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+from dataclasses import dataclass
 import gc
 import json
-import math
-import os
 import random
-import sys
 import time
 import urllib.request
 from contextlib import nullcontext
@@ -33,7 +31,6 @@ from tokenizer import NanochatTokenizer
 from train import apply_fp8_training, fp8_module_filter
 from utils import (
     Runtime,
-    args_as_plain_dict,
     autocast_context,
     cleanup_distributed,
     create_runtime,
@@ -143,6 +140,17 @@ class Task:
         raise NotImplementedError
 
 
+class HuggingFaceTask(Task):
+    def __init__(self, path: str, *dataset_args: str, split: str, stop: int | None = None) -> None:
+        from datasets import load_dataset
+
+        self.ds = load_dataset(path, *dataset_args, split=split).shuffle(seed=42)
+        self.stop = stop
+
+    def __len__(self) -> int:
+        return min(len(self.ds), self.stop) if self.stop is not None else len(self.ds)
+
+
 class TaskMixture(Task):
     def __init__(self, tasks: list[Task]) -> None:
         self.tasks = tasks
@@ -161,14 +169,9 @@ class TaskMixture(Task):
         return self.tasks[task_idx][local_idx]
 
 
-class SmolTalk(Task):
+class SmolTalk(HuggingFaceTask):
     def __init__(self, split: str) -> None:
-        from datasets import load_dataset
-
-        self.ds = load_dataset("HuggingFaceTB/smol-smoltalk", split=split).shuffle(seed=42)
-
-    def __len__(self) -> int:
-        return len(self.ds)
+        super().__init__("HuggingFaceTB/smol-smoltalk", split=split)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         return {"messages": self.ds[index]["messages"]}
@@ -181,17 +184,11 @@ def render_mc(question: str, letters: tuple[str, ...], choices: list[str]) -> st
     return query
 
 
-class MMLU(Task):
+class MMLU(HuggingFaceTask):
     letters = ("A", "B", "C", "D")
 
     def __init__(self, split: str, stop: int | None = None) -> None:
-        from datasets import load_dataset
-
-        self.ds = load_dataset("cais/mmlu", "all", split=split).shuffle(seed=42)
-        self.stop = stop
-
-    def __len__(self) -> int:
-        return min(len(self.ds), self.stop) if self.stop is not None else len(self.ds)
+        super().__init__("cais/mmlu", "all", split=split, stop=stop)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.ds[index]
@@ -204,16 +201,10 @@ class MMLU(Task):
         }
 
 
-class ARC(Task):
+class ARC(HuggingFaceTask):
     def __init__(self, subset: str, split: str, stop: int | None = None) -> None:
-        from datasets import load_dataset
-
         assert subset in ("ARC-Easy", "ARC-Challenge")
-        self.ds = load_dataset("allenai/ai2_arc", subset, split=split).shuffle(seed=42)
-        self.stop = stop
-
-    def __len__(self) -> int:
-        return min(len(self.ds), self.stop) if self.stop is not None else len(self.ds)
+        super().__init__("allenai/ai2_arc", subset, split=split, stop=stop)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.ds[index]
@@ -227,15 +218,9 @@ class ARC(Task):
         }
 
 
-class HumanEval(Task):
+class HumanEval(HuggingFaceTask):
     def __init__(self, stop: int | None = None) -> None:
-        from datasets import load_dataset
-
-        self.ds = load_dataset("openai/openai_humaneval", split="test").shuffle(seed=42)
-        self.stop = stop
-
-    def __len__(self) -> int:
-        return min(len(self.ds), self.stop) if self.stop is not None else len(self.ds)
+        super().__init__("openai/openai_humaneval", split="test", stop=stop)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.ds[index]
@@ -249,15 +234,9 @@ class HumanEval(Task):
         }
 
 
-class GSM8K(Task):
+class GSM8K(HuggingFaceTask):
     def __init__(self, split: str, stop: int | None = None) -> None:
-        from datasets import load_dataset
-
-        self.ds = load_dataset("openai/gsm8k", "main", split=split).shuffle(seed=42)
-        self.stop = stop
-
-    def __len__(self) -> int:
-        return min(len(self.ds), self.stop) if self.stop is not None else len(self.ds)
+        super().__init__("openai/gsm8k", "main", split=split, stop=stop)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         import re
@@ -392,6 +371,31 @@ def special_id(tokenizer: NanochatTokenizer, text: str) -> int:
     return int(token_id)
 
 
+@dataclass(frozen=True)
+class ChatSpecialIds:
+    user_start: int
+    user_end: int
+    assistant_start: int
+    assistant_end: int
+    python_start: int
+    python_end: int
+    output_start: int
+    output_end: int
+
+    @classmethod
+    def from_tokenizer(cls, tokenizer: NanochatTokenizer) -> "ChatSpecialIds":
+        return cls(
+            user_start=special_id(tokenizer, "<|user_start|>"),
+            user_end=special_id(tokenizer, "<|user_end|>"),
+            assistant_start=special_id(tokenizer, "<|assistant_start|>"),
+            assistant_end=special_id(tokenizer, "<|assistant_end|>"),
+            python_start=special_id(tokenizer, "<|python_start|>"),
+            python_end=special_id(tokenizer, "<|python_end|>"),
+            output_start=special_id(tokenizer, "<|output_start|>"),
+            output_end=special_id(tokenizer, "<|output_end|>"),
+        )
+
+
 def render_conversation(
     tokenizer: NanochatTokenizer,
     conversation: dict[str, Any],
@@ -415,14 +419,7 @@ def render_conversation(
         messages = messages[1:]
 
     add(tokenizer.bos_token_id, 0)
-    user_start = special_id(tokenizer, "<|user_start|>")
-    user_end = special_id(tokenizer, "<|user_end|>")
-    assistant_start = special_id(tokenizer, "<|assistant_start|>")
-    assistant_end = special_id(tokenizer, "<|assistant_end|>")
-    python_start = special_id(tokenizer, "<|python_start|>")
-    python_end = special_id(tokenizer, "<|python_end|>")
-    output_start = special_id(tokenizer, "<|output_start|>")
-    output_end = special_id(tokenizer, "<|output_end|>")
+    specials = ChatSpecialIds.from_tokenizer(tokenizer)
 
     for i, message in enumerate(messages):
         expected = "user" if i % 2 == 0 else "assistant"
@@ -432,11 +429,11 @@ def render_conversation(
         if expected == "user":
             if not isinstance(content, str):
                 break
-            add(user_start, 0)
+            add(specials.user_start, 0)
             add(tokenizer.encode(content), 0)
-            add(user_end, 0)
+            add(specials.user_end, 0)
         else:
-            add(assistant_start, 0)
+            add(specials.assistant_start, 0)
             if isinstance(content, str):
                 add(tokenizer.encode(content), 1)
             elif isinstance(content, list):
@@ -445,14 +442,14 @@ def render_conversation(
                     if part["type"] == "text":
                         add(text_ids, 1)
                     elif part["type"] == "python":
-                        add(python_start, 1)
+                        add(specials.python_start, 1)
                         add(text_ids, 1)
-                        add(python_end, 1)
+                        add(specials.python_end, 1)
                     elif part["type"] == "python_output":
-                        add(output_start, 0)
+                        add(specials.output_start, 0)
                         add(text_ids, 0)
-                        add(output_end, 0)
-            add(assistant_end, 1)
+                        add(specials.output_end, 0)
+            add(specials.assistant_end, 1)
         if len(ids) >= max_tokens:
             break
     return ids[:max_tokens], mask[:max_tokens]
@@ -661,15 +658,60 @@ def lr_multiplier(progress: float, args: argparse.Namespace) -> float:
     return (1.0 - decay) + decay * args.final_lr_frac
 
 
+def all_reduce_sum(tensor: torch.Tensor) -> torch.Tensor:
+    if is_dist():
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor
+
+
+def reduce_pass_counts(num_passed: int, total: int, device: torch.device) -> tuple[int, int]:
+    counts = torch.tensor([num_passed, total], dtype=torch.long, device=device)
+    all_reduce_sum(counts)
+    return int(counts[0].item()), int(counts[1].item())
+
+
+@dataclass
+class LossAccumulator:
+    total: torch.Tensor
+    main: torch.Tensor
+    mtp: torch.Tensor
+    tokens: torch.Tensor
+
+    @classmethod
+    def empty(cls, device: torch.device, dtype: torch.dtype) -> "LossAccumulator":
+        zero = torch.zeros((), device=device, dtype=dtype)
+        return cls(total=zero.clone(), main=zero.clone(), mtp=zero.clone(), tokens=zero.clone())
+
+    def add(
+        self,
+        total_loss: torch.Tensor,
+        main_loss: torch.Tensor,
+        mtp_loss: torch.Tensor,
+        valid_tokens: torch.Tensor,
+    ) -> None:
+        valid = valid_tokens.to(self.tokens.dtype)
+        self.total += total_loss.detach().to(self.total.dtype) * valid
+        self.main += main_loss.detach().to(self.main.dtype) * valid
+        self.mtp += mtp_loss.detach().to(self.mtp.dtype) * valid
+        self.tokens += valid
+
+    def values(self, *, reduce: bool = False) -> tuple[float, float, float, int]:
+        packed = torch.stack([self.total, self.main, self.mtp, self.tokens])
+        if reduce:
+            all_reduce_sum(packed)
+        total, main, mtp, tokens = packed.tolist()
+        return total, main, mtp, int(tokens)
+
+
 def sft_loss(
     model: torch.nn.Module,
     x: torch.Tensor,
     y: torch.Tensor,
     args: argparse.Namespace,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Returns (total_loss_for_backward, main_loss_detached, aux_mean_detached, valid_tokens_tensor).
+    """Returns (total_loss_for_backward, main_loss_detached, mtp_loss_detached, valid_tokens_tensor).
 
-    All returned tensors stay on-device — no .item() syncs. The caller can defer
+    All returned tensors stay on-device; the caller can defer
     a single sync to log time by accumulating these into tensor buffers.
     """
     source = unwrap_model(model)
@@ -689,7 +731,7 @@ def sft_loss(
     )
     main_loss = main_loss_sum / valid.clamp(min=1)
 
-    aux_mean = torch.zeros((), device=main_loss.device, dtype=main_loss.dtype)
+    mtp_loss = torch.zeros((), device=main_loss.device, dtype=main_loss.dtype)
     if use_mtp and hidden is not None:
         mtp_hidden: torch.Tensor | None = None
         aux_terms: list[torch.Tensor] = []
@@ -720,19 +762,19 @@ def sft_loss(
             else:
                 h_offset = norm(head(hidden[:, :-target_shift, :]))
             aux_logits = source.lm_head(h_offset)
-            aux_valid = (target != IGNORE_INDEX).sum()
-            aux_loss_sum = F.cross_entropy(
+            target_valid = (target != IGNORE_INDEX).sum()
+            mtp_loss_sum = F.cross_entropy(
                 aux_logits.reshape(-1, aux_logits.size(-1)),
                 target.reshape(-1),
                 ignore_index=IGNORE_INDEX,
                 reduction="sum",
             )
-            aux_terms.append(aux_loss_sum / aux_valid.clamp(min=1))
+            aux_terms.append(mtp_loss_sum / target_valid.clamp(min=1))
         if aux_terms:
-            aux_mean = torch.stack(aux_terms).mean()
+            mtp_loss = torch.stack(aux_terms).mean()
 
-    total = main_loss + args.mtp_loss_weight * aux_mean
-    return total, main_loss.detach(), aux_mean.detach(), valid
+    total = main_loss + args.mtp_loss_weight * mtp_loss
+    return total, main_loss.detach(), mtp_loss.detach(), valid
 
 
 @torch.no_grad()
@@ -741,30 +783,21 @@ def evaluate_sft(model: torch.nn.Module, batcher: SFTBatcher, args: argparse.Nam
     batcher.consumed = rank()
     batcher.conv_buffer.clear()
     model.eval()
-    device = runtime.device
-    main_sum = torch.zeros((), device=device, dtype=torch.float64)
-    aux_sum = torch.zeros((), device=device, dtype=torch.float64)
-    token_sum = torch.zeros((), device=device, dtype=torch.float64)
+    losses = LossAccumulator.empty(runtime.device, torch.float64)
     steps = max(1, args.eval_tokens // (args.batch_size * args.seq_len * world_size()))
     for _ in range(steps):
         x, y = batcher.next()
-        with autocast_context(device, args.amp_dtype):
+        with autocast_context(runtime.device, args.amp_dtype):
             with disable_fp8(unwrap_model(model)):
-                _, main_loss, aux_mean, valid = sft_loss(unwrap_model(model), x, y, args)
-        valid_f = valid.to(torch.float64)
-        main_sum += main_loss.to(torch.float64) * valid_f
-        aux_sum += aux_mean.to(torch.float64) * valid_f
-        token_sum += valid_f
-    bundle = torch.stack([main_sum, aux_sum, token_sum])
-    if is_dist():
-        dist.all_reduce(bundle, op=dist.ReduceOp.SUM)
+                total_loss, main_loss, mtp_loss, valid = sft_loss(unwrap_model(model), x, y, args)
+        losses.add(total_loss, main_loss, mtp_loss, valid)
     model.train()
-    values = bundle.tolist()
-    tokens = max(1.0, values[2])
+    _, main_sum, mtp_sum, tokens = losses.values(reduce=True)
+    denom = max(1.0, float(tokens))
     return {
-        "loss": values[0] / tokens,
-        "mtp_loss": values[1] / tokens,
-        "tokens": values[2],
+        "loss": main_sum / denom,
+        "mtp_loss": mtp_sum / denom,
+        "tokens": tokens,
     }
 
 
@@ -779,7 +812,7 @@ def render_prompt_for_completion(
         messages = messages[:-1]
     ids, _ = render_conversation(tokenizer, {"messages": messages}, max_tokens=max_tokens)
     ids = list(ids)
-    ids.append(special_id(tokenizer, "<|assistant_start|>"))
+    ids.append(ChatSpecialIds.from_tokenizer(tokenizer).assistant_start)
     return ids
 
 
@@ -797,11 +830,7 @@ def generate_with_tools(
     use_calculator on <|python_start|>...<|python_end|> spans, force-inserting
     the result inside <|output_start|>...<|output_end|>."""
     bos = tokenizer.bos_token_id
-    assistant_end = special_id(tokenizer, "<|assistant_end|>")
-    python_start = special_id(tokenizer, "<|python_start|>")
-    python_end = special_id(tokenizer, "<|python_end|>")
-    output_start = special_id(tokenizer, "<|output_start|>")
-    output_end = special_id(tokenizer, "<|output_end|>")
+    specials = ChatSpecialIds.from_tokenizer(tokenizer)
 
     device = model.device
     max_seq_len = model.config.max_seq_len
@@ -822,20 +851,20 @@ def generate_with_tools(
             sampled, _ = _sample_tokens(logits[:, -1, :], temperature=temperature, top_k=top_k, top_p=None)
             next_token = int(sampled.item())
         seq.append(next_token)
-        if next_token == assistant_end or next_token == bos:
+        if next_token == specials.assistant_end or next_token == bos:
             break
-        if next_token == python_start:
+        if next_token == specials.python_start:
             in_python = True
             python_expr_tokens = []
-        elif next_token == python_end and in_python:
+        elif next_token == specials.python_end and in_python:
             in_python = False
             expr = tokenizer.decode(python_expr_tokens, skip_special=True)
             result = use_calculator(expr)
             if result is not None:
                 result_tokens = tokenizer.encode(str(result))
-                forced.append(output_start)
+                forced.append(specials.output_start)
                 forced.extend(result_tokens)
-                forced.append(output_end)
+                forced.append(specials.output_end)
             python_expr_tokens = []
         elif in_python:
             python_expr_tokens.append(next_token)
@@ -910,10 +939,7 @@ def _chatcore_categorical(
             gold = conv["messages"][-1]["content"]
             num_passed += int(predicted == gold)
             total += 1
-    if is_dist():
-        t = torch.tensor([num_passed, total], dtype=torch.long, device=runtime.device)
-        dist.all_reduce(t, op=dist.ReduceOp.SUM)
-        num_passed, total = int(t[0].item()), int(t[1].item())
+    num_passed, total = reduce_pass_counts(num_passed, total, runtime.device)
     return num_passed / max(1, total)
 
 
@@ -945,10 +971,7 @@ def _chatcore_generative(
         completion = tokenizer.decode(gen_tokens, skip_special=True)
         num_passed += int(bool(evaluate_fn(conv, completion)))
         total += 1
-    if is_dist():
-        t = torch.tensor([num_passed, total], dtype=torch.long, device=runtime.device)
-        dist.all_reduce(t, op=dist.ReduceOp.SUM)
-        num_passed, total = int(t[0].item()), int(t[1].item())
+    num_passed, total = reduce_pass_counts(num_passed, total, runtime.device)
     return num_passed / max(1, total)
 
 
@@ -1129,25 +1152,17 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         set_lr(optimizer, lr)
         optimizer.zero_grad(set_to_none=True)
         start = time.time()
-        device = runtime.device
-        main_sum = torch.zeros((), device=device, dtype=torch.float32)
-        aux_sum = torch.zeros((), device=device, dtype=torch.float32)
-        total_sum = torch.zeros((), device=device, dtype=torch.float32)
-        valid_sum = torch.zeros((), device=device, dtype=torch.float32)
+        losses = LossAccumulator.empty(runtime.device, torch.float32)
 
         for micro_step in range(args.grad_accum_steps):
             x, y = train_batcher.next()
             sync_context = model.no_sync() if isinstance(model, DDP) and micro_step < args.grad_accum_steps - 1 else nullcontext()
             with sync_context:
                 with autocast_context(runtime.device, args.amp_dtype):
-                    loss, main_loss, aux_mean, valid = sft_loss(model, x, y, args)
+                    loss, main_loss, mtp_loss, valid = sft_loss(model, x, y, args)
                     scaled_loss = loss / args.grad_accum_steps
                 scaler.scale(scaled_loss).backward()
-            valid_f = valid.to(torch.float32)
-            total_sum += loss.detach().to(torch.float32) * valid_f
-            main_sum += main_loss.to(torch.float32) * valid_f
-            aux_sum += aux_mean.to(torch.float32) * valid_f
-            valid_sum += valid_f
+            losses.add(loss, main_loss, mtp_loss, valid)
 
         if is_dist():
             last_step_tensor = torch.tensor(int(train_batcher.last_step), dtype=torch.int32, device=runtime.device)
@@ -1161,13 +1176,11 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         elapsed = time.time() - start
         total_time += elapsed
         step += 1
-        sums = torch.stack([total_sum, main_sum, aux_sum, valid_sum]).tolist()
-        total_loss_sum, main_loss_sum_v, aux_loss_sum_v, valid_tokens_f = sums
-        valid_tokens = int(valid_tokens_f)
+        total_loss_sum, main_loss_sum_v, mtp_loss_sum_v, valid_tokens = losses.values()
         denom = max(1, valid_tokens)
         train_loss = total_loss_sum / denom
         main_loss_val = main_loss_sum_v / denom
-        mtp_loss_val = aux_loss_sum_v / denom
+        mtp_loss_val = mtp_loss_sum_v / denom
         smooth_loss = main_loss_val if step == 1 else 0.9 * smooth_loss + 0.1 * main_loss_val
         log(
             f"step {step:05d} train_loss {train_loss:.4f} main {main_loss_val:.4f} "
