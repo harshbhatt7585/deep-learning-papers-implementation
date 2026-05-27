@@ -1,5 +1,5 @@
 [project]
-name = "text-diffusion"
+name = "tinygroot"
 version = "0.1.0"
 description = "Text MTP training and speculative decoding experiments."
 readme = "BLOG.md"
