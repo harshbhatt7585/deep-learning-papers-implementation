@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from model import TextDiffusionConfig, TextDiffusionModel, generate_causal
+from model import TinyGrootConfig, TinyGrootModel, generate_causal
 from tokenizer import NanochatTokenizer
 
 
@@ -30,9 +30,9 @@ def load_checkpoint(checkpoint_dir: Path, device: torch.device):
         raise ValueError(
             f"unsupported tokenizer_type {tokenizer_type!r}; only nanochat checkpoints are supported"
         )
-    config = TextDiffusionConfig(**checkpoint["config"])
+    config = TinyGrootConfig(**checkpoint["config"])
 
-    model = TextDiffusionModel(config).to(device)
+    model = TinyGrootModel(config).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
     return model, tokenizer, checkpoint

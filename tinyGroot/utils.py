@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model import TextDiffusionModel
+from model import TinyGrootModel
 from tokenizer import NanochatTokenizer
 
 
@@ -232,7 +232,7 @@ def autocast_context(device: torch.device, dtype: str):
     return torch.autocast(device_type="cuda", dtype=torch_dtype)
 
 
-def unwrap_model(model: torch.nn.Module) -> TextDiffusionModel:
+def unwrap_model(model: torch.nn.Module) -> TinyGrootModel:
     if isinstance(model, DDP):
         model = model.module
     if hasattr(model, "_orig_mod"):

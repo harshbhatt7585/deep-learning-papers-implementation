@@ -16,8 +16,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from core_eval import ensure_eval_bundle, evaluate_core
 from flash_attention import describe_attention_backend
 from model import (
-    TextDiffusionConfig,
-    TextDiffusionModel,
+    TinyGrootConfig,
+    TinyGrootModel,
     generate_causal,
     norm,
 )
@@ -100,7 +100,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "aurora_polar_steps": 12,
     "pin_memory": True,
     "seed": 0,
-    "wandb_project": "text-diffusion",
+    "wandb_project": "tinyGroot",
     "wandb_entity": None,
     "wandb_name": None,
     "wandb_group": None,
@@ -130,7 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nanochat-tokenizer-vocab-size", type=int, default=None)
     parser.add_argument("--token-shards-dir", type=Path, default=None)
 
-    parser.add_argument("--out-dir", type=Path, default=Path("runs/text-diffusion-nanochat"))
+    parser.add_argument("--out-dir", type=Path, default=Path("runs/tinygroot-nanochat"))
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -218,7 +218,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusionConfig:
+def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TinyGrootConfig:
     sample_prompt_len = max(
         len(tokenizer.encode(prompt))
         for prompt in [args.sample_prompt, *SAMPLE_PROMPTS]
@@ -243,7 +243,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
                 n_heads = candidate
                 break
 
-    return TextDiffusionConfig(
+    return TinyGrootConfig(
         vocab_size=tokenizer.vocab_size,
         max_seq_len=max_seq_len,
         mask_token_id=tokenizer.mask_token_id,
@@ -266,22 +266,22 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TextDiffusio
 # can reach it without threading it through every helper signature. It's only
 # set when --dflash is selected, and only the main training entry
 # point (build_model -> _build_dflash) writes to it.
-_DFLASH_TARGET: TextDiffusionModel | None = None
+_DFLASH_TARGET: TinyGrootModel | None = None
 
 
 def _load_frozen_target(
     checkpoint_path: Path,
     runtime: Runtime,
-) -> TextDiffusionModel:
-    """Load a target TextDiffusionModel checkpoint into eval/frozen mode."""
+) -> TinyGrootModel:
+    """Load a target TinyGrootModel checkpoint into eval/frozen mode."""
     blob = torch.load(checkpoint_path, map_location=runtime.device, weights_only=False)
     cfg_blob = blob.get("config")
     if cfg_blob is None:
         raise KeyError(f"target checkpoint {checkpoint_path} has no 'config' key")
-    if isinstance(cfg_blob, TextDiffusionConfig):
+    if isinstance(cfg_blob, TinyGrootConfig):
         cfg = cfg_blob
     else:
-        cfg = TextDiffusionConfig(**cfg_blob)
+        cfg = TinyGrootConfig(**cfg_blob)
     state = blob["model_state"]
     cleaned = {}
     for key, value in state.items():
@@ -301,7 +301,7 @@ def _load_frozen_target(
         )
         cfg.n_mtp_heads = 0
 
-    target = TextDiffusionModel(cfg).to(runtime.device)
+    target = TinyGrootModel(cfg).to(runtime.device)
     missing, unexpected = target.load_state_dict(cleaned, strict=False)
     if missing:
         log(f"[dflash] target missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
@@ -318,7 +318,7 @@ def _load_frozen_target(
     return target
 
 
-def _build_dflash_config(args: argparse.Namespace, target: TextDiffusionModel) -> "Any":
+def _build_dflash_config(args: argparse.Namespace, target: TinyGrootModel) -> "Any":
     from dflash_model import DFlashConfig
 
     # Force drafter n_heads to match the target. The drafter shares d_model
@@ -330,7 +330,7 @@ def _build_dflash_config(args: argparse.Namespace, target: TextDiffusionModel) -
     # representation it cross-attends to in x_ctx. q_proj/o_proj parameter
     # counts are identical (d_model -> d_model either way), so this is free.
     # ``args.n_heads`` is ignored for the drafter (still respected by the
-    # cosmetic placeholder TextDiffusionConfig used for logging).
+    # cosmetic placeholder TinyGrootConfig used for logging).
     drafter_n_heads = target.config.n_heads
     drafter_n_kv_heads = target.config.n_kv_heads or target.config.n_heads
     return DFlashConfig(
@@ -462,10 +462,10 @@ def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime
     return model
 
 
-def build_model(args: argparse.Namespace, config: TextDiffusionConfig, runtime: Runtime) -> torch.nn.Module:
+def build_model(args: argparse.Namespace, config: TinyGrootConfig, runtime: Runtime) -> torch.nn.Module:
     if args.dflash:
         return _build_dflash_drafter(args, runtime)
-    model: torch.nn.Module = TextDiffusionModel(config).to(runtime.device)
+    model: torch.nn.Module = TinyGrootModel(config).to(runtime.device)
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
         log("compiling model with torch.compile(dynamic=False)")
@@ -644,7 +644,7 @@ def causal_cross_entropy(logits: torch.Tensor, input_ids: torch.Tensor, *, reduc
 
 def causal_mtp_cross_entropy(
     model: torch.nn.Module,
-    source_model: TextDiffusionModel,
+    source_model: TinyGrootModel,
     input_ids: torch.Tensor,
     *,
     mtp_loss_weight: float,
@@ -687,7 +687,7 @@ def causal_mtp_cross_entropy(
 
 def token_superposition_cross_entropy(
     model: torch.nn.Module,
-    source_model: TextDiffusionModel,
+    source_model: TinyGrootModel,
     input_ids: torch.Tensor,
     *,
     bag_size: int,
@@ -971,7 +971,7 @@ def sample_text(
     return sample
 
 
-def log_startup(args: argparse.Namespace, data: TokenData, config: TextDiffusionConfig, model: torch.nn.Module, runtime: Runtime) -> None:
+def log_startup(args: argparse.Namespace, data: TokenData, config: TinyGrootConfig, model: torch.nn.Module, runtime: Runtime) -> None:
     train_chars = data.train_chars if data.train_chars is not None else len(data.train_text)
     val_chars = data.val_chars if data.val_chars is not None else len(data.train_text) - int(0.95 * len(data.train_text))
     log(f"device: {runtime.device}")

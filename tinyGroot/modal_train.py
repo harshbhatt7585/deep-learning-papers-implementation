@@ -8,9 +8,10 @@ from pathlib import Path
 import modal
 
 
-APP_NAME = "text-diffusion-train"
+APP_NAME = "tinygroot-train"
 WORKDIR = Path("/workspace")
 
+# Keep the legacy Modal volume names so existing checkpoints and datasets remain mounted.
 data_volume = modal.Volume.from_name("text-diffusion-data", create_if_missing=True)
 runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=True)
 
@@ -148,7 +149,7 @@ def run_train(
     n_layers: int = 4,
     ff_mult: int = 4,
     gated_mlp: bool = False,
-    out_dir: str = "/runs/text-diffusion-4gpu",
+    out_dir: str = "/runs/tinygroot-4gpu",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     nanochat_tokenizer_cache_dir: str = "/data/nanochat_tokenizer_32k",
@@ -221,7 +222,7 @@ def run_train(
             raise SystemExit(
                 f"[modal_train] target checkpoint not found inside the container: {target_checkpoint}\n"
                 f"  -> Run 'modal run modal_train.py::list_runs' from your Mac to discover the\n"
-                f"     real path on the text-diffusion-runs volume, then pass it via\n"
+                f"     real path on the runs volume, then pass it via\n"
                 f"     'TARGET_CHECKPOINT=<actual-path> bash speed_run.sh draft 4gpu'."
             )
         command.extend([
@@ -439,7 +440,7 @@ def main(
     n_layers: int = 4,
     ff_mult: int = 4,
     gated_mlp: bool = False,
-    out_dir: str = "/runs/text-diffusion-4gpu",
+    out_dir: str = "/runs/tinygroot-4gpu",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     nanochat_tokenizer_cache_dir: str = "/data/nanochat_tokenizer_32k",
@@ -586,7 +587,7 @@ def list_runs() -> None:
     """
     entries = _list_runs_remote.remote()
     if not entries:
-        print("[list_runs] no runs found on volume text-diffusion-runs.")
+        print("[list_runs] no runs found on the runs volume.")
         return
     print(f"[list_runs] found {len(entries)} run directories on /runs:")
     for e in entries:
@@ -683,14 +684,14 @@ def spec(
     MTP-only (target has MTP heads, no drafter)::
 
         modal run modal_train.py::spec \\
-            --checkpoint /runs/text-diffusion-mtp1-relu2/checkpoint.pt \\
+            --checkpoint /runs/tinygroot-mtp1-relu2/checkpoint.pt \\
             --prompt "The capital of France is" --gen-length 64
 
     DFlash (target + DFlash drafter checkpoint)::
 
         modal run modal_train.py::spec \\
-            --checkpoint /runs/text-diffusion-mtp1-relu2/checkpoint.pt \\
-            --drafter-checkpoint /runs/text-diffusion-dflash-drafter-.../checkpoint.pt \\
+            --checkpoint /runs/tinygroot-mtp1-relu2/checkpoint.pt \\
+            --drafter-checkpoint /runs/tinygroot-dflash-drafter-.../checkpoint.pt \\
             --mode dflash --block-size 16 \\
             --prompt "The capital of France is" --gen-length 64
     """

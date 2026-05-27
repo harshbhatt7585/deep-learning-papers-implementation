@@ -8,9 +8,10 @@ from pathlib import Path
 import modal
 
 
-APP_NAME = "text-diffusion-chat-sft"
+APP_NAME = "tinygroot-chat-sft"
 WORKDIR = Path("/workspace")
 
+# Keep the legacy Modal volume names so existing checkpoints and datasets remain mounted.
 data_volume = modal.Volume.from_name("text-diffusion-data", create_if_missing=True)
 runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=True)
 

@@ -5,7 +5,7 @@ Decoding" (arXiv:2602.06036, 2026). Reference implementation:
 https://github.com/z-lab/dflash
 
 This module is a faithful port of the DFlash drafter architecture to the
-``TextDiffusionModel`` backbone in this repo. Compared to the reference:
+``TinyGrootModel`` backbone in this repo. Compared to the reference:
 
 * Same algorithmic core: cross-attention K/V is the concatenation of
   ``(target_hidden, drafter_self)``; drafter has no token embeddings or
@@ -38,7 +38,7 @@ from torch.nn.attention import sdpa_kernel
 from model import (
     Linear,
     SDPA_BACKENDS,
-    TextDiffusionModel,
+    TinyGrootModel,
     apply_rotary_emb,
     norm,
 )
@@ -346,7 +346,7 @@ class DFlashDraftModel(nn.Module):
         freqs = torch.outer(t, inv_freq)
         return freqs.cos()[None, :, None, :], freqs.sin()[None, :, None, :]
 
-    def bind(self, target: TextDiffusionModel) -> "DFlashDraftModel":
+    def bind(self, target: TinyGrootModel) -> "DFlashDraftModel":
         """Borrow the target's token embeddings and lm_head.
 
         The drafter does *not* own these parameters — they're aliased to the
@@ -406,7 +406,7 @@ class DFlashDraftModel(nn.Module):
                 "increase config.max_seq_len."
             )
 
-        # Match our target's convention: TextDiffusionModel (nanochat-style)
+        # Match our target's convention: TinyGrootModel (nanochat-style)
         # applies RMSNorm to the embedding before the stack so the residual
         # stream operates at unit magnitude end-to-end. Because the drafter
         # shares ``lm_head`` with the target via :meth:`bind`, the drafter's
@@ -455,7 +455,7 @@ class DFlashDraftModel(nn.Module):
 
 def dflash_loss(
     drafter: DFlashDraftModel,
-    target: TextDiffusionModel,
+    target: TinyGrootModel,
     input_ids: torch.Tensor,
     *,
     block_size: int | None = None,
@@ -478,7 +478,7 @@ def dflash_loss(
 
     Args:
         drafter: ``DFlashDraftModel``; must already be bound to ``target``.
-        target: frozen ``TextDiffusionModel`` (eval mode, no_grad).
+        target: frozen ``TinyGrootModel`` (eval mode, no_grad).
         input_ids: ``(B, T)`` long tensor.
         block_size: override drafter's default ``block_size``.
         block_start: deterministic block start (useful for tests). If None,

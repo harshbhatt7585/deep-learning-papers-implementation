@@ -15,7 +15,7 @@ import torch
 import torch.distributed as dist
 from jinja2 import Template
 
-from model import TextDiffusionModel
+from model import TinyGrootModel
 from tokenizer import NanochatTokenizer
 
 
@@ -134,7 +134,7 @@ def batch_sequences_lm(tokenizer: NanochatTokenizer, prompts: list[str]) -> tupl
 
 
 def crop_to_model_context(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokens: list[list[int]],
     start_indices: list[int],
     end_indices: list[int],
@@ -172,7 +172,7 @@ def stack_sequences(tokens: list[list[int]], pad_token_id: int) -> torch.Tensor:
 
 @torch.no_grad()
 def forward_causal_model(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     input_ids: torch.Tensor,
     tokenizer: NanochatTokenizer,
     start_indices: list[int],
@@ -199,7 +199,7 @@ def forward_causal_model(
 @torch.no_grad()
 def evaluate_example(
     idx: int,
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokenizer: NanochatTokenizer,
     data: list[dict[str, Any]],
     device: torch.device,
@@ -252,7 +252,7 @@ def evaluate_example(
 
 
 def evaluate_task(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokenizer: NanochatTokenizer,
     data: list[dict[str, Any]],
     device: torch.device,
@@ -276,7 +276,7 @@ def evaluate_task(
 
 
 def evaluate_core(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokenizer: NanochatTokenizer,
     device: torch.device,
     *,

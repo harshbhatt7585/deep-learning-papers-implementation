@@ -41,7 +41,7 @@ if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
 
   if [[ -z "${TARGET_CHECKPOINT:-}" ]]; then
     echo "[speed_run] ERROR: MODE=${MODE} requires TARGET_CHECKPOINT=<path/to/target/checkpoint.pt>" >&2
-    echo "             Example: TARGET_CHECKPOINT=/runs/text-diffusion-mtp1-relu2/checkpoint.pt \\" >&2
+    echo "             Example: TARGET_CHECKPOINT=/runs/tinygroot-mtp1-relu2/checkpoint.pt \\" >&2
     echo "                       bash speed_run.sh draft 4gpu" >&2
     exit 64
   fi
@@ -117,9 +117,9 @@ GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-${DEFAULT_GRAD_ACCUM_STEPS}}"
 
 DEFAULT_RUN_TIME="$(date +"%Y-%m-%d--%I-%M%p" | tr '[:upper:]' '[:lower:]')"
 if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
-  DEFAULT_RUN_NAME="text-diffusion-dflash-drafter-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
+  DEFAULT_RUN_NAME="tinygroot-dflash-drafter-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 else
-  DEFAULT_RUN_NAME="text-diffusion-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
+  DEFAULT_RUN_NAME="tinygroot-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 fi
 RUN_NAME="${RUN_NAME:-${DEFAULT_RUN_NAME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"

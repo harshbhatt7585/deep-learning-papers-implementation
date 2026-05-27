@@ -14,7 +14,7 @@ KVCache = list[tuple[torch.Tensor, torch.Tensor]]
 
 
 @dataclass
-class TextDiffusionConfig:
+class TinyGrootConfig:
     vocab_size: int
     max_seq_len: int
     mask_token_id: int
@@ -79,7 +79,7 @@ class Linear(nn.Linear):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TinyGrootConfig) -> None:
         super().__init__()
         self.n_heads = config.n_heads
         self.n_kv_heads = config.n_kv_heads or config.n_heads
@@ -174,7 +174,7 @@ class SelfAttention(nn.Module):
 class MLP(nn.Module):
     """ReLU-squared MLP (nanochat-style): 2 projections, no gating."""
 
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TinyGrootConfig) -> None:
         super().__init__()
         self.c_fc = Linear(config.d_model, config.ff_mult * config.d_model, bias=False)
         self.c_proj = Linear(config.ff_mult * config.d_model, config.d_model, bias=False)
@@ -188,7 +188,7 @@ class MLP(nn.Module):
 class GatedMLP(nn.Module):
     """SwiGLU-style gated MLP (LLaMA/Mixtral/Qwen-style): SiLU(gate) * up, then down."""
 
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TinyGrootConfig) -> None:
         super().__init__()
         hidden = config.ff_mult * config.d_model
         self.c_gate = Linear(config.d_model, hidden, bias=False)
@@ -200,7 +200,7 @@ class GatedMLP(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TinyGrootConfig) -> None:
         super().__init__()
         self.attn = SelfAttention(config)
         self.mlp = GatedMLP(config) if config.gated_mlp else MLP(config)
@@ -242,7 +242,7 @@ class DeepSeekMTPModule(nn.Module):
     the returned hidden state into next-token logits.
     """
 
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TinyGrootConfig) -> None:
         super().__init__()
         self.eh_proj = Linear(2 * config.d_model, config.d_model, bias=False)
         self.block = TransformerBlock(config)
@@ -261,10 +261,10 @@ class DeepSeekMTPModule(nn.Module):
         return norm(x)
 
 
-class TextDiffusionModel(nn.Module):
+class TinyGrootModel(nn.Module):
     """Decoder-only Transformer used for causal LM, MTP, TST, and DFlash targets."""
 
-    def __init__(self, config: TextDiffusionConfig) -> None:
+    def __init__(self, config: TinyGrootConfig) -> None:
         super().__init__()
         self.config = config
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
@@ -427,7 +427,7 @@ class TextDiffusionModel(nn.Module):
 
 
 def causal_mtp_loss(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     input_ids: torch.Tensor,
     *,
     mtp_loss_weight: float = 0.3,
@@ -528,7 +528,7 @@ def _sample_tokens(
 
 @torch.no_grad()
 def generate_causal(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     prompt_ids: torch.Tensor,
     *,
     gen_length: int,
@@ -560,6 +560,11 @@ def generate_causal(
             break
 
     return x[0]
+
+
+# Backward-compatible aliases for older checkpoints/scripts.
+TextDiffusionConfig = TinyGrootConfig
+TextDiffusionModel = TinyGrootModel
 
 
 def main() -> None:

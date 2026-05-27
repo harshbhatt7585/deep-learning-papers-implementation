@@ -15,7 +15,7 @@ from chat_core_eval import (
     use_calculator,
 )
 from fp8 import disable_fp8
-from model import TextDiffusionModel, _sample_tokens
+from model import TinyGrootModel, _sample_tokens
 from sft_data import ARC, GSM8K, HumanEval, MMLU, SpellingBee, Task, ensure_words
 from tokenizer import NanochatTokenizer
 from utils import Runtime, is_dist, log, rank, unwrap_model, world_size
@@ -146,7 +146,7 @@ def render_prompt_for_completion(
 
 @torch.no_grad()
 def generate_with_tools(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokenizer: NanochatTokenizer,
     prompt_ids: list[int],
     *,
@@ -230,7 +230,7 @@ def _reduce_pass_counts(num_passed: int, total: int, device: torch.device) -> tu
 
 
 def _chatcore_categorical(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokenizer: NanochatTokenizer,
     runtime: Runtime,
     task: Task,
@@ -276,7 +276,7 @@ def _chatcore_categorical(
 
 
 def _chatcore_generative(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     tokenizer: NanochatTokenizer,
     runtime: Runtime,
     task: Task,

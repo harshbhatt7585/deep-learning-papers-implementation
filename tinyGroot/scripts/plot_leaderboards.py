@@ -15,7 +15,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "text-diffusion-matplotlib"))
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "tinygroot-matplotlib"))
 
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt

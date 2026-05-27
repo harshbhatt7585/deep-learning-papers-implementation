@@ -14,7 +14,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from fp8 import disable_fp8
-from model import TextDiffusionConfig, TextDiffusionModel, norm
+from model import TinyGrootConfig, TinyGrootModel, norm
 from nanochat_optim import DistMuonAdamW, MuonAdamW
 from sft_chat import evaluate_chatcore, render_conversation, sample_text
 from sft_data import Task, build_datasets
@@ -41,8 +41,8 @@ IGNORE_INDEX = -100
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TinyText chat SFT from a TinyText checkpoint.pt")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="TinyText pretrain checkpoint.pt")
+    parser = argparse.ArgumentParser(description="tinyGroot chat SFT from a pretrain checkpoint.pt")
+    parser.add_argument("--checkpoint", type=Path, required=True, help="Pretrain checkpoint.pt")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for SFT checkpoint.pt")
     parser.add_argument("--run", "--wandb-name", dest="wandb_name", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
@@ -196,7 +196,7 @@ def clean_state_dict(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
 def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tuple[torch.nn.Module, NanochatTokenizer, dict[str, Any]]:
     checkpoint = torch.load(args.checkpoint, map_location=runtime.device, weights_only=False)
-    config = TextDiffusionConfig(**checkpoint["config"])
+    config = TinyGrootConfig(**checkpoint["config"])
     if args.seq_len is None:
         args.seq_len = config.max_seq_len
     if args.seq_len > config.max_seq_len:
@@ -207,7 +207,7 @@ def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tupl
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
-    model = TextDiffusionModel(config).to(runtime.device)
+    model = TinyGrootModel(config).to(runtime.device)
     model.load_state_dict(clean_state_dict(checkpoint["model_state"]), strict=True)
     if not args.train_mtp_heads:
         for param in model.mtp_heads.parameters():

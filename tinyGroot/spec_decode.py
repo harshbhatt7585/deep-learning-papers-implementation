@@ -1,4 +1,4 @@
-"""Speculative decoding for TextDiffusionModel — two drafter strategies.
+"""Speculative decoding for TinyGrootModel — two drafter strategies.
 
 Two independent algorithms share this module:
 
@@ -78,7 +78,7 @@ from pathlib import Path
 import torch
 from torch.nn import functional as F
 
-from model import TextDiffusionConfig, TextDiffusionModel, generate_causal, norm
+from model import TinyGrootConfig, TinyGrootModel, generate_causal, norm
 
 
 @dataclass
@@ -186,7 +186,7 @@ def _sample_from_probs(probs: torch.Tensor) -> torch.Tensor:
 
 
 def _mtp_draft_probs_and_tokens(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     hidden_last: torch.Tensor,
     first_token: torch.Tensor,
     temperature: float,
@@ -237,7 +237,7 @@ def _append_token(tokens: torch.Tensor, token: torch.Tensor) -> torch.Tensor:
 
 @torch.no_grad()
 def speculate_mtp(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     prompt_ids: torch.Tensor,
     *,
     gen_length: int,
@@ -249,7 +249,7 @@ def speculate_mtp(
     """Generate ``gen_length`` tokens using the target model's MTP heads as drafters.
 
     Args:
-        model: trained TextDiffusionModel with ``mtp_heads`` (Medusa-style).
+        model: trained TinyGrootModel with ``mtp_heads`` (Medusa-style).
         prompt_ids: 1D or 2D (B=1) tensor of prompt token ids.
         gen_length: number of new tokens to produce (cap; EOS may stop early).
         temperature: 0.0 = greedy. At T=0 the output is identical to plain AR.
@@ -464,7 +464,7 @@ def _crop_cache(
 
 @torch.no_grad()
 def generate_causal_cached(
-    model: TextDiffusionModel,
+    model: TinyGrootModel,
     prompt_ids: torch.Tensor,
     *,
     gen_length: int,
@@ -501,7 +501,7 @@ def generate_causal_cached(
 
 @torch.no_grad()
 def speculate_dflash(
-    target: TextDiffusionModel,
+    target: TinyGrootModel,
     drafter,  # DFlashDraftModel — typed loosely to avoid a hard import cycle.
     prompt_ids: torch.Tensor,
     *,
@@ -530,7 +530,7 @@ def speculate_dflash(
     implementation guarantees.
 
     Args:
-        target: trained ``TextDiffusionModel`` (the model we're preserving).
+        target: trained ``TinyGrootModel`` (the model we're preserving).
         drafter: ``DFlashDraftModel`` bound to ``target`` via ``drafter.bind(target)``.
         prompt_ids: 1D or 2D (B=1) prompt ids.
         gen_length: max number of new tokens to produce (cap).
@@ -702,7 +702,7 @@ def _clean_state_dict(state: dict) -> dict:
     return cleaned
 
 
-def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) -> tuple[TextDiffusionModel, dict]:
+def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) -> tuple[TinyGrootModel, dict]:
     """Load a training checkpoint and rebuild the (target) model on ``device``."""
     if not Path(checkpoint_path).exists():
         raise SystemExit(
@@ -710,7 +710,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
             f"  -> If you're on a Modal container, run 'modal run modal_train.py::list_runs' from your Mac\n"
             f"     to discover the actual checkpoint paths on the runs volume.\n"
             f"  -> If you're running locally, download the checkpoint first via\n"
-            f"     'modal volume get text-diffusion-runs <run-name>/checkpoint.pt'."
+            f"     'modal volume get <runs-volume> <run-name>/checkpoint.pt'."
         )
     blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in blob:
@@ -719,10 +719,10 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
             "Use a checkpoint produced by train.py (which saves the config alongside the weights)."
         )
     cfg_dict = blob["config"]
-    if isinstance(cfg_dict, TextDiffusionConfig):
+    if isinstance(cfg_dict, TinyGrootConfig):
         config = cfg_dict
     else:
-        config = TextDiffusionConfig(**cfg_dict)
+        config = TinyGrootConfig(**cfg_dict)
     cleaned = _clean_state_dict(blob["model_state"])
     mtp_weight = cleaned.get("mtp_heads.0.weight")
     if (
@@ -735,7 +735,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
         )
         config.n_mtp_heads = 0
 
-    model = TextDiffusionModel(config).to(device)
+    model = TinyGrootModel(config).to(device)
     missing, unexpected = model.load_state_dict(cleaned, strict=False)
     if missing:
         print(f"[spec_decode] missing keys when loading checkpoint: {missing[:5]}{'...' if len(missing) > 5 else ''}")
@@ -747,7 +747,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
 
 def _build_dflash_drafter_from_checkpoint(
     checkpoint_path: Path,
-    target: TextDiffusionModel,
+    target: TinyGrootModel,
     device: torch.device,
 ):
     """Load a DFlash drafter checkpoint, build the drafter, bind it to ``target``."""
@@ -848,7 +848,7 @@ def _format_ids(ids: torch.Tensor, tokenizer) -> str:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Speculative-decoding smoke test for TextDiffusionModel — supports MTP-Medusa and dflash."
+        description="Speculative-decoding smoke test for TinyGrootModel — supports MTP-Medusa and dflash."
     )
     parser.add_argument("--checkpoint", type=Path, required=True, help="path to target checkpoint.pt produced by train.py")
     parser.add_argument(
