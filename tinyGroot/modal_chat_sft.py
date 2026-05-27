@@ -23,6 +23,8 @@ PROJECT_FILES = [
     "fp8.py",
     "model.py",
     "nanochat_optim.py",
+    "sft_chat.py",
+    "sft_data.py",
     "spec_decode.py",
     "tokenizer.py",
     "train.py",
