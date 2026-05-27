@@ -201,7 +201,7 @@ def main(
     checkpoint: str = "/runs/mtp2-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu/checkpoint.pt",
     out_dir: str = "/runs/sft-rank2-pretrain-shared-mtp2-tst-20260527",
     run_name: str = "sft-rank2-pretrain-shared-mtp2-tst-20260527",
-    wandb_project: str = "tinytext-sft",
+    wandb_project: str = "tinyGroot-sft",
     max_steps: int = -1,
     device_batch_size: int = 16,
     total_batch_size: int = 524_288,

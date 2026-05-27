@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for SFT checkpoint.pt")
     parser.add_argument("--run", "--wandb-name", dest="wandb_name", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="tinytext-sft")
+    parser.add_argument("--wandb-project", type=str, default="tinyGroot-sft")
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--wandb-group", type=str, default=None)
     parser.add_argument("--wandb-tags", nargs="*", default=None)
