@@ -27,7 +27,7 @@ from chat_core_eval import (
     use_calculator,
 )
 from fp8 import disable_fp8
-from model import TextDiffusionConfig, TextDiffusionModel, _sample_tokens, generate_causal
+from model import TextDiffusionConfig, TextDiffusionModel, _sample_tokens, norm
 from nanochat_optim import DistMuonAdamW, MuonAdamW
 from tokenizer import NanochatTokenizer
 from train import apply_fp8_training, fp8_module_filter
@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chatcore-batch-size", type=int, default=8, help="batch size for categorical ChatCORE eval")
     parser.add_argument("--sample-every", type=int, default=200)
     parser.add_argument("--sample-length", type=int, default=128)
-    parser.add_argument("--sample-temperature", type=float, default=0.6)
+    parser.add_argument("--sample-temperature", type=float, default=0.0)
     parser.add_argument("--sample-top-k", type=int, default=50)
     parser.add_argument("--sample-top-p", type=float, default=None)
 
@@ -119,7 +119,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile-mode", type=str, default="default")
     parser.add_argument("--fp8", action="store_true")
     parser.add_argument("--fp8-recipe", type=str, default="tensorwise")
-    parser.add_argument("--train-mtp-heads", action="store_true", help="Default freezes MTP heads for pure chat SFT")
+    parser.add_argument("--train-mtp-heads", action=argparse.BooleanOptionalAction, default=True, help="Train MTP heads with an assistant-token auxiliary loss")
+    parser.add_argument("--mtp-loss-weight", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=True)
 
@@ -563,6 +564,8 @@ def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tupl
         for param in model.mtp_heads.parameters():
             param.requires_grad = False
         log("frozen MTP heads for chat SFT")
+    elif len(model.mtp_heads) > 0:
+        log(f"training MTP heads for chat SFT: heads={len(model.mtp_heads)} loss_weight={args.mtp_loss_weight:g}")
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
         log("compiling model with torch.compile(dynamic=False)")
@@ -658,17 +661,78 @@ def lr_multiplier(progress: float, args: argparse.Namespace) -> float:
     return (1.0 - decay) + decay * args.final_lr_frac
 
 
-def sft_loss(model: torch.nn.Module, x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, int]:
-    logits = model(x, attention_mask=None, causal=True)
+def sft_loss(
+    model: torch.nn.Module,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    args: argparse.Namespace,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Returns (total_loss_for_backward, main_loss_detached, aux_mean_detached, valid_tokens_tensor).
+
+    All returned tensors stay on-device — no .item() syncs. The caller can defer
+    a single sync to log time by accumulating these into tensor buffers.
+    """
+    source = unwrap_model(model)
+    use_mtp = args.train_mtp_heads and len(source.mtp_heads) > 0
+    if use_mtp:
+        logits, hidden = model(x, attention_mask=None, causal=True, return_hidden=True)
+    else:
+        logits = model(x, attention_mask=None, causal=True)
+        hidden = None
     flat_y = y.reshape(-1)
-    valid = int((flat_y != IGNORE_INDEX).sum().item())
-    loss_sum = F.cross_entropy(
+    valid = (flat_y != IGNORE_INDEX).sum()
+    main_loss_sum = F.cross_entropy(
         logits.reshape(-1, logits.size(-1)),
         flat_y,
         ignore_index=IGNORE_INDEX,
         reduction="sum",
     )
-    return loss_sum / max(1, valid), valid
+    main_loss = main_loss_sum / valid.clamp(min=1)
+
+    aux_mean = torch.zeros((), device=main_loss.device, dtype=main_loss.dtype)
+    if use_mtp and hidden is not None:
+        mtp_hidden: torch.Tensor | None = None
+        aux_terms: list[torch.Tensor] = []
+        for depth, head in enumerate(source.mtp_heads, start=1):
+            target_shift = depth
+            if y.size(1) <= target_shift:
+                break
+            target = y[:, target_shift:]
+            if source.config.mtp_arch == "deepseek":
+                if depth == 1:
+                    previous_hidden = hidden[:, :-target_shift, :]
+                else:
+                    if mtp_hidden is None:
+                        break
+                    previous_hidden = mtp_hidden[:, :-1, :]
+                token_ids = x[:, depth:]
+                cos_sin = (
+                    source.cos[:, : previous_hidden.size(1)],
+                    source.sin[:, : previous_hidden.size(1)],
+                )
+                mtp_hidden = head(
+                    previous_hidden,
+                    token_ids,
+                    token_emb=source.token_emb,
+                    cos_sin=cos_sin,
+                )
+                h_offset = mtp_hidden
+            else:
+                h_offset = norm(head(hidden[:, :-target_shift, :]))
+            aux_logits = source.lm_head(h_offset)
+            aux_valid = (target != IGNORE_INDEX).sum()
+            aux_loss_sum = F.cross_entropy(
+                aux_logits.reshape(-1, aux_logits.size(-1)),
+                target.reshape(-1),
+                ignore_index=IGNORE_INDEX,
+                reduction="sum",
+            )
+            aux_terms.append(aux_loss_sum / aux_valid.clamp(min=1))
+        if aux_terms:
+            aux_mean = torch.stack(aux_terms).mean()
+
+    total = main_loss + args.mtp_loss_weight * aux_mean
+    return total, main_loss.detach(), aux_mean.detach(), valid
 
 
 @torch.no_grad()
@@ -677,22 +741,31 @@ def evaluate_sft(model: torch.nn.Module, batcher: SFTBatcher, args: argparse.Nam
     batcher.consumed = rank()
     batcher.conv_buffer.clear()
     model.eval()
-    total_loss = 0.0
-    total_tokens = 0
+    device = runtime.device
+    main_sum = torch.zeros((), device=device, dtype=torch.float64)
+    aux_sum = torch.zeros((), device=device, dtype=torch.float64)
+    token_sum = torch.zeros((), device=device, dtype=torch.float64)
     steps = max(1, args.eval_tokens // (args.batch_size * args.seq_len * world_size()))
     for _ in range(steps):
         x, y = batcher.next()
-        with autocast_context(runtime.device, args.amp_dtype):
+        with autocast_context(device, args.amp_dtype):
             with disable_fp8(unwrap_model(model)):
-                loss, valid = sft_loss(unwrap_model(model), x, y)
-        total_loss += float(loss.item()) * valid
-        total_tokens += valid
-    totals = torch.tensor([total_loss, total_tokens], dtype=torch.float64, device=runtime.device)
+                _, main_loss, aux_mean, valid = sft_loss(unwrap_model(model), x, y, args)
+        valid_f = valid.to(torch.float64)
+        main_sum += main_loss.to(torch.float64) * valid_f
+        aux_sum += aux_mean.to(torch.float64) * valid_f
+        token_sum += valid_f
+    bundle = torch.stack([main_sum, aux_sum, token_sum])
     if is_dist():
-        dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+        dist.all_reduce(bundle, op=dist.ReduceOp.SUM)
     model.train()
-    token_count = max(1.0, float(totals[1].item()))
-    return {"loss": float(totals[0].item()) / token_count, "tokens": token_count}
+    values = bundle.tolist()
+    tokens = max(1.0, values[2])
+    return {
+        "loss": values[0] / tokens,
+        "mtp_loss": values[1] / tokens,
+        "tokens": values[2],
+    }
 
 
 def render_prompt_for_completion(
@@ -965,25 +1038,22 @@ def sample_text(model: torch.nn.Module, tokenizer: NanochatTokenizer, args: argp
     source = unwrap_model(model)
     source.eval()
     samples = []
-    user_start = special_id(tokenizer, "<|user_start|>")
-    user_end = special_id(tokenizer, "<|user_end|>")
-    assistant_start = special_id(tokenizer, "<|assistant_start|>")
     with disable_fp8(source):
         for prompt in SAMPLE_USER_PROMPTS:
-            prompt_ids_list = [tokenizer.bos_token_id, user_start]
-            prompt_ids_list.extend(tokenizer.encode(prompt))
-            prompt_ids_list.extend([user_end, assistant_start])
-            prompt_ids = torch.tensor(prompt_ids_list, dtype=torch.long, device=runtime.device)
-            output = generate_causal(
+            prompt_ids = render_prompt_for_completion(
+                tokenizer,
+                {"messages": [{"role": "user", "content": prompt}]},
+                max_tokens=max(1, source.config.max_seq_len - args.sample_length),
+            )
+            output = generate_with_tools(
                 source,
+                tokenizer,
                 prompt_ids,
-                gen_length=args.sample_length,
+                max_new_tokens=args.sample_length,
                 temperature=args.sample_temperature,
                 top_k=args.sample_top_k,
-                top_p=args.sample_top_p,
-                eos_token_id=tokenizer.eos_token_id,
             )
-            decoded = tokenizer.decode(output.detach().cpu().tolist(), skip_special=False)
+            decoded = tokenizer.decode(output, skip_special=True).strip()
             samples.append(f"USER:\n{prompt}\n\nMODEL:\n{decoded}")
     sample = "\n\n---\n\n".join(samples)
     log("samples:\n" + sample)
@@ -1031,8 +1101,19 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
 
         if args.eval_every > 0 and (step == 0 or step % args.eval_every == 0):
             metrics = evaluate_sft(model, val_batcher, args, runtime)
-            log(f"step {step:05d} val_loss {metrics['loss']:.4f}")
-            log_wandb(wandb_run, {"eval/loss": metrics["loss"], "eval/tokens": metrics["tokens"]}, step)
+            log(
+                f"step {step:05d} val_loss {metrics['loss']:.4f} "
+                f"mtp_loss {metrics['mtp_loss']:.4f}"
+            )
+            log_wandb(
+                wandb_run,
+                {
+                    "eval/loss": metrics["loss"],
+                    "eval/mtp_loss": metrics["mtp_loss"],
+                    "eval/tokens": metrics["tokens"],
+                },
+                step,
+            )
 
         if args.chatcore_every > 0 and step > 0 and step % args.chatcore_every == 0:
             chatcore_metrics = evaluate_chatcore(model, tokenizer, args, runtime)
@@ -1048,19 +1129,25 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         set_lr(optimizer, lr)
         optimizer.zero_grad(set_to_none=True)
         start = time.time()
-        train_loss = 0.0
-        valid_tokens = 0
+        device = runtime.device
+        main_sum = torch.zeros((), device=device, dtype=torch.float32)
+        aux_sum = torch.zeros((), device=device, dtype=torch.float32)
+        total_sum = torch.zeros((), device=device, dtype=torch.float32)
+        valid_sum = torch.zeros((), device=device, dtype=torch.float32)
 
         for micro_step in range(args.grad_accum_steps):
             x, y = train_batcher.next()
             sync_context = model.no_sync() if isinstance(model, DDP) and micro_step < args.grad_accum_steps - 1 else nullcontext()
             with sync_context:
                 with autocast_context(runtime.device, args.amp_dtype):
-                    loss, valid = sft_loss(model, x, y)
+                    loss, main_loss, aux_mean, valid = sft_loss(model, x, y, args)
                     scaled_loss = loss / args.grad_accum_steps
                 scaler.scale(scaled_loss).backward()
-            train_loss += float(loss.detach().item()) * valid
-            valid_tokens += valid
+            valid_f = valid.to(torch.float32)
+            total_sum += loss.detach().to(torch.float32) * valid_f
+            main_sum += main_loss.to(torch.float32) * valid_f
+            aux_sum += aux_mean.to(torch.float32) * valid_f
+            valid_sum += valid_f
 
         if is_dist():
             last_step_tensor = torch.tensor(int(train_batcher.last_step), dtype=torch.int32, device=runtime.device)
@@ -1074,10 +1161,31 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         elapsed = time.time() - start
         total_time += elapsed
         step += 1
-        train_loss /= max(1, valid_tokens)
-        smooth_loss = train_loss if step == 1 else 0.9 * smooth_loss + 0.1 * train_loss
-        log(f"step {step:05d} train_loss {train_loss:.4f} smooth {smooth_loss:.4f} lr {lr:.2e} tok/s {valid_tokens / max(elapsed, 1e-9):,.0f}")
-        log_wandb(wandb_run, {"train/loss": train_loss, "train/smooth_loss": smooth_loss, "train/lr": lr, "train/tokens": step * args.total_batch_size}, step)
+        sums = torch.stack([total_sum, main_sum, aux_sum, valid_sum]).tolist()
+        total_loss_sum, main_loss_sum_v, aux_loss_sum_v, valid_tokens_f = sums
+        valid_tokens = int(valid_tokens_f)
+        denom = max(1, valid_tokens)
+        train_loss = total_loss_sum / denom
+        main_loss_val = main_loss_sum_v / denom
+        mtp_loss_val = aux_loss_sum_v / denom
+        smooth_loss = main_loss_val if step == 1 else 0.9 * smooth_loss + 0.1 * main_loss_val
+        log(
+            f"step {step:05d} train_loss {train_loss:.4f} main {main_loss_val:.4f} "
+            f"mtp {mtp_loss_val:.4f} smooth {smooth_loss:.4f} lr {lr:.2e} "
+            f"tok/s {valid_tokens / max(elapsed, 1e-9):,.0f}"
+        )
+        log_wandb(
+            wandb_run,
+            {
+                "train/loss": train_loss,
+                "train/main_loss": main_loss_val,
+                "train/mtp_loss": mtp_loss_val,
+                "train/smooth_loss": smooth_loss,
+                "train/lr": lr,
+                "train/tokens": step * args.total_batch_size,
+            },
+            step,
+        )
 
         if args.sample_every > 0 and step % args.sample_every == 0 and is_main_process():
             sample = sample_text(model, tokenizer, args, runtime)

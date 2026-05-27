@@ -79,6 +79,7 @@ def run_sft(
     optimizer: str,
     fp8: bool,
     compile: bool,
+    train_mtp_heads: bool,
     identity_jsonl: str,
     mmlu_epochs: int,
     gsm8k_epochs: int,
@@ -143,6 +144,7 @@ def run_sft(
         command.append("--fp8")
     if compile:
         command.append("--compile")
+    command.append("--train-mtp-heads" if train_mtp_heads else "--no-train-mtp-heads")
 
     env = os.environ.copy()
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -216,6 +218,7 @@ def main(
     optimizer: str = "muon",
     fp8: bool = False,
     compile: bool = False,
+    train_mtp_heads: bool = True,
     identity_jsonl: str = "/data/identity_conversations.jsonl",
     mmlu_epochs: int = 3,
     gsm8k_epochs: int = 4,
@@ -251,6 +254,7 @@ def main(
         optimizer=optimizer,
         fp8=fp8,
         compile=compile,
+        train_mtp_heads=train_mtp_heads,
         identity_jsonl=identity_jsonl,
         mmlu_epochs=mmlu_epochs,
         gsm8k_epochs=gsm8k_epochs,
