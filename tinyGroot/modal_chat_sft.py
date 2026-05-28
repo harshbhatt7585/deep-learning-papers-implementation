@@ -17,6 +17,7 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 
 PROJECT_FILES = [
     "chat_core_eval.py",
+    "chat_infer.py",
     "chat_sft.py",
     "core_eval.py",
     "eval_core.py",
@@ -59,6 +60,17 @@ image = (
 )
 
 app = modal.App(APP_NAME)
+
+
+def validate_checkpoint_path(checkpoint: str) -> None:
+    checkpoint_path = Path(checkpoint)
+    if checkpoint_path.is_dir():
+        checkpoint_path = checkpoint_path / "checkpoint.pt"
+    if not checkpoint_path.exists():
+        raise SystemExit(
+            f"[modal_chat_sft] checkpoint not found inside the container: {checkpoint}\n"
+            "  -> Pass the exact /runs/<run>/checkpoint.pt path from the Modal runs volume."
+        )
 
 
 def run_sft(
@@ -197,6 +209,63 @@ def sft_h100_4gpu(**kwargs) -> None:
 )
 def sft_a100_8gpu(**kwargs) -> None:
     run_sft(gpu_count=8, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A10G",
+    cpu=8,
+    memory=32768,
+    timeout=60 * 60,
+    volumes={"/runs": runs_volume},
+)
+def run_chat_infer(
+    *,
+    checkpoint: str,
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    tokenizer_dir: str | None,
+) -> None:
+    validate_checkpoint_path(checkpoint)
+    command = [
+        "python",
+        str(WORKDIR / "chat_infer.py"),
+        "--checkpoint",
+        checkpoint,
+        "--prompt",
+        prompt,
+        "--max-new-tokens",
+        str(max_new_tokens),
+        "--temperature",
+        str(temperature),
+        "--top-k",
+        str(top_k),
+    ]
+    if tokenizer_dir is not None:
+        command.extend(["--tokenizer-dir", tokenizer_dir])
+    subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+
+
+@app.local_entrypoint()
+def infer(
+    checkpoint: str,
+    prompt: str,
+    max_new_tokens: int = 256,
+    temperature: float = 0.0,
+    top_k: int = 50,
+    tokenizer_dir: str | None = None,
+) -> None:
+    """Run chat inference against an SFT checkpoint stored on the Modal runs volume."""
+    run_chat_infer.remote(
+        checkpoint=checkpoint,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        tokenizer_dir=tokenizer_dir,
+    )
 
 
 @app.local_entrypoint()
