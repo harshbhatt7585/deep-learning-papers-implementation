@@ -86,7 +86,8 @@ def pretokenize_nanochat(
 ) -> None:
     command = [
         "python",
-        str(WORKDIR / "pretokenize.py"),
+        "-m",
+        "training.pretokenize",
         "--nanochat-cache-dir",
         "/data/nanochat_climbmix",
         "--nanochat-tokenizer-cache-dir",
@@ -167,7 +168,8 @@ def run_train(
         "torchrun",
         "--standalone",
         f"--nproc_per_node={gpu_count}",
-        str(WORKDIR / "train.py"),
+        "-m",
+        "training.train",
         "--nanochat-tokenizer-cache-dir",
         nanochat_tokenizer_cache_dir,
         "--nanochat-tokenizer-vocab-size",
@@ -221,7 +223,7 @@ def run_train(
         if not os.path.exists(target_checkpoint):
             raise SystemExit(
                 f"[modal_train] target checkpoint not found inside the container: {target_checkpoint}\n"
-                f"  -> Run 'modal run modal_train.py::list_runs' from your Mac to discover the\n"
+                f"  -> Run 'modal run modal/modal_train.py::list_runs' from your Mac to discover the\n"
                 f"     real path on the runs volume, then pass it via\n"
                 f"     'TARGET_CHECKPOINT=<actual-path> bash speed_run.sh draft 4gpu'."
             )
@@ -583,7 +585,7 @@ def list_runs() -> None:
 
     Example::
 
-        modal run modal_train.py::list_runs
+        modal run modal/modal_train.py::list_runs
     """
     entries = _list_runs_remote.remote()
     if not entries:
@@ -625,12 +627,12 @@ def run_spec_decode(
     if not os.path.exists(checkpoint):
         raise SystemExit(
             f"[modal_train] target checkpoint not found inside the container: {checkpoint}\n"
-            f"  -> Run 'modal run modal_train.py::list_runs' to find the exact /runs path."
+            f"  -> Run 'modal run modal/modal_train.py::list_runs' to find the exact /runs path."
         )
     if drafter_checkpoint is not None and not os.path.exists(drafter_checkpoint):
         raise SystemExit(
             f"[modal_train] drafter checkpoint not found inside the container: {drafter_checkpoint}\n"
-            f"  -> Run 'modal run modal_train.py::list_runs' to find the exact /runs path."
+            f"  -> Run 'modal run modal/modal_train.py::list_runs' to find the exact /runs path."
         )
     command = [
         "python",
@@ -683,13 +685,13 @@ def spec(
 
     MTP-only (target has MTP heads, no drafter)::
 
-        modal run modal_train.py::spec \\
+        modal run modal/modal_train.py::spec \\
             --checkpoint /runs/tinygroot-mtp1-relu2/checkpoint.pt \\
             --prompt "The capital of France is" --gen-length 64
 
     DFlash (target + DFlash drafter checkpoint)::
 
-        modal run modal_train.py::spec \\
+        modal run modal/modal_train.py::spec \\
             --checkpoint /runs/tinygroot-mtp1-relu2/checkpoint.pt \\
             --drafter-checkpoint /runs/tinygroot-dflash-drafter-.../checkpoint.pt \\
             --mode dflash --block-size 16 \\

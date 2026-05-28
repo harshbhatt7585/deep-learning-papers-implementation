@@ -707,7 +707,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
     if not Path(checkpoint_path).exists():
         raise SystemExit(
             f"[spec_decode] target checkpoint not found: {checkpoint_path}\n"
-            f"  -> If you're on a Modal container, run 'modal run modal_train.py::list_runs' from your Mac\n"
+            f"  -> If you're on a Modal container, run 'modal run modal/modal_train.py::list_runs' from your Mac\n"
             f"     to discover the actual checkpoint paths on the runs volume.\n"
             f"  -> If you're running locally, download the checkpoint first via\n"
             f"     'modal volume get <runs-volume> <run-name>/checkpoint.pt'."
@@ -716,7 +716,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
     if "config" not in blob:
         raise KeyError(
             f"checkpoint at {checkpoint_path} has no 'config' key. "
-            "Use a checkpoint produced by train.py (which saves the config alongside the weights)."
+            "Use a checkpoint produced by training/train.py (which saves the config alongside the weights)."
         )
     cfg_dict = blob["config"]
     if isinstance(cfg_dict, TinyGrootConfig):
@@ -758,7 +758,7 @@ def _build_dflash_drafter_from_checkpoint(
             f"[spec_decode] drafter checkpoint not found: {checkpoint_path}\n"
             f"  -> Make sure you've trained a DFlash drafter via\n"
             f"     'TARGET_CHECKPOINT=<path> bash speed_run.sh draft 4gpu' first.\n"
-            f"  -> Run 'modal run modal_train.py::list_runs' to discover existing drafter paths."
+            f"  -> Run 'modal run modal/modal_train.py::list_runs' to discover existing drafter paths."
         )
     blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in blob:
@@ -850,7 +850,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Speculative-decoding smoke test for TinyGrootModel — supports MTP-Medusa and dflash."
     )
-    parser.add_argument("--checkpoint", type=Path, required=True, help="path to target checkpoint.pt produced by train.py")
+    parser.add_argument("--checkpoint", type=Path, required=True, help="path to target checkpoint.pt produced by training/train.py")
     parser.add_argument(
         "--drafter-checkpoint",
         type=Path,

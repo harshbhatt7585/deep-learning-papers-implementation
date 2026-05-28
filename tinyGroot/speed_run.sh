@@ -156,7 +156,7 @@ fi
 
 pretokenize() {
   local command=(
-    modal run modal_train.py::main
+    modal run modal/modal_train.py::main
     --pretokenize
     --train-shards "${TRAIN_SHARDS}"
     --max-train-chars "${MAX_TRAIN_CHARS}"
@@ -176,7 +176,7 @@ pretokenize() {
 
 train_tokenizer() {
   local command=(
-    modal run modal_train.py::main
+    modal run modal/modal_train.py::main
     --pretokenize
     --tokenizer-only
     --train-shards "${TOKENIZER_TRAIN_SHARDS}"
@@ -196,7 +196,7 @@ train_tokenizer() {
 }
 
 download_data() {
-  modal run modal_train.py::main \
+  modal run modal/modal_train.py::main \
     --pretokenize \
     --download-only \
     --train-shards "${TRAIN_SHARDS}" \
@@ -218,7 +218,7 @@ train() {
   fi
 
   local command=(
-    modal run modal_train.py::main
+    modal run modal/modal_train.py::main
     --gpu-count "${GPU_COUNT}"
     --max-steps "${MAX_STEPS}"
     --batch-size "${BATCH_SIZE}"

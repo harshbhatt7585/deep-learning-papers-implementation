@@ -19,7 +19,7 @@ from nanochat_optim import DistMuonAdamW, MuonAdamW
 from sft_chat import evaluate_chatcore, render_conversation, sample_text
 from sft_data import Task, build_datasets
 from tokenizer import NanochatTokenizer
-from train import apply_fp8_training, fp8_module_filter
+from training.train import apply_fp8_training, fp8_module_filter
 from utils import (
     Runtime,
     autocast_context,
