@@ -876,7 +876,7 @@ def sample_text_dflash(
     noise). The drafter is set to ``eval()`` for the duration and returned to
     ``train()`` before this function exits.
     """
-    from spec_decode import speculate_dflash
+    from infer.spec_decode import speculate_dflash
 
     if _DFLASH_TARGET is None:
         raise RuntimeError(

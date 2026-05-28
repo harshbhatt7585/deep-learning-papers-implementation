@@ -231,7 +231,8 @@ def run_chat_infer(
     validate_checkpoint_path(checkpoint)
     command = [
         "python",
-        str(WORKDIR / "chat_infer.py"),
+        "-m",
+        "infer.chat_infer",
         "--checkpoint",
         checkpoint,
         "--prompt",

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 from typing import Any
 
 import torch
+
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from model import TinyGrootConfig, TinyGrootModel
 from sft_chat import generate_with_tools, render_prompt_for_completion

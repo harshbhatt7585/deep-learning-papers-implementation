@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from core_eval import evaluate_core
-from sample import load_checkpoint
+from infer.sample import load_checkpoint
 from utils import cleanup_distributed, configure_cuda, is_main_process, setup_distributed
 
 

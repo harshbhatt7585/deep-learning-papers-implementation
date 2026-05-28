@@ -637,7 +637,7 @@ def run_spec_decode(
     command = [
         "python",
         "-m",
-        "spec_decode",
+        "infer.spec_decode",
         "--checkpoint",
         checkpoint,
         "--prompt",

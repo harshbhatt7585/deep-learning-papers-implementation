@@ -54,14 +54,14 @@ Example::
 ### Smoke test CLI::
 
     # MTP-only:
-    python -m spec_decode --checkpoint runs/<RUN>/checkpoint.pt --prompt "..." --gen-length 64
+    python -m infer.spec_decode --checkpoint runs/<RUN>/checkpoint.pt --prompt "..." --gen-length 64
 
     # dflash-only:
-    python -m spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
+    python -m infer.spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
         --drafter-checkpoint runs/<DRAFTER>/checkpoint.pt --mode dflash --block-size 16
 
     # both (target must have MTP heads, drafter is a DFlash checkpoint):
-    python -m spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
+    python -m infer.spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
         --drafter-checkpoint runs/<DRAFTER>/checkpoint.pt --block-size 16
 
 The script verifies at temperature=0 that every mode produces the same output
@@ -74,9 +74,13 @@ import argparse
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 
 import torch
 from torch.nn import functional as F
+
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from model import TinyGrootConfig, TinyGrootModel, generate_causal, norm
 

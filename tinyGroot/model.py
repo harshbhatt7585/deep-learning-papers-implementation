@@ -568,7 +568,7 @@ TextDiffusionModel = TinyGrootModel
 
 
 def main() -> None:
-    raise SystemExit("Use training/train.py and sample.py; this project now supports only the LLaDA2.1 tokenizer.")
+    raise SystemExit("Use training/train.py and infer/sample.py; this project now supports only the LLaDA2.1 tokenizer.")
 
 
 if __name__ == "__main__":
