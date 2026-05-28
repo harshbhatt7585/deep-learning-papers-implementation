@@ -20,8 +20,24 @@ dependencies = [
     "wandb>=0.17",
 ]
 
+[project.scripts]
+tinygroot-chat-infer = "tinygroot.infer.chat_infer:main"
+tinygroot-sample = "tinygroot.infer.sample:main"
+tinygroot-spec-decode = "tinygroot.infer.spec_decode:main"
+tinygroot-train = "tinygroot.training.train:main"
+tinygroot-chat-sft = "tinygroot.training.chat_sft:main"
+tinygroot-pretokenize = "tinygroot.training.pretokenize:main"
+tinygroot-eval-core = "tinygroot.eval_core:main"
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["tinygroot*"]
+
 [tool.uv]
-package = false
+package = true
 
 [tool.uv.sources]
 torch = [

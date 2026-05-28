@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn import functional as F
 
-from flash_attention import flash_attn
+from tinygroot.flash_attention import flash_attn
 
 
 KVCache = list[tuple[torch.Tensor, torch.Tensor]]

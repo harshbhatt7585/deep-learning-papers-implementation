@@ -8,7 +8,7 @@ from typing import Any
 
 import torch.distributed as dist
 
-from utils import is_dist, log, rank
+from tinygroot.utils import is_dist, log, rank
 
 
 WORD_LIST_URL = "https://raw.githubusercontent.com/dwyl/english-words/refs/heads/master/words_alpha.txt"

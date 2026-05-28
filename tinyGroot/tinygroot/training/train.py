@@ -13,17 +13,17 @@ import torch.distributed as dist
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from core_eval import ensure_eval_bundle, evaluate_core
-from flash_attention import describe_attention_backend
-from model import (
+from tinygroot.core_eval import ensure_eval_bundle, evaluate_core
+from tinygroot.flash_attention import describe_attention_backend
+from tinygroot.model import (
     TinyGrootConfig,
     TinyGrootModel,
     generate_causal,
     norm,
 )
-from nanochat_optim import DistMuonAdamW, MuonAdamW
-from fp8 import disable_fp8
-from utils import (
+from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
+from tinygroot.fp8 import disable_fp8
+from tinygroot.utils import (
     Runtime,
     TokenData,
     Tokenizer,
@@ -319,7 +319,7 @@ def _load_frozen_target(
 
 
 def _build_dflash_config(args: argparse.Namespace, target: TinyGrootModel) -> "Any":
-    from dflash_model import DFlashConfig
+    from tinygroot.dflash_model import DFlashConfig
 
     # Force drafter n_heads to match the target. The drafter shares d_model
     # with the target (it's bound at runtime), so n_heads completely determines
@@ -443,7 +443,7 @@ def apply_fp8_training(model: torch.nn.Module, args: argparse.Namespace, runtime
     if args.amp_dtype != "bfloat16":
         raise ValueError("--fp8 expects --amp-dtype bfloat16.")
 
-    from fp8 import Float8Linear, Float8LinearConfig, convert_to_float8_training
+    from tinygroot.fp8 import Float8Linear, Float8LinearConfig, convert_to_float8_training
 
     candidates = [
         name
@@ -490,7 +490,7 @@ def _build_dflash_drafter(args: argparse.Namespace, runtime: Runtime) -> torch.n
     ``train_one_step`` / eval can reach the frozen target without threading.
     """
     global _DFLASH_TARGET
-    from dflash_model import DFlashDraftModel
+    from tinygroot.dflash_model import DFlashDraftModel
 
     if args.target_checkpoint is None:
         raise SystemExit("--dflash requires --target-checkpoint <path>")
@@ -743,7 +743,7 @@ def estimate_eval_metrics(
     if args.dflash:
         # Drafter eval: dflash_loss over a few val batches, plus mean
         # acceptance-proxy (drafter argmax == ground-truth at masked positions).
-        from dflash_model import dflash_loss
+        from tinygroot.dflash_model import dflash_loss
 
         if _DFLASH_TARGET is None:
             raise RuntimeError("dflash eval requires _DFLASH_TARGET")
@@ -876,7 +876,7 @@ def sample_text_dflash(
     noise). The drafter is set to ``eval()`` for the duration and returned to
     ``train()`` before this function exits.
     """
-    from infer.spec_decode import speculate_dflash
+    from tinygroot.infer.spec_decode import speculate_dflash
 
     if _DFLASH_TARGET is None:
         raise RuntimeError(
@@ -1123,7 +1123,7 @@ def train_one_step(
                         mtp_loss_weight=args.mtp_loss_weight,
                     )
                 elif args.dflash:
-                    from dflash_model import dflash_loss
+                    from tinygroot.dflash_model import dflash_loss
 
                     if _DFLASH_TARGET is None:
                         raise RuntimeError(

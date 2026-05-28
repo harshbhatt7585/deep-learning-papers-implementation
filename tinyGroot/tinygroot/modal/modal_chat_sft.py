@@ -16,6 +16,7 @@ data_volume = modal.Volume.from_name("text-diffusion-data", create_if_missing=Tr
 runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=True)
 
 PROJECT_FILES = [
+    "__init__.py",
     "chat_core_eval.py",
     "chat_infer.py",
     "chat_sft.py",
@@ -30,6 +31,8 @@ PROJECT_FILES = [
     "spec_decode.py",
     "tokenizer.py",
     "train.py",
+    "modal_train.py",
+    "modal_chat_sft.py",
     "utils.py",
 ]
 
@@ -108,7 +111,7 @@ def run_sft(
         "--standalone",
         f"--nproc_per_node={gpu_count}",
         "-m",
-        "training.chat_sft",
+        "tinygroot.training.chat_sft",
         "--checkpoint",
         checkpoint,
         "--out-dir",
@@ -232,7 +235,7 @@ def run_chat_infer(
     command = [
         "python",
         "-m",
-        "infer.chat_infer",
+        "tinygroot.infer.chat_infer",
         "--checkpoint",
         checkpoint,
         "--prompt",

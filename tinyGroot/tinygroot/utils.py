@@ -16,8 +16,8 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from model import TinyGrootModel
-from tokenizer import NanochatTokenizer
+from tinygroot.model import TinyGrootModel
+from tinygroot.tokenizer import NanochatTokenizer
 
 
 NANOCHAT_BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"

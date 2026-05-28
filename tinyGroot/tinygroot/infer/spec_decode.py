@@ -54,14 +54,14 @@ Example::
 ### Smoke test CLI::
 
     # MTP-only:
-    python -m infer.spec_decode --checkpoint runs/<RUN>/checkpoint.pt --prompt "..." --gen-length 64
+    python -m tinygroot.infer.spec_decode --checkpoint runs/<RUN>/checkpoint.pt --prompt "..." --gen-length 64
 
     # dflash-only:
-    python -m infer.spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
+    python -m tinygroot.infer.spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
         --drafter-checkpoint runs/<DRAFTER>/checkpoint.pt --mode dflash --block-size 16
 
     # both (target must have MTP heads, drafter is a DFlash checkpoint):
-    python -m infer.spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
+    python -m tinygroot.infer.spec_decode --checkpoint runs/<TARGET>/checkpoint.pt \\
         --drafter-checkpoint runs/<DRAFTER>/checkpoint.pt --block-size 16
 
 The script verifies at temperature=0 that every mode produces the same output
@@ -80,9 +80,9 @@ import torch
 from torch.nn import functional as F
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from model import TinyGrootConfig, TinyGrootModel, generate_causal, norm
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, generate_causal, norm
 
 
 @dataclass
@@ -545,7 +545,7 @@ def speculate_dflash(
     Returns:
         (generated_ids, stats): 1D long tensor (prompt + generated) and stats.
     """
-    from dflash_model import extract_context_feature, DFlashDraftModel  # local import
+    from tinygroot.dflash_model import extract_context_feature, DFlashDraftModel  # local import
 
     target.eval()
     drafter.eval()
@@ -711,7 +711,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
     if not Path(checkpoint_path).exists():
         raise SystemExit(
             f"[spec_decode] target checkpoint not found: {checkpoint_path}\n"
-            f"  -> If you're on a Modal container, run 'modal run modal/modal_train.py::list_runs' from your Mac\n"
+            f"  -> If you're on a Modal container, run 'modal run tinygroot/modal/modal_train.py::list_runs' from your Mac\n"
             f"     to discover the actual checkpoint paths on the runs volume.\n"
             f"  -> If you're running locally, download the checkpoint first via\n"
             f"     'modal volume get <runs-volume> <run-name>/checkpoint.pt'."
@@ -755,14 +755,14 @@ def _build_dflash_drafter_from_checkpoint(
     device: torch.device,
 ):
     """Load a DFlash drafter checkpoint, build the drafter, bind it to ``target``."""
-    from dflash_model import DFlashConfig, DFlashDraftModel
+    from tinygroot.dflash_model import DFlashConfig, DFlashDraftModel
 
     if not Path(checkpoint_path).exists():
         raise SystemExit(
             f"[spec_decode] drafter checkpoint not found: {checkpoint_path}\n"
             f"  -> Make sure you've trained a DFlash drafter via\n"
             f"     'TARGET_CHECKPOINT=<path> bash speed_run.sh draft 4gpu' first.\n"
-            f"  -> Run 'modal run modal/modal_train.py::list_runs' to discover existing drafter paths."
+            f"  -> Run 'modal run tinygroot/modal/modal_train.py::list_runs' to discover existing drafter paths."
         )
     blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "config" not in blob:
@@ -816,7 +816,7 @@ def _load_tokenizer(checkpoint_blob: dict, args: argparse.Namespace):
       4. give up and print raw ids.
     """
     try:
-        from tokenizer import NanochatTokenizer
+        from tinygroot.tokenizer import NanochatTokenizer
     except Exception as exc:
         print(f"[spec_decode] could not import NanochatTokenizer ({exc}); using raw id printing only.")
         return None

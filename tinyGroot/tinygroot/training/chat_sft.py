@@ -13,14 +13,14 @@ import torch.distributed as dist
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from fp8 import disable_fp8
-from model import TinyGrootConfig, TinyGrootModel, norm
-from nanochat_optim import DistMuonAdamW, MuonAdamW
-from sft_chat import evaluate_chatcore, render_conversation, sample_text
-from sft_data import Task, build_datasets
-from tokenizer import NanochatTokenizer
-from training.train import apply_fp8_training, fp8_module_filter
-from utils import (
+from tinygroot.fp8 import disable_fp8
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, norm
+from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
+from tinygroot.sft_chat import evaluate_chatcore, render_conversation, sample_text
+from tinygroot.sft_data import Task, build_datasets
+from tinygroot.tokenizer import NanochatTokenizer
+from tinygroot.training.train import apply_fp8_training, fp8_module_filter
+from tinygroot.utils import (
     Runtime,
     autocast_context,
     cleanup_distributed,

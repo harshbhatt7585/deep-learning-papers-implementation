@@ -15,8 +15,8 @@ import torch
 import torch.distributed as dist
 from jinja2 import Template
 
-from model import TinyGrootModel
-from tokenizer import NanochatTokenizer
+from tinygroot.model import TinyGrootModel
+from tinygroot.tokenizer import NanochatTokenizer
 
 
 EVAL_BUNDLE_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"

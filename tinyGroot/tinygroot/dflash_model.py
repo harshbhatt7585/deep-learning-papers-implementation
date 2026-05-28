@@ -35,7 +35,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel
 
-from model import (
+from tinygroot.model import (
     Linear,
     SDPA_BACKENDS,
     TinyGrootModel,

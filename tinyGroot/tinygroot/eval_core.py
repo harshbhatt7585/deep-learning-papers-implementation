@@ -5,9 +5,9 @@ from pathlib import Path
 
 import torch
 
-from core_eval import evaluate_core
-from infer.sample import load_checkpoint
-from utils import cleanup_distributed, configure_cuda, is_main_process, setup_distributed
+from tinygroot.core_eval import evaluate_core
+from tinygroot.infer.sample import load_checkpoint
+from tinygroot.utils import cleanup_distributed, configure_cuda, is_main_process, setup_distributed
 
 
 def parse_args() -> argparse.Namespace:

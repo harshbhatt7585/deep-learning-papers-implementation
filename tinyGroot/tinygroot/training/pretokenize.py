@@ -8,8 +8,8 @@ from typing import Any
 
 import numpy as np
 
-from tokenizer import NanochatTokenizer
-from utils import NANOCHAT_MAX_SHARD, download_nanochat_shard, read_parquet_text
+from tinygroot.tokenizer import NanochatTokenizer
+from tinygroot.utils import NANOCHAT_MAX_SHARD, download_nanochat_shard, read_parquet_text
 
 
 def parse_args() -> argparse.Namespace:

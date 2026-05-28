@@ -7,10 +7,10 @@ import sys
 import torch
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from model import TinyGrootConfig, TinyGrootModel, generate_causal
-from tokenizer import NanochatTokenizer
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, generate_causal
+from tinygroot.tokenizer import NanochatTokenizer
 
 
 def pick_device() -> torch.device:

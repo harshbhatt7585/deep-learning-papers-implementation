@@ -7,18 +7,18 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from chat_core_eval import (
+from tinygroot.chat_core_eval import (
     execute_code,
     extract_gsm_answer,
     extract_imports,
     extract_program,
     use_calculator,
 )
-from fp8 import disable_fp8
-from model import TinyGrootModel, _sample_tokens
-from sft_data import ARC, GSM8K, HumanEval, MMLU, SpellingBee, Task, ensure_words
-from tokenizer import NanochatTokenizer
-from utils import Runtime, is_dist, log, rank, unwrap_model, world_size
+from tinygroot.fp8 import disable_fp8
+from tinygroot.model import TinyGrootModel, _sample_tokens
+from tinygroot.sft_data import ARC, GSM8K, HumanEval, MMLU, SpellingBee, Task, ensure_words
+from tinygroot.tokenizer import NanochatTokenizer
+from tinygroot.utils import Runtime, is_dist, log, rank, unwrap_model, world_size
 
 
 SAMPLE_USER_PROMPTS = [

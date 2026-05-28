@@ -8,11 +8,11 @@ from typing import Any
 import torch
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from model import TinyGrootConfig, TinyGrootModel
-from sft_chat import generate_with_tools, render_prompt_for_completion
-from tokenizer import NanochatTokenizer
+from tinygroot.model import TinyGrootConfig, TinyGrootModel
+from tinygroot.sft_chat import generate_with_tools, render_prompt_for_completion
+from tinygroot.tokenizer import NanochatTokenizer
 
 
 def pick_device() -> torch.device:
