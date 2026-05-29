@@ -22,7 +22,7 @@ import signal
 import tempfile
 import warnings
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException
 from typing import Optional
 
 
@@ -35,11 +35,11 @@ def extract_gsm_answer(completion: str) -> Optional[str]:
         answer = match.group(1).strip().replace(",", "")
         try:
             number = Decimal(answer)
-        except InvalidOperation:
+            if number == number.to_integral_value():
+                return format(number, "f").split(".", 1)[0]
+            return format(number.normalize(), "f")
+        except DecimalException:
             return answer
-        if number == number.to_integral_value():
-            return str(number.quantize(Decimal(1)))
-        return format(number.normalize(), "f")
     return None
 
 
