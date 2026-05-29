@@ -26,8 +26,10 @@ tinygroot-sample = "tinygroot.infer.sample:main"
 tinygroot-spec-decode = "tinygroot.infer.spec_decode:main"
 tinygroot-train = "tinygroot.training.train:main"
 tinygroot-chat-sft = "tinygroot.training.chat_sft:main"
+tinygroot-chat-rl = "tinygroot.training.chat_rl:main"
 tinygroot-pretokenize = "tinygroot.training.pretokenize:main"
 tinygroot-eval-core = "tinygroot.eval_core:main"
+tinygroot-hf-upload = "tinygroot.hf_upload:main"
 
 [build-system]
 requires = ["setuptools>=70"]

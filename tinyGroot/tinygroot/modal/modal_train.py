@@ -22,9 +22,11 @@ PROJECT_FILES = [
     "dflash_model.py",
     "eval_core.py",
     "flash_attention.py",
+    "hf_upload.py",
     "model.py",
     "fp8.py",
     "nanochat_optim.py",
+    "chat_rl.py",
     "pretokenize.py",
     "sample.py",
     "spec_decode.py",
@@ -61,6 +63,43 @@ image = (
 )
 
 app = modal.App(APP_NAME)
+
+
+@app.function(
+    image=image,
+    cpu=4,
+    memory=8192,
+    timeout=2 * 60 * 60,
+    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
+    volumes={"/runs": runs_volume},
+)
+def upload_checkpoint_to_hf(
+    *,
+    checkpoint_dir: str,
+    repo_id: str,
+    private: bool,
+    revision: str | None,
+    commit_message: str | None,
+) -> None:
+    command = [
+        "python",
+        "-m",
+        "tinygroot.hf_upload",
+        "--checkpoint-dir",
+        checkpoint_dir,
+        "--repo-id",
+        repo_id,
+    ]
+    if private:
+        command.append("--private")
+    if revision is not None:
+        command.extend(["--revision", revision])
+    if commit_message is not None:
+        command.extend(["--commit-message", commit_message])
+    try:
+        subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        runs_volume.commit()
 
 
 @app.function(
@@ -288,6 +327,90 @@ def run_train(
         runs_volume.commit()
 
 
+def run_chat_rl(
+    *,
+    gpu_count: int,
+    checkpoint: str,
+    out_dir: str,
+    run_name: str | None,
+    wandb_project: str,
+    num_epochs: int,
+    max_steps: int,
+    device_batch_size: int,
+    examples_per_step: int,
+    num_samples: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    eval_every: int,
+    eval_examples: int,
+    save_every: int,
+    optimizer: str,
+    wandb: bool,
+    compile: bool,
+    fp8: bool,
+) -> None:
+    if not os.path.exists(checkpoint):
+        raise SystemExit(
+            f"[modal_train] RL checkpoint not found inside the container: {checkpoint}\n"
+            f"  -> Run 'modal run tinygroot/modal/modal_train.py::list_runs' to find the exact /runs path."
+        )
+    command = [
+        "torchrun",
+        "--standalone",
+        f"--nproc_per_node={gpu_count}",
+        "-m",
+        "tinygroot.training.chat_rl",
+        "--checkpoint",
+        checkpoint,
+        "--out-dir",
+        out_dir,
+        "--wandb-project",
+        wandb_project,
+        "--num-epochs",
+        str(num_epochs),
+        "--max-steps",
+        str(max_steps),
+        "--device-batch-size",
+        str(device_batch_size),
+        "--examples-per-step",
+        str(examples_per_step),
+        "--num-samples",
+        str(num_samples),
+        "--max-new-tokens",
+        str(max_new_tokens),
+        "--temperature",
+        str(temperature),
+        "--top-k",
+        str(top_k),
+        "--eval-every",
+        str(eval_every),
+        "--eval-examples",
+        str(eval_examples),
+        "--save-every",
+        str(save_every),
+        "--optimizer",
+        optimizer,
+    ]
+    if wandb:
+        command.append("--wandb")
+    if run_name is not None:
+        command.extend(["--run", run_name])
+    if compile:
+        command.append("--compile")
+    if fp8:
+        command.append("--fp8")
+
+    try:
+        env = os.environ.copy()
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        if compile:
+            env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
+        subprocess.run(command, cwd=WORKDIR, env=env, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        runs_volume.commit()
+
+
 @app.function(
     image=image,
     gpu="A100-80GB",
@@ -416,6 +539,122 @@ def train_h100_8gpu(**kwargs) -> None:
     run_train(gpu_count=8, **kwargs)
 
 
+@app.function(
+    image=image,
+    gpu="A100-80GB",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_a100_1gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=1, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100-80GB:2",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_a100_2gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=2, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100-80GB:4",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_a100_4gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=4, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100-80GB:8",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_a100_8gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=8, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_h100_1gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=1, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:2",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_h100_2gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=2, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:4",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_h100_4gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=4, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:8",
+    timeout=24 * 60 * 60,
+    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def rl_h100_8gpu(**kwargs) -> None:
+    run_chat_rl(gpu_count=8, **kwargs)
+
+
+def select_train_function(gpu_type: str, gpu_count: int):
+    train_functions = {
+        ("A100", 1): train_a100_1gpu,
+        ("A100", 2): train_a100_2gpu,
+        ("A100", 4): train_a100_4gpu,
+        ("A100", 8): train_a100_8gpu,
+        ("H100", 1): train_h100_1gpu,
+        ("H100", 2): train_h100_2gpu,
+        ("H100", 4): train_h100_4gpu,
+        ("H100", 8): train_h100_8gpu,
+    }
+    return train_functions.get((gpu_type, gpu_count))
+
+
+def select_rl_function(gpu_type: str, gpu_count: int):
+    rl_functions = {
+        ("A100", 1): rl_a100_1gpu,
+        ("A100", 2): rl_a100_2gpu,
+        ("A100", 4): rl_a100_4gpu,
+        ("A100", 8): rl_a100_8gpu,
+        ("H100", 1): rl_h100_1gpu,
+        ("H100", 2): rl_h100_2gpu,
+        ("H100", 4): rl_h100_4gpu,
+        ("H100", 8): rl_h100_8gpu,
+    }
+    return rl_functions.get((gpu_type, gpu_count))
+
+
 @app.local_entrypoint()
 def main(
     gpu_count: int = 8,
@@ -456,6 +695,11 @@ def main(
     compile: bool = False,
     fp8: bool = False,
     wandb: bool = False,
+    push_to_hf: bool = False,
+    hf_repo_id: str | None = None,
+    hf_private: bool = False,
+    hf_revision: str | None = None,
+    hf_commit_message: str | None = None,
     pretokenize: bool = False,
     tokenizer_only: bool = False,
     download_only: bool = False,
@@ -489,17 +733,7 @@ def main(
         )
         return
 
-    train_functions = {
-        ("A100", 1): train_a100_1gpu,
-        ("A100", 2): train_a100_2gpu,
-        ("A100", 4): train_a100_4gpu,
-        ("A100", 8): train_a100_8gpu,
-        ("H100", 1): train_h100_1gpu,
-        ("H100", 2): train_h100_2gpu,
-        ("H100", 4): train_h100_4gpu,
-        ("H100", 8): train_h100_8gpu,
-    }
-    train_function = train_functions.get((gpu_type, gpu_count))
+    train_function = select_train_function(gpu_type, gpu_count)
     if train_function is None:
         raise ValueError("--gpu-type must be A100, A100-80GB, or H100, and --gpu-count must be one of: 1, 2, 4, 8")
 
@@ -547,6 +781,87 @@ def main(
         block_size=block_size,
         n_draft_layers=n_draft_layers,
     )
+    if push_to_hf:
+        if not hf_repo_id:
+            raise ValueError("--push-to-hf requires --hf-repo-id")
+        upload_checkpoint_to_hf.remote(
+            checkpoint_dir=out_dir,
+            repo_id=hf_repo_id,
+            private=hf_private,
+            revision=hf_revision,
+            commit_message=hf_commit_message,
+        )
+
+
+@app.local_entrypoint()
+def rl(
+    checkpoint: str,
+    out_dir: str = "/runs/tinygroot-rl",
+    run_name: str | None = None,
+    wandb_project: str = "tinyGroot-rl",
+    gpu_type: str = "H100",
+    gpu_count: int = 8,
+    num_epochs: int = 1,
+    max_steps: int = -1,
+    device_batch_size: int = 8,
+    examples_per_step: int = 16,
+    num_samples: int = 16,
+    max_new_tokens: int = 256,
+    temperature: float = 1.0,
+    top_k: int = 50,
+    eval_every: int = 60,
+    eval_examples: int = 400,
+    save_every: int = 60,
+    optimizer: str = "muon",
+    wandb: bool = False,
+    compile: bool = False,
+    fp8: bool = False,
+    push_to_hf: bool = False,
+    hf_repo_id: str | None = None,
+    hf_private: bool = False,
+    hf_revision: str | None = None,
+    hf_commit_message: str | None = None,
+) -> None:
+    """Run nanochat-style GSM8K RL from an SFT checkpoint on Modal."""
+    gpu_type = gpu_type.upper().replace("_", "-")
+    if gpu_type == "A100-80GB":
+        gpu_type = "A100"
+    if gpu_type != "H100" and fp8:
+        raise ValueError("--fp8 is only supported for H100/Hopper in this training path; disable FP8 for A100.")
+    rl_function = select_rl_function(gpu_type, gpu_count)
+    if rl_function is None:
+        raise ValueError("--gpu-type must be A100, A100-80GB, or H100, and --gpu-count must be one of: 1, 2, 4, 8")
+    rl_function.remote(
+        checkpoint=checkpoint,
+        out_dir=out_dir,
+        run_name=run_name,
+        wandb_project=wandb_project,
+        num_epochs=num_epochs,
+        max_steps=max_steps,
+        device_batch_size=device_batch_size,
+        examples_per_step=examples_per_step,
+        num_samples=num_samples,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        eval_every=eval_every,
+        eval_examples=eval_examples,
+        save_every=save_every,
+        optimizer=optimizer,
+        wandb=wandb,
+        compile=compile,
+        fp8=fp8,
+    )
+    if push_to_hf:
+        if not hf_repo_id:
+            raise ValueError("--push-to-hf requires --hf-repo-id")
+        upload_checkpoint_to_hf.remote(
+            checkpoint_dir=out_dir,
+            repo_id=hf_repo_id,
+            private=hf_private,
+            revision=hf_revision,
+            commit_message=hf_commit_message,
+        )
 
 
 @app.function(

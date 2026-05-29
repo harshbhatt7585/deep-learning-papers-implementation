@@ -47,6 +47,24 @@ if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
   fi
 fi
 
+if [[ "${MODE}" == "rl" || "${MODE}" == "chat-rl" || "${MODE}" == "chat_rl" ]]; then
+  : "${NUM_EPOCHS:=1}"
+  : "${EXAMPLES_PER_STEP:=16}"
+  : "${NUM_SAMPLES:=16}"
+  : "${MAX_NEW_TOKENS:=256}"
+  : "${TEMPERATURE:=1.0}"
+  : "${TOP_K:=50}"
+  : "${EVAL_EXAMPLES:=400}"
+  : "${EVAL_INTERVAL:=60}"
+  : "${SAVE_EVERY:=60}"
+  : "${BATCH_SIZE:=8}"
+  if [[ -z "${RL_CHECKPOINT:-${CHECKPOINT:-}}" ]]; then
+    echo "[speed_run] ERROR: MODE=${MODE} requires RL_CHECKPOINT=/runs/<sft-run>/checkpoint.pt" >&2
+    exit 64
+  fi
+  RL_CHECKPOINT="${RL_CHECKPOINT:-${CHECKPOINT}}"
+fi
+
 TRAIN_SHARDS="${TRAIN_SHARDS:-170}"
 MAX_TRAIN_CHARS="${MAX_TRAIN_CHARS:-17000000000}"
 MAX_VAL_CHARS="${MAX_VAL_CHARS:-2000000}"
@@ -108,7 +126,7 @@ case "${RUN_CONFIG}" in
     ;;
   *)
     echo "unknown run config: ${RUN_CONFIG}" >&2
-    echo "usage: $0 [tokenizer|download|pretokenize|train|all] [1gpu|2gpu|4gpu|8gpu]" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|draft|rl|all] [1gpu|2gpu|4gpu|8gpu]" >&2
     exit 2
     ;;
 esac
@@ -118,6 +136,8 @@ GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-${DEFAULT_GRAD_ACCUM_STEPS}}"
 DEFAULT_RUN_TIME="$(date +"%Y-%m-%d--%I-%M%p" | tr '[:upper:]' '[:lower:]')"
 if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
   DEFAULT_RUN_NAME="tinygroot-dflash-drafter-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
+elif [[ "${MODE}" == "rl" || "${MODE}" == "chat-rl" || "${MODE}" == "chat_rl" ]]; then
+  DEFAULT_RUN_NAME="tinygroot-rl-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 else
   DEFAULT_RUN_NAME="tinygroot-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 fi
@@ -142,6 +162,11 @@ fi
 COMPILE="${COMPILE:-1}"
 WANDB="${WANDB:-1}"
 OVERWRITE_TOKENS="${OVERWRITE_TOKENS:-0}"
+PUSH_TO_HF="${PUSH_TO_HF:-0}"
+HF_REPO_ID="${HF_REPO_ID:-}"
+HF_PRIVATE="${HF_PRIVATE:-0}"
+HF_REVISION="${HF_REVISION:-}"
+HF_COMMIT_MESSAGE="${HF_COMMIT_MESSAGE:-}"
 
 modal_flags=()
 if [[ "${COMPILE}" == "1" ]]; then
@@ -152,6 +177,22 @@ if [[ "${FP8}" == "1" ]]; then
 fi
 if [[ "${WANDB}" == "1" ]]; then
   modal_flags+=(--wandb)
+fi
+if [[ "${PUSH_TO_HF}" == "1" ]]; then
+  if [[ -z "${HF_REPO_ID}" ]]; then
+    echo "[speed_run] ERROR: PUSH_TO_HF=1 requires HF_REPO_ID=<namespace/model>" >&2
+    exit 64
+  fi
+  modal_flags+=(--push-to-hf --hf-repo-id "${HF_REPO_ID}")
+  if [[ "${HF_PRIVATE}" == "1" ]]; then
+    modal_flags+=(--hf-private)
+  fi
+  if [[ -n "${HF_REVISION}" ]]; then
+    modal_flags+=(--hf-revision "${HF_REVISION}")
+  fi
+  if [[ -n "${HF_COMMIT_MESSAGE}" ]]; then
+    modal_flags+=(--hf-commit-message "${HF_COMMIT_MESSAGE}")
+  fi
 fi
 
 pretokenize() {
@@ -272,6 +313,35 @@ train() {
   "${command[@]}"
 }
 
+rl() {
+  local command=(
+    modal run tinygroot/modal/modal_train.py::rl
+    --checkpoint "${RL_CHECKPOINT}"
+    --out-dir "${OUT_DIR}"
+    --gpu-type "${GPU_TYPE}"
+    --gpu-count "${GPU_COUNT}"
+    --num-epochs "${NUM_EPOCHS}"
+    --max-steps "${MAX_STEPS}"
+    --device-batch-size "${BATCH_SIZE}"
+    --examples-per-step "${EXAMPLES_PER_STEP}"
+    --num-samples "${NUM_SAMPLES}"
+    --max-new-tokens "${MAX_NEW_TOKENS}"
+    --temperature "${TEMPERATURE}"
+    --top-k "${TOP_K}"
+    --eval-every "${EVAL_INTERVAL}"
+    --eval-examples "${EVAL_EXAMPLES}"
+    --save-every "${SAVE_EVERY}"
+    --optimizer "${OPTIMIZER}"
+  )
+  if [[ "${RUN_NAME}" != "${DEFAULT_RUN_NAME}" ]]; then
+    command+=(--run-name "${RUN_NAME}")
+  fi
+  if [[ ${#modal_flags[@]} -gt 0 ]]; then
+    command+=("${modal_flags[@]}")
+  fi
+  "${command[@]}"
+}
+
 case "${MODE}" in
   tokenizer|tok)
     train_tokenizer
@@ -297,13 +367,20 @@ case "${MODE}" in
     echo "  budget:  max_steps=${MAX_STEPS} batch=${BATCH_SIZE} seq_len=${SEQ_LEN}" >&2
     train
     ;;
+  rl|chat-rl|chat_rl)
+    echo "[speed_run] training GSM8K RL:" >&2
+    echo "  RUN_NAME=${RUN_NAME}" >&2
+    echo "  checkpoint: ${RL_CHECKPOINT}" >&2
+    echo "  rollout: examples_per_step=${EXAMPLES_PER_STEP} num_samples=${NUM_SAMPLES} max_new_tokens=${MAX_NEW_TOKENS}" >&2
+    rl
+    ;;
   all)
     train_tokenizer
     download_data
     train
     ;;
   *)
-    echo "usage: $0 [tokenizer|download|pretokenize|train|draft|all]" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|draft|rl|all]" >&2
     exit 2
     ;;
 esac

@@ -14,6 +14,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinygroot.fp8 import disable_fp8
+from tinygroot.hf_upload import push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel, norm
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
 from tinygroot.sft_chat import evaluate_chatcore, render_conversation, sample_text
@@ -51,6 +52,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-group", type=str, default=None)
     parser.add_argument("--wandb-tags", nargs="*", default=None)
     parser.add_argument("--wandb-dir", type=Path, default=Path("runs/wandb"))
+    parser.add_argument("--push-to-hf", action="store_true", help="Upload the final SFT checkpoint directory to Hugging Face Hub after training.")
+    parser.add_argument("--hf-repo-id", type=str, default=None, help="Target Hugging Face model repo, e.g. username/model-name.")
+    parser.add_argument("--hf-private", action="store_true", help="Create/use a private Hugging Face model repo.")
+    parser.add_argument("--hf-revision", type=str, default=None, help="Optional Hugging Face branch/revision.")
+    parser.add_argument("--hf-commit-message", type=str, default=None)
 
     parser.add_argument("--device-batch-size", "--batch-size", dest="batch_size", type=int, default=16)
     parser.add_argument("--total-batch-size", type=int, default=524_288, help="Global SFT tokens per optimizer step")
@@ -582,6 +588,17 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     if is_main_process():
         save_checkpoint(out_dir=args.out_dir, model=model, tokenizer=tokenizer, optimizer=optimizer, scaler=scaler, step=step, args=args)
         log(f"saved final checkpoint: {args.out_dir / 'checkpoint.pt'}")
+        if args.push_to_hf:
+            if not args.hf_repo_id:
+                raise ValueError("--push-to-hf requires --hf-repo-id")
+            commit_url = push_checkpoint_to_hub(
+                checkpoint_dir=args.out_dir,
+                repo_id=args.hf_repo_id,
+                private=args.hf_private,
+                revision=args.hf_revision,
+                commit_message=args.hf_commit_message,
+            )
+            log(f"uploaded final checkpoint to Hugging Face: {commit_url}")
         if wandb_run is not None:
             wandb_run.summary["final_step"] = step
             wandb_run.summary["total_training_time"] = total_time

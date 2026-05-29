@@ -15,6 +15,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinygroot.core_eval import ensure_eval_bundle, evaluate_core
 from tinygroot.flash_attention import describe_attention_backend
+from tinygroot.hf_upload import push_checkpoint_to_hub
 from tinygroot.model import (
     TinyGrootConfig,
     TinyGrootModel,
@@ -179,6 +180,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-interval", type=int, default=None)
 
     parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--push-to-hf", action="store_true", help="Upload the final checkpoint directory to Hugging Face Hub after training.")
+    parser.add_argument("--hf-repo-id", type=str, default=None, help="Target Hugging Face model repo, e.g. username/model-name.")
+    parser.add_argument("--hf-private", action="store_true", help="Create/use a private Hugging Face model repo.")
+    parser.add_argument("--hf-revision", type=str, default=None, help="Optional Hugging Face branch/revision.")
+    parser.add_argument("--hf-commit-message", type=str, default=None)
 
     parsed = parser.parse_args()
     eval_interval = parsed.eval_interval
@@ -1366,6 +1372,17 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             args=args,
         )
         log(f"saved final checkpoint: {args.out_dir / 'checkpoint.pt'}")
+        if args.push_to_hf:
+            if not args.hf_repo_id:
+                raise ValueError("--push-to-hf requires --hf-repo-id")
+            commit_url = push_checkpoint_to_hub(
+                checkpoint_dir=args.out_dir,
+                repo_id=args.hf_repo_id,
+                private=args.hf_private,
+                revision=args.hf_revision,
+                commit_message=args.hf_commit_message,
+            )
+            log(f"uploaded final checkpoint to Hugging Face: {commit_url}")
         if wandb_run is not None:
             wandb_run.summary["final_step"] = args.max_steps
             wandb_run.finish()

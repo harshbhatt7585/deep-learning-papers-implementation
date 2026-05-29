@@ -24,6 +24,7 @@ PROJECT_FILES = [
     "eval_core.py",
     "flash_attention.py",
     "fp8.py",
+    "hf_upload.py",
     "model.py",
     "nanochat_optim.py",
     "sft_chat.py",
@@ -63,6 +64,43 @@ image = (
 )
 
 app = modal.App(APP_NAME)
+
+
+@app.function(
+    image=image,
+    cpu=4,
+    memory=8192,
+    timeout=2 * 60 * 60,
+    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
+    volumes={"/runs": runs_volume},
+)
+def upload_checkpoint_to_hf(
+    *,
+    checkpoint_dir: str,
+    repo_id: str,
+    private: bool,
+    revision: str | None,
+    commit_message: str | None,
+) -> None:
+    command = [
+        "python",
+        "-m",
+        "tinygroot.hf_upload",
+        "--checkpoint-dir",
+        checkpoint_dir,
+        "--repo-id",
+        repo_id,
+    ]
+    if private:
+        command.append("--private")
+    if revision is not None:
+        command.extend(["--revision", revision])
+    if commit_message is not None:
+        command.extend(["--commit-message", commit_message])
+    try:
+        subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        runs_volume.commit()
 
 
 def validate_checkpoint_path(checkpoint: str) -> None:
@@ -300,6 +338,11 @@ def main(
     gsm8k_epochs: int = 4,
     simple_spelling_size: int = 200_000,
     spellingbee_size: int = 80_000,
+    push_to_hf: bool = False,
+    hf_repo_id: str | None = None,
+    hf_private: bool = False,
+    hf_revision: str | None = None,
+    hf_commit_message: str | None = None,
 ) -> None:
     gpu_type = gpu_type.upper().replace("_", "-")
     if (gpu_type, gpu_count) == ("H100", 8):
@@ -337,3 +380,13 @@ def main(
         simple_spelling_size=simple_spelling_size,
         spellingbee_size=spellingbee_size,
     )
+    if push_to_hf:
+        if not hf_repo_id:
+            raise ValueError("--push-to-hf requires --hf-repo-id")
+        upload_checkpoint_to_hf.remote(
+            checkpoint_dir=out_dir,
+            repo_id=hf_repo_id,
+            private=hf_private,
+            revision=hf_revision,
+            commit_message=hf_commit_message,
+        )
