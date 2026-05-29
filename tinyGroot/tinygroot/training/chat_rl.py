@@ -418,7 +418,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     start_time = time.time()
 
     for step in range(num_steps):
-        if args.eval_every > 0 and step % args.eval_every == 0:
+        if args.eval_every > 0 and step > 0 and step % args.eval_every == 0:
             eval_start = time.time()
             if is_main_process():
                 log(
