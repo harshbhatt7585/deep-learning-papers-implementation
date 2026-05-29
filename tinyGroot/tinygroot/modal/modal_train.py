@@ -23,6 +23,7 @@ PROJECT_FILES = [
     "core_eval.py",
     "dflash_model.py",
     "eval_core.py",
+    "engine.py",
     "flash_attention.py",
     "hf_upload.py",
     "model.py",

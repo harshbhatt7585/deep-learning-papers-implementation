@@ -13,10 +13,10 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tinygroot.chat_core_eval import extract_gsm_answer, use_calculator
-from tinygroot.fp8 import disable_fp8
+from tinygroot.chat_core_eval import extract_gsm_answer
+from tinygroot.engine import Engine
 from tinygroot.hf_upload import push_checkpoint_to_hub
-from tinygroot.model import TinyGrootConfig, TinyGrootModel, _sample_tokens
+from tinygroot.model import TinyGrootConfig, TinyGrootModel
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
 from tinygroot.sft_chat import ChatSpecialIds, render_prompt_for_completion
 from tinygroot.sft_data import GSM8K
@@ -218,72 +218,16 @@ def generate_batch_with_masks(
 ) -> tuple[list[list[int]], list[list[int]]]:
     source = unwrap_model(model)
     source.eval()
-    device = source.device
-    specials = ChatSpecialIds.from_tokenizer(tokenizer)
-    bos = tokenizer.bos_token_id
-    seqs = [list(prompt_ids) for _ in range(num_samples)]
-    masks = [[0] * len(prompt_ids) for _ in range(num_samples)]
-    forced: list[list[int]] = [[] for _ in range(num_samples)]
-    in_python = [False] * num_samples
-    python_expr_tokens: list[list[int]] = [[] for _ in range(num_samples)]
-    done = [False] * num_samples
-
-    generator = torch.Generator(device=device)
-    generator.manual_seed(seed)
-
-    with disable_fp8(source):
-        for _ in range(max_new_tokens):
-            active = [i for i, finished in enumerate(done) if not finished and len(seqs[i]) < source.config.max_seq_len]
-            if not active:
-                break
-            sample_tokens: dict[int, int] = {}
-            forward_indices = [i for i in active if not forced[i]]
-            if forward_indices:
-                max_len = max(len(seqs[i]) for i in forward_indices)
-                padded = [seqs[i] + [bos] * (max_len - len(seqs[i])) for i in forward_indices]
-                positions = [len(seqs[i]) - 1 for i in forward_indices]
-                x = torch.tensor(padded, dtype=torch.long, device=device)
-                logits = source(x, attention_mask=None, causal=True)
-                focus = logits[torch.arange(len(forward_indices), device=device), torch.tensor(positions, device=device)]
-                if temperature == 0.0:
-                    tokens, _ = _sample_tokens(focus, temperature=0.0, top_k=top_k, top_p=None)
-                else:
-                    scaled = focus / temperature
-                    if top_k is not None and top_k > 0:
-                        kth_values = torch.topk(scaled, k=min(top_k, scaled.shape[-1]), dim=-1).values[:, -1, None]
-                        scaled = scaled.masked_fill(scaled < kth_values, float("-inf"))
-                    probs = F.softmax(scaled, dim=-1)
-                    tokens = torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
-                for row, token in zip(forward_indices, tokens.tolist()):
-                    sample_tokens[row] = int(token)
-
-            for i in active:
-                if forced[i]:
-                    next_token = forced[i].pop(0)
-                    train_mask = 0
-                else:
-                    next_token = sample_tokens[i]
-                    train_mask = 1
-                seqs[i].append(next_token)
-                masks[i].append(train_mask)
-
-                if next_token == specials.assistant_end or next_token == bos:
-                    done[i] = True
-                elif next_token == specials.python_start:
-                    in_python[i] = True
-                    python_expr_tokens[i] = []
-                elif next_token == specials.python_end and in_python[i]:
-                    in_python[i] = False
-                    expr = tokenizer.decode(python_expr_tokens[i], skip_special=True)
-                    result = use_calculator(expr)
-                    if result is not None:
-                        forced[i].append(specials.output_start)
-                        forced[i].extend(tokenizer.encode(str(result)))
-                        forced[i].append(specials.output_end)
-                    python_expr_tokens[i] = []
-                elif in_python[i]:
-                    python_expr_tokens[i].append(next_token)
-    return seqs, masks
+    max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - len(prompt_ids)))
+    engine = Engine(source, tokenizer)
+    return engine.generate_batch(
+        prompt_ids,
+        num_samples=num_samples,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        seed=seed,
+    )
 
 
 def make_rollout_batch(
