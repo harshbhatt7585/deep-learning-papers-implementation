@@ -57,12 +57,78 @@ if [[ "${MODE}" == "rl" || "${MODE}" == "chat-rl" || "${MODE}" == "chat_rl" ]]; 
   : "${EVAL_EXAMPLES:=400}"
   : "${EVAL_INTERVAL:=60}"
   : "${SAVE_EVERY:=60}"
-  : "${BATCH_SIZE:=8}"
+  : "${RL_DEVICE_BATCH_SIZE:=${BATCH_SIZE:-8}}"
   if [[ -z "${RL_CHECKPOINT:-${CHECKPOINT:-}}" ]]; then
     echo "[speed_run] ERROR: MODE=${MODE} requires RL_CHECKPOINT=/runs/<sft-run>/checkpoint.pt" >&2
     exit 64
   fi
   RL_CHECKPOINT="${RL_CHECKPOINT:-${CHECKPOINT}}"
+fi
+
+PIPELINE_MODE=0
+if [[ "${MODE}" == "pipeline" || "${MODE}" == "full" || "${MODE}" == "pretrain-sft-rl-eval" ]]; then
+  PIPELINE_MODE=1
+fi
+
+if [[ "${PIPELINE_MODE}" == "1" ]]; then
+  : "${NUM_EPOCHS:=1}"
+  : "${EXAMPLES_PER_STEP:=16}"
+  : "${NUM_SAMPLES:=16}"
+  : "${MAX_NEW_TOKENS:=256}"
+  : "${TEMPERATURE:=1.0}"
+  : "${TOP_K:=50}"
+  : "${EVAL_EXAMPLES:=400}"
+  : "${EVAL_INTERVAL:=60}"
+  : "${SAVE_EVERY:=60}"
+  : "${RL_DEVICE_BATCH_SIZE:=${BATCH_SIZE:-8}}"
+fi
+
+if [[ "${MODE}" == "sft" || "${MODE}" == "chat-sft" || "${MODE}" == "chat_sft" || "${PIPELINE_MODE}" == "1" ]]; then
+  : "${SFT_MAX_STEPS:=-1}"
+  : "${SFT_DEVICE_BATCH_SIZE:=16}"
+  : "${SFT_TOTAL_BATCH_SIZE:=524288}"
+  : "${SFT_EVAL_EVERY:=200}"
+  : "${SFT_EVAL_TOKENS:=2097152}"
+  if [[ "${PIPELINE_MODE}" == "1" ]]; then
+    : "${SFT_CHATCORE_EVERY:=0}"
+  else
+    : "${SFT_CHATCORE_EVERY:=200}"
+  fi
+  : "${SFT_CHATCORE_MAX_CAT:=-1}"
+  : "${SFT_CHATCORE_MAX_SAMPLE:=24}"
+  : "${SFT_SAMPLE_EVERY:=200}"
+  : "${SFT_SAMPLE_LENGTH:=128}"
+  : "${SFT_OPTIMIZER:=muon}"
+  : "${SFT_WANDB_PROJECT:=tinyGroot-sft}"
+  : "${SFT_MMLU_EPOCHS:=3}"
+  : "${SFT_GSM8K_EPOCHS:=4}"
+  : "${SFT_SIMPLE_SPELLING_SIZE:=200000}"
+  : "${SFT_SPELLINGBEE_SIZE:=80000}"
+  if [[ "${PIPELINE_MODE}" != "1" && -z "${SFT_CHECKPOINT:-${CHECKPOINT:-}}" ]]; then
+    echo "[speed_run] ERROR: MODE=${MODE} requires SFT_CHECKPOINT=/runs/<pretrain-run>/checkpoint.pt" >&2
+    exit 64
+  fi
+  SFT_CHECKPOINT="${SFT_CHECKPOINT:-${CHECKPOINT:-}}"
+fi
+
+if [[ "${MODE}" == "eval" || "${MODE}" == "chatcore" || "${MODE}" == "chatcore-eval" || "${PIPELINE_MODE}" == "1" ]]; then
+  : "${EVAL_SUITE:=chatcore}"
+  : "${EVAL_EXAMPLES:=400}"
+  : "${EVAL_NUM_SAMPLES:=8}"
+  : "${MAX_NEW_TOKENS:=256}"
+  : "${TEMPERATURE:=1.0}"
+  : "${TOP_K:=50}"
+  : "${CHATCORE_MAX_CAT:=-1}"
+  : "${CHATCORE_MAX_SAMPLE:=24}"
+  : "${CHATCORE_MAX_NEW_TOKENS:=512}"
+  : "${CHATCORE_TEMPERATURE:=0.0}"
+  : "${CHATCORE_TOP_K:=50}"
+  : "${CHATCORE_BATCH_SIZE:=8}"
+  if [[ "${PIPELINE_MODE}" != "1" && -z "${EVAL_CHECKPOINT:-${CHECKPOINT:-}}" ]]; then
+    echo "[speed_run] ERROR: MODE=${MODE} requires EVAL_CHECKPOINT=/runs/<run>/checkpoint.pt" >&2
+    exit 64
+  fi
+  EVAL_CHECKPOINT="${EVAL_CHECKPOINT:-${CHECKPOINT:-}}"
 fi
 
 TRAIN_SHARDS="${TRAIN_SHARDS:-170}"
@@ -126,7 +192,7 @@ case "${RUN_CONFIG}" in
     ;;
   *)
     echo "unknown run config: ${RUN_CONFIG}" >&2
-    echo "usage: $0 [tokenizer|download|pretokenize|train|draft|rl|all] [1gpu|2gpu|4gpu|8gpu]" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|sft|rl|eval|pipeline|draft|all] [1gpu|2gpu|4gpu|8gpu]" >&2
     exit 2
     ;;
 esac
@@ -138,12 +204,35 @@ if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
   DEFAULT_RUN_NAME="tinygroot-dflash-drafter-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 elif [[ "${MODE}" == "rl" || "${MODE}" == "chat-rl" || "${MODE}" == "chat_rl" ]]; then
   DEFAULT_RUN_NAME="tinygroot-rl-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
+elif [[ "${MODE}" == "sft" || "${MODE}" == "chat-sft" || "${MODE}" == "chat_sft" ]]; then
+  DEFAULT_RUN_NAME="tinygroot-sft-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
+elif [[ "${PIPELINE_MODE}" == "1" ]]; then
+  DEFAULT_RUN_NAME="tinygroot-pipeline-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 else
   DEFAULT_RUN_NAME="tinygroot-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
 fi
 RUN_NAME="${RUN_NAME:-${DEFAULT_RUN_NAME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 RESUME="${RESUME:-}"
+
+if [[ "${PIPELINE_MODE}" == "1" ]]; then
+  PRETRAIN_RUN_NAME="${PRETRAIN_RUN_NAME:-${RUN_NAME}-pretrain}"
+  SFT_RUN_NAME="${SFT_RUN_NAME:-${RUN_NAME}-sft}"
+  RL_RUN_NAME="${RL_RUN_NAME:-${RUN_NAME}-rl}"
+  PRETRAIN_OUT_DIR="${PRETRAIN_OUT_DIR:-/runs/${PRETRAIN_RUN_NAME}}"
+  SFT_OUT_DIR="${SFT_OUT_DIR:-/runs/${SFT_RUN_NAME}}"
+  RL_OUT_DIR="${RL_OUT_DIR:-/runs/${RL_RUN_NAME}}"
+  SFT_CHECKPOINT="${SFT_CHECKPOINT:-${PRETRAIN_OUT_DIR}/checkpoint.pt}"
+  RL_CHECKPOINT="${RL_CHECKPOINT:-${SFT_OUT_DIR}/checkpoint.pt}"
+  EVAL_CHECKPOINT="${EVAL_CHECKPOINT:-${RL_OUT_DIR}/checkpoint.pt}"
+else
+  PRETRAIN_RUN_NAME="${PRETRAIN_RUN_NAME:-${RUN_NAME}}"
+  SFT_RUN_NAME="${SFT_RUN_NAME:-${RUN_NAME}}"
+  RL_RUN_NAME="${RL_RUN_NAME:-${RUN_NAME}}"
+  PRETRAIN_OUT_DIR="${PRETRAIN_OUT_DIR:-${OUT_DIR}}"
+  SFT_OUT_DIR="${SFT_OUT_DIR:-${OUT_DIR}}"
+  RL_OUT_DIR="${RL_OUT_DIR:-${OUT_DIR}}"
+fi
 
 if [[ -z "${FP8+x}" ]]; then
   if [[ "${GPU_TYPE_UPPER}" == "H100" ]]; then
@@ -279,7 +368,7 @@ train() {
     --ff-mult "${FF_MULT}"
     --target-param-data-ratio "${TARGET_PARAM_DATA_RATIO}"
     --target-tokens "${TARGET_TOKENS}"
-    --out-dir "${OUT_DIR}"
+    --out-dir "${PRETRAIN_OUT_DIR}"
     --nanochat-tokenizer-cache-dir "${NANOCHAT_TOKENIZER_CACHE_DIR}"
     --nanochat-tokenizer-vocab-size "${NANOCHAT_TOKENIZER_VOCAB_SIZE}"
   )
@@ -317,12 +406,12 @@ rl() {
   local command=(
     modal run tinygroot/modal/modal_train.py::rl
     --checkpoint "${RL_CHECKPOINT}"
-    --out-dir "${OUT_DIR}"
+    --out-dir "${RL_OUT_DIR}"
     --gpu-type "${GPU_TYPE}"
     --gpu-count "${GPU_COUNT}"
     --num-epochs "${NUM_EPOCHS}"
     --max-steps "${MAX_STEPS}"
-    --device-batch-size "${BATCH_SIZE}"
+    --device-batch-size "${RL_DEVICE_BATCH_SIZE}"
     --examples-per-step "${EXAMPLES_PER_STEP}"
     --num-samples "${NUM_SAMPLES}"
     --max-new-tokens "${MAX_NEW_TOKENS}"
@@ -333,12 +422,87 @@ rl() {
     --save-every "${SAVE_EVERY}"
     --optimizer "${OPTIMIZER}"
   )
-  if [[ "${RUN_NAME}" != "${DEFAULT_RUN_NAME}" ]]; then
-    command+=(--run-name "${RUN_NAME}")
+  if [[ "${RL_RUN_NAME}" != "${DEFAULT_RUN_NAME}" || "${PIPELINE_MODE}" == "1" ]]; then
+    command+=(--run-name "${RL_RUN_NAME}")
   fi
   if [[ ${#modal_flags[@]} -gt 0 ]]; then
     command+=("${modal_flags[@]}")
   fi
+  "${command[@]}"
+}
+
+sft() {
+  local command=(
+    modal run tinygroot/modal/modal_chat_sft.py::main
+    --gpu-type "${GPU_TYPE}"
+    --gpu-count "${GPU_COUNT}"
+    --checkpoint "${SFT_CHECKPOINT}"
+    --out-dir "${SFT_OUT_DIR}"
+    --run-name "${SFT_RUN_NAME}"
+    --wandb-project "${SFT_WANDB_PROJECT}"
+    --max-steps "${SFT_MAX_STEPS}"
+    --device-batch-size "${SFT_DEVICE_BATCH_SIZE}"
+    --total-batch-size "${SFT_TOTAL_BATCH_SIZE}"
+    --eval-every "${SFT_EVAL_EVERY}"
+    --eval-tokens "${SFT_EVAL_TOKENS}"
+    --chatcore-every "${SFT_CHATCORE_EVERY}"
+    --chatcore-max-cat "${SFT_CHATCORE_MAX_CAT}"
+    --chatcore-max-sample "${SFT_CHATCORE_MAX_SAMPLE}"
+    --sample-every "${SFT_SAMPLE_EVERY}"
+    --sample-length "${SFT_SAMPLE_LENGTH}"
+    --optimizer "${SFT_OPTIMIZER}"
+    --mmlu-epochs "${SFT_MMLU_EPOCHS}"
+    --gsm8k-epochs "${SFT_GSM8K_EPOCHS}"
+    --simple-spelling-size "${SFT_SIMPLE_SPELLING_SIZE}"
+    --spellingbee-size "${SFT_SPELLINGBEE_SIZE}"
+  )
+  if [[ -n "${SFT_SEQ_LEN:-}" ]]; then
+    command+=(--seq-len "${SFT_SEQ_LEN}")
+  fi
+  if [[ "${FP8}" == "1" ]]; then
+    command+=(--fp8)
+  fi
+  if [[ "${COMPILE}" == "1" ]]; then
+    command+=(--compile)
+  fi
+  if [[ "${PUSH_TO_HF}" == "1" ]]; then
+    if [[ -z "${HF_REPO_ID}" ]]; then
+      echo "[speed_run] ERROR: PUSH_TO_HF=1 requires HF_REPO_ID=<namespace/model>" >&2
+      exit 64
+    fi
+    command+=(--push-to-hf --hf-repo-id "${HF_REPO_ID}")
+    if [[ "${HF_PRIVATE}" == "1" ]]; then
+      command+=(--hf-private)
+    fi
+    if [[ -n "${HF_REVISION}" ]]; then
+      command+=(--hf-revision "${HF_REVISION}")
+    fi
+    if [[ -n "${HF_COMMIT_MESSAGE}" ]]; then
+      command+=(--hf-commit-message "${HF_COMMIT_MESSAGE}")
+    fi
+  fi
+  "${command[@]}"
+}
+
+chatcore_eval() {
+  local command=(
+    modal run tinygroot/modal/modal_train.py::evaluate
+    --gpu-type "${GPU_TYPE}"
+    --gpu-count "${GPU_COUNT}"
+    --checkpoint "${EVAL_CHECKPOINT}"
+    --suite "${EVAL_SUITE}"
+    --eval-examples "${EVAL_EXAMPLES}"
+    --eval-num-samples "${EVAL_NUM_SAMPLES}"
+    --max-new-tokens "${MAX_NEW_TOKENS}"
+    --temperature "${TEMPERATURE}"
+    --top-k "${TOP_K}"
+    --chatcore-max-cat "${CHATCORE_MAX_CAT}"
+    --chatcore-max-sample "${CHATCORE_MAX_SAMPLE}"
+    --chatcore-max-new-tokens "${CHATCORE_MAX_NEW_TOKENS}"
+    --chatcore-temperature "${CHATCORE_TEMPERATURE}"
+    --chatcore-top-k "${CHATCORE_TOP_K}"
+    --chatcore-batch-size "${CHATCORE_BATCH_SIZE}"
+  )
   "${command[@]}"
 }
 
@@ -355,6 +519,13 @@ case "${MODE}" in
   train)
     train
     ;;
+  sft|chat-sft|chat_sft)
+    echo "[speed_run] training chat SFT:" >&2
+    echo "  RUN_NAME=${SFT_RUN_NAME}" >&2
+    echo "  checkpoint: ${SFT_CHECKPOINT}" >&2
+    echo "  out_dir:    ${SFT_OUT_DIR}" >&2
+    sft
+    ;;
   draft|drafter)
     # DFlash drafter training. The drafter-specific defaults at the top of
     # this script (BLOCK_SIZE, N_DRAFT_LAYERS, ...) have
@@ -369,10 +540,27 @@ case "${MODE}" in
     ;;
   rl|chat-rl|chat_rl)
     echo "[speed_run] training GSM8K RL:" >&2
-    echo "  RUN_NAME=${RUN_NAME}" >&2
+    echo "  RUN_NAME=${RL_RUN_NAME}" >&2
     echo "  checkpoint: ${RL_CHECKPOINT}" >&2
     echo "  rollout: examples_per_step=${EXAMPLES_PER_STEP} num_samples=${NUM_SAMPLES} max_new_tokens=${MAX_NEW_TOKENS}" >&2
     rl
+    ;;
+  eval|chatcore|chatcore-eval)
+    echo "[speed_run] running standalone eval:" >&2
+    echo "  checkpoint: ${EVAL_CHECKPOINT}" >&2
+    echo "  suite:      ${EVAL_SUITE}" >&2
+    chatcore_eval
+    ;;
+  pipeline|full|pretrain-sft-rl-eval)
+    echo "[speed_run] running full pipeline:" >&2
+    echo "  pretrain: ${PRETRAIN_OUT_DIR}" >&2
+    echo "  sft:      ${SFT_OUT_DIR}" >&2
+    echo "  rl:       ${RL_OUT_DIR}" >&2
+    echo "  eval:     ${EVAL_SUITE} on ${EVAL_CHECKPOINT}" >&2
+    train
+    sft
+    rl
+    chatcore_eval
     ;;
   all)
     train_tokenizer
@@ -380,7 +568,7 @@ case "${MODE}" in
     train
     ;;
   *)
-    echo "usage: $0 [tokenizer|download|pretokenize|train|draft|rl|all]" >&2
+    echo "usage: $0 [tokenizer|download|pretokenize|train|sft|rl|eval|pipeline|draft|all]" >&2
     exit 2
     ;;
 esac

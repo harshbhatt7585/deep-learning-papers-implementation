@@ -21,6 +21,8 @@ PROJECT_FILES = [
     "chat_infer.py",
     "chat_sft.py",
     "core_eval.py",
+    "engine.py",
+    "eval.py",
     "eval_core.py",
     "flash_attention.py",
     "fp8.py",
