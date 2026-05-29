@@ -17,7 +17,8 @@ from tinygroot.fp8 import disable_fp8
 from tinygroot.hf_upload import push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel, norm
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
-from tinygroot.sft_chat import evaluate_chatcore, render_conversation, sample_text
+from tinygroot.eval import evaluate_chatcore
+from tinygroot.sft_chat import render_conversation, sample_text
 from tinygroot.sft_data import Task, build_datasets
 from tinygroot.tokenizer import NanochatTokenizer
 from tinygroot.training.train import apply_fp8_training, fp8_module_filter

@@ -15,6 +15,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinygroot.chat_core_eval import extract_gsm_answer
 from tinygroot.engine import Engine
+from tinygroot.eval import evaluate_chatcore, evaluate_gsm8k_passk
 from tinygroot.hf_upload import push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
@@ -67,9 +68,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=50)
 
     parser.add_argument("--eval-every", type=int, default=60)
+    parser.add_argument("--eval-suite", choices=["gsm8k-passk", "chatcore", "both"], default="gsm8k-passk")
     parser.add_argument("--eval-examples", type=int, default=400)
     parser.add_argument("--save-every", type=int, default=60)
     parser.add_argument("--eval-num-samples", type=int, default=None, help="Defaults to device batch size.")
+    parser.add_argument("--chatcore-max-cat", type=int, default=-1, help="Max categorical ChatCORE examples per task (-1 = all).")
+    parser.add_argument("--chatcore-max-sample", type=int, default=24, help="Max generative ChatCORE examples per task.")
+    parser.add_argument("--chatcore-max-new-tokens", type=int, default=512)
+    parser.add_argument("--chatcore-temperature", type=float, default=0.0)
+    parser.add_argument("--chatcore-top-k", type=int, default=50)
+    parser.add_argument("--chatcore-batch-size", type=int, default=8)
+    parser.add_argument("--words-path", type=Path, default=Path("/data/words_alpha.txt"))
     parser.add_argument("--log-rollouts-every", type=int, default=1, help="Log decoded rollout samples on rank 0 every N steps; 0 disables.")
     parser.add_argument("--log-rollout-samples", type=int, default=2, help="Number of rollout completions to print when logging is enabled.")
     parser.add_argument("--log-rollout-chars", type=int, default=1200, help="Maximum decoded characters per logged rollout completion.")
@@ -280,46 +289,6 @@ def policy_gradient_loss(
     return -pg_obj / num_valid
 
 
-@torch.no_grad()
-def run_gsm8k_eval(model: torch.nn.Module, tokenizer: NanochatTokenizer, runtime: Runtime, args: argparse.Namespace, task: GSM8K) -> dict[str, float]:
-    source = unwrap_model(model)
-    source.eval()
-    num_samples = args.eval_num_samples or args.batch_size
-    pass_counts = torch.zeros(num_samples, dtype=torch.float32, device=runtime.device)
-    total = 0
-    max_examples = min(args.eval_examples, len(task))
-    for idx in range(rank(), max_examples, world_size()):
-        conversation = task[idx]
-        prompt_ids = render_prompt_for_completion(
-            tokenizer,
-            conversation,
-            max_tokens=max(1, source.config.max_seq_len - args.max_new_tokens),
-        )
-        sequences, _masks = generate_batch_with_masks(
-            source,
-            tokenizer,
-            prompt_ids,
-            num_samples=num_samples,
-            max_new_tokens=args.max_new_tokens,
-            temperature=1.0,
-            top_k=args.top_k if args.top_k > 0 else None,
-            seed=(args.seed + idx) & 0x7FFFFFFF,
-        )
-        outcomes = []
-        for seq in sequences:
-            completion = tokenizer.decode(seq[len(prompt_ids):], skip_special=True)
-            outcomes.append(gsm_reward(conversation, completion) > 0.0)
-        for k in range(1, num_samples + 1):
-            pass_counts[k - 1] += float(any(outcomes[:k]))
-        total += 1
-    total_tensor = torch.tensor(total, dtype=torch.float32, device=runtime.device)
-    if is_dist():
-        dist.all_reduce(pass_counts, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-    pass_rates = pass_counts / total_tensor.clamp(min=1)
-    return {f"pass@{k}": float(pass_rates[k - 1].item()) for k in range(1, num_samples + 1)}
-
-
 def log_wandb(wandb_run: Any, metrics: dict[str, float], step: int) -> None:
     if wandb_run is not None and is_main_process():
         wandb_run.log(metrics, step=step)
@@ -422,10 +391,28 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             eval_start = time.time()
             if is_main_process():
                 log(
-                    f"starting eval step={step} examples={min(args.eval_examples, len(val_task))} "
+                    f"starting eval step={step} suite={args.eval_suite} "
+                    f"examples={min(args.eval_examples, len(val_task))} "
                     f"samples={args.eval_num_samples or args.batch_size} max_new_tokens={args.max_new_tokens}"
                 )
-            metrics = run_gsm8k_eval(model, tokenizer, runtime, args, val_task)
+            metrics: dict[str, float] = {}
+            if args.eval_suite in ("gsm8k-passk", "both"):
+                metrics.update(
+                    evaluate_gsm8k_passk(
+                        model,
+                        tokenizer,
+                        runtime,
+                        task=val_task,
+                        max_examples=args.eval_examples,
+                        num_samples=args.eval_num_samples or args.batch_size,
+                        max_new_tokens=args.max_new_tokens,
+                        temperature=1.0,
+                        top_k=args.top_k if args.top_k > 0 else None,
+                        seed=args.seed,
+                    )
+                )
+            if args.eval_suite in ("chatcore", "both"):
+                metrics.update(evaluate_chatcore(model, tokenizer, args, runtime))
             if is_main_process():
                 elapsed = time.time() - eval_start
                 log(" ".join(f"{k}={v:.4f}" for k, v in metrics.items()) + f" eval_time={elapsed:.1f}s")

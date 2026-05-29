@@ -22,6 +22,7 @@ PROJECT_FILES = [
     "chat_sft.py",
     "core_eval.py",
     "dflash_model.py",
+    "eval.py",
     "eval_core.py",
     "engine.py",
     "flash_attention.py",
@@ -120,6 +121,67 @@ def upload_checkpoint_to_hf(
         subprocess.run(command, cwd=WORKDIR, stdout=sys.stdout, stderr=sys.stderr, check=True)
     finally:
         runs_volume.commit()
+
+
+def run_chat_eval(
+    *,
+    gpu_count: int,
+    checkpoint: str,
+    suite: str,
+    eval_examples: int,
+    eval_num_samples: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    chatcore_max_cat: int,
+    chatcore_max_sample: int,
+    chatcore_max_new_tokens: int,
+    chatcore_temperature: float,
+    chatcore_top_k: int,
+    chatcore_batch_size: int,
+) -> None:
+    if not os.path.exists(checkpoint):
+        raise SystemExit(
+            f"[modal_train] eval checkpoint not found inside the container: {checkpoint}\n"
+            f"  -> Run 'modal run tinygroot/modal/modal_train.py::list_runs' to find the exact /runs path."
+        )
+    command = [
+        "torchrun",
+        "--standalone",
+        f"--nproc_per_node={gpu_count}",
+        "-m",
+        "tinygroot.eval",
+        "--checkpoint",
+        checkpoint,
+        "--suite",
+        suite,
+        "--eval-examples",
+        str(eval_examples),
+        "--eval-num-samples",
+        str(eval_num_samples),
+        "--max-new-tokens",
+        str(max_new_tokens),
+        "--temperature",
+        str(temperature),
+        "--top-k",
+        str(top_k),
+        "--chatcore-max-cat",
+        str(chatcore_max_cat),
+        "--chatcore-max-sample",
+        str(chatcore_max_sample),
+        "--chatcore-max-new-tokens",
+        str(chatcore_max_new_tokens),
+        "--chatcore-temperature",
+        str(chatcore_temperature),
+        "--chatcore-top-k",
+        str(chatcore_top_k),
+        "--chatcore-batch-size",
+        str(chatcore_batch_size),
+    ]
+    env = os.environ.copy()
+    add_workspace_pythonpath(env)
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    subprocess.run(command, cwd=WORKDIR, env=env, stdout=sys.stdout, stderr=sys.stderr, check=True)
 
 
 @app.function(
@@ -362,8 +424,15 @@ def run_chat_rl(
     max_new_tokens: int,
     temperature: float,
     top_k: int,
+    eval_suite: str,
     eval_every: int,
     eval_examples: int,
+    chatcore_max_cat: int,
+    chatcore_max_sample: int,
+    chatcore_max_new_tokens: int,
+    chatcore_temperature: float,
+    chatcore_top_k: int,
+    chatcore_batch_size: int,
     save_every: int,
     optimizer: str,
     wandb: bool,
@@ -402,10 +471,24 @@ def run_chat_rl(
         str(temperature),
         "--top-k",
         str(top_k),
+        "--eval-suite",
+        eval_suite,
         "--eval-every",
         str(eval_every),
         "--eval-examples",
         str(eval_examples),
+        "--chatcore-max-cat",
+        str(chatcore_max_cat),
+        "--chatcore-max-sample",
+        str(chatcore_max_sample),
+        "--chatcore-max-new-tokens",
+        str(chatcore_max_new_tokens),
+        "--chatcore-temperature",
+        str(chatcore_temperature),
+        "--chatcore-top-k",
+        str(chatcore_top_k),
+        "--chatcore-batch-size",
+        str(chatcore_batch_size),
         "--save-every",
         str(save_every),
         "--optimizer",
@@ -647,6 +730,46 @@ def rl_h100_8gpu(**kwargs) -> None:
     run_chat_rl(gpu_count=8, **kwargs)
 
 
+@app.function(
+    image=image,
+    gpu="H100",
+    timeout=24 * 60 * 60,
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def eval_h100_1gpu(**kwargs) -> None:
+    run_chat_eval(gpu_count=1, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:2",
+    timeout=24 * 60 * 60,
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def eval_h100_2gpu(**kwargs) -> None:
+    run_chat_eval(gpu_count=2, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:4",
+    timeout=24 * 60 * 60,
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def eval_h100_4gpu(**kwargs) -> None:
+    run_chat_eval(gpu_count=4, **kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="H100:8",
+    timeout=24 * 60 * 60,
+    volumes={"/data": data_volume, "/runs": runs_volume},
+)
+def eval_h100_8gpu(**kwargs) -> None:
+    run_chat_eval(gpu_count=8, **kwargs)
+
+
 def select_train_function(gpu_type: str, gpu_count: int):
     train_functions = {
         ("A100", 1): train_a100_1gpu,
@@ -673,6 +796,16 @@ def select_rl_function(gpu_type: str, gpu_count: int):
         ("H100", 8): rl_h100_8gpu,
     }
     return rl_functions.get((gpu_type, gpu_count))
+
+
+def select_eval_function(gpu_type: str, gpu_count: int):
+    eval_functions = {
+        ("H100", 1): eval_h100_1gpu,
+        ("H100", 2): eval_h100_2gpu,
+        ("H100", 4): eval_h100_4gpu,
+        ("H100", 8): eval_h100_8gpu,
+    }
+    return eval_functions.get((gpu_type, gpu_count))
 
 
 @app.local_entrypoint()
@@ -814,6 +947,48 @@ def main(
 
 
 @app.local_entrypoint()
+def evaluate(
+    checkpoint: str,
+    gpu_type: str = "H100",
+    gpu_count: int = 8,
+    suite: str = "both",
+    eval_examples: int = 400,
+    eval_num_samples: int = 8,
+    max_new_tokens: int = 256,
+    temperature: float = 1.0,
+    top_k: int = 50,
+    chatcore_max_cat: int = -1,
+    chatcore_max_sample: int = 24,
+    chatcore_max_new_tokens: int = 512,
+    chatcore_temperature: float = 0.0,
+    chatcore_top_k: int = 50,
+    chatcore_batch_size: int = 8,
+) -> None:
+    """Run standalone chat evals for a checkpoint on Modal."""
+    gpu_type = gpu_type.upper().replace("_", "-")
+    if gpu_type == "A100-80GB":
+        gpu_type = "A100"
+    eval_function = select_eval_function(gpu_type, gpu_count)
+    if eval_function is None:
+        raise ValueError("--gpu-type must be H100 and --gpu-count must be one of: 1, 2, 4, 8")
+    eval_function.remote(
+        checkpoint=checkpoint,
+        suite=suite,
+        eval_examples=eval_examples,
+        eval_num_samples=eval_num_samples,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        chatcore_max_cat=chatcore_max_cat,
+        chatcore_max_sample=chatcore_max_sample,
+        chatcore_max_new_tokens=chatcore_max_new_tokens,
+        chatcore_temperature=chatcore_temperature,
+        chatcore_top_k=chatcore_top_k,
+        chatcore_batch_size=chatcore_batch_size,
+    )
+
+
+@app.local_entrypoint()
 def rl(
     checkpoint: str,
     out_dir: str = "/runs/tinygroot-rl",
@@ -829,8 +1004,15 @@ def rl(
     max_new_tokens: int = 256,
     temperature: float = 1.0,
     top_k: int = 50,
+    eval_suite: str = "gsm8k-passk",
     eval_every: int = 60,
     eval_examples: int = 400,
+    chatcore_max_cat: int = -1,
+    chatcore_max_sample: int = 24,
+    chatcore_max_new_tokens: int = 512,
+    chatcore_temperature: float = 0.0,
+    chatcore_top_k: int = 50,
+    chatcore_batch_size: int = 8,
     save_every: int = 60,
     optimizer: str = "muon",
     wandb: bool = False,
@@ -864,8 +1046,15 @@ def rl(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        eval_suite=eval_suite,
         eval_every=eval_every,
         eval_examples=eval_examples,
+        chatcore_max_cat=chatcore_max_cat,
+        chatcore_max_sample=chatcore_max_sample,
+        chatcore_max_new_tokens=chatcore_max_new_tokens,
+        chatcore_temperature=chatcore_temperature,
+        chatcore_top_k=chatcore_top_k,
+        chatcore_batch_size=chatcore_batch_size,
         save_every=save_every,
         optimizer=optimizer,
         wandb=wandb,
