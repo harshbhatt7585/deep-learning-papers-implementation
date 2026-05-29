@@ -611,19 +611,92 @@ def save_checkpoint(
     step: int,
     args: argparse.Namespace,
 ) -> None:
+    """Write the checkpoint as three files for faster, mmap-friendly partial loads:
+      - model.pt        : pure model state_dict (loadable via weights_only=True + mmap=True)
+      - optimizer.pt    : optimizer + scaler state (only the trainer needs this)
+      - meta.json       : step, config, tokenizer_type, args (cheap to read)
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     source_model = unwrap_model(model)
 
     tokenizer.save(out_dir / "tokenizer_hf")
+    torch.save(source_model.state_dict(), out_dir / "model.pt")
     torch.save(
         {
-            "step": step,
-            "config": asdict(source_model.config),
-            "model_state": source_model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "scaler_state": scaler.state_dict() if scaler is not None else None,
-            "tokenizer_type": tokenizer.tokenizer_type,
-            "args": args_as_plain_dict(args),
         },
-        out_dir / "checkpoint.pt",
+        out_dir / "optimizer.pt",
     )
+    meta = {
+        "step": step,
+        "config": asdict(source_model.config),
+        "tokenizer_type": tokenizer.tokenizer_type,
+        "args": args_as_plain_dict(args),
+    }
+    with open(out_dir / "meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def resolve_checkpoint_dir(path: Path) -> Path:
+    """Accept either a directory or a path to one of its files; return the directory."""
+    path = Path(path)
+    return path if path.is_dir() else path.parent
+
+
+def load_meta(path: Path) -> dict[str, Any]:
+    """Read step/config/tokenizer_type/args. New format reads meta.json; legacy
+    falls back to extracting the same fields from checkpoint.pt."""
+    ckpt_dir = resolve_checkpoint_dir(path)
+    meta_path = ckpt_dir / "meta.json"
+    if meta_path.exists():
+        with open(meta_path) as f:
+            return json.load(f)
+    legacy = ckpt_dir / "checkpoint.pt"
+    if legacy.exists():
+        blob = torch.load(legacy, map_location="cpu", weights_only=False)
+        cfg = blob["config"]
+        return {
+            "step": blob.get("step"),
+            "config": cfg if isinstance(cfg, dict) else asdict(cfg),
+            "tokenizer_type": blob.get("tokenizer_type"),
+            "args": blob.get("args", {}),
+        }
+    raise FileNotFoundError(f"No meta.json or checkpoint.pt under {ckpt_dir}")
+
+
+def load_model_state(
+    path: Path,
+    map_location: torch.device | str = "cpu",
+    *,
+    mmap: bool = True,
+) -> dict[str, torch.Tensor]:
+    """Load the model state_dict. Prefers model.pt (weights_only + mmap fast path)
+    and falls back to legacy checkpoint.pt['model_state']."""
+    ckpt_dir = resolve_checkpoint_dir(path)
+    model_path = ckpt_dir / "model.pt"
+    if model_path.exists():
+        return torch.load(model_path, map_location=map_location, weights_only=True, mmap=mmap)
+    legacy = ckpt_dir / "checkpoint.pt"
+    if legacy.exists():
+        blob = torch.load(legacy, map_location=map_location, weights_only=False)
+        return blob["model_state"]
+    raise FileNotFoundError(f"No model.pt or checkpoint.pt under {ckpt_dir}")
+
+
+def load_optimizer_state(
+    path: Path,
+    map_location: torch.device | str = "cpu",
+) -> tuple[dict | None, dict | None]:
+    """Return (optimizer_state, scaler_state). Either may be None if the
+    checkpoint did not store one. Trainers should only call this when resuming."""
+    ckpt_dir = resolve_checkpoint_dir(path)
+    opt_path = ckpt_dir / "optimizer.pt"
+    if opt_path.exists():
+        blob = torch.load(opt_path, map_location=map_location, weights_only=False, mmap=True)
+        return blob.get("optimizer_state"), blob.get("scaler_state")
+    legacy = ckpt_dir / "checkpoint.pt"
+    if legacy.exists():
+        blob = torch.load(legacy, map_location=map_location, weights_only=False)
+        return blob.get("optimizer_state"), blob.get("scaler_state")
+    return None, None

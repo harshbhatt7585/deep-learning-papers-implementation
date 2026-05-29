@@ -13,6 +13,7 @@ if __package__ is None or __package__ == "":
 from tinygroot.model import TinyGrootConfig, TinyGrootModel
 from tinygroot.sft_chat import generate_with_tools, render_prompt_for_completion
 from tinygroot.tokenizer import NanochatTokenizer
+from tinygroot.utils import load_meta, load_model_state, resolve_checkpoint_dir
 
 
 def pick_device() -> torch.device:
@@ -33,36 +34,27 @@ def clean_state_dict(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return cleaned
 
 
-def resolve_checkpoint(path: Path) -> tuple[Path, Path]:
-    checkpoint_path = path / "checkpoint.pt" if path.is_dir() else path
-    checkpoint_dir = checkpoint_path.parent
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"checkpoint not found: {checkpoint_path}")
-    return checkpoint_path, checkpoint_dir
-
-
 def load_checkpoint(
     path: Path,
     device: torch.device,
     *,
     tokenizer_dir: Path | None = None,
 ) -> tuple[TinyGrootModel, NanochatTokenizer, dict[str, Any]]:
-    checkpoint_path, checkpoint_dir = resolve_checkpoint(path)
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    if "config" not in checkpoint:
-        raise KeyError(f"checkpoint at {checkpoint_path} has no 'config' key")
+    meta = load_meta(path)
+    if "config" not in meta:
+        raise KeyError(f"checkpoint at {path} has no 'config'")
 
-    tokenizer_dir = tokenizer_dir or checkpoint_dir / "tokenizer_hf"
+    tokenizer_dir = tokenizer_dir or resolve_checkpoint_dir(path) / "tokenizer_hf"
     tokenizer = NanochatTokenizer.load(tokenizer_dir)
-    config_blob = checkpoint["config"]
+    config_blob = meta["config"]
     config = config_blob if isinstance(config_blob, TinyGrootConfig) else TinyGrootConfig(**config_blob)
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
     model = TinyGrootModel(config).to(device)
-    model.load_state_dict(clean_state_dict(checkpoint["model_state"]), strict=True)
+    model.load_state_dict(clean_state_dict(load_model_state(path, map_location=device)), strict=True)
     model.eval()
-    return model, tokenizer, checkpoint
+    return model, tokenizer, meta
 
 
 def main() -> None:
@@ -81,7 +73,7 @@ def main() -> None:
         raise SystemExit("pass --checkpoint /path/to/checkpoint.pt or --checkpoint-dir /path/to/run")
 
     device = pick_device()
-    model, tokenizer, checkpoint = load_checkpoint(checkpoint_path, device, tokenizer_dir=args.tokenizer_dir)
+    model, tokenizer, meta = load_checkpoint(checkpoint_path, device, tokenizer_dir=args.tokenizer_dir)
     prompt_ids = render_prompt_for_completion(
         tokenizer,
         {"messages": [{"role": "user", "content": args.prompt}]},
@@ -95,7 +87,7 @@ def main() -> None:
         temperature=args.temperature,
         top_k=args.top_k if args.top_k > 0 else None,
     )
-    print(f"loaded checkpoint step: {checkpoint['step']}")
+    print(f"loaded checkpoint step: {meta.get('step')}")
     print(tokenizer.decode(output, skip_special=True).strip())
 
 

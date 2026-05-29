@@ -83,6 +83,7 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tinygroot.model import TinyGrootConfig, TinyGrootModel, generate_causal, norm
+from tinygroot.utils import load_meta, load_model_state, resolve_checkpoint_dir
 
 
 @dataclass
@@ -716,18 +717,18 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
             f"  -> If you're running locally, download the checkpoint first via\n"
             f"     'modal volume get <runs-volume> <run-name>/checkpoint.pt'."
         )
-    blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    if "config" not in blob:
+    meta = load_meta(checkpoint_path)
+    if "config" not in meta:
         raise KeyError(
-            f"checkpoint at {checkpoint_path} has no 'config' key. "
+            f"checkpoint at {checkpoint_path} has no 'config'. "
             "Use a checkpoint produced by training/train.py (which saves the config alongside the weights)."
         )
-    cfg_dict = blob["config"]
+    cfg_dict = meta["config"]
     if isinstance(cfg_dict, TinyGrootConfig):
         config = cfg_dict
     else:
         config = TinyGrootConfig(**cfg_dict)
-    cleaned = _clean_state_dict(blob["model_state"])
+    cleaned = _clean_state_dict(load_model_state(checkpoint_path, map_location=device))
     mtp_weight = cleaned.get("mtp_heads.0.weight")
     if (
         mtp_weight is not None
@@ -746,7 +747,7 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
     if unexpected:
         print(f"[spec_decode] unexpected keys when loading checkpoint: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
     model.eval()
-    return model, blob
+    return model, meta
 
 
 def _build_dflash_drafter_from_checkpoint(
@@ -764,12 +765,12 @@ def _build_dflash_drafter_from_checkpoint(
             f"     'TARGET_CHECKPOINT=<path> bash speed_run.sh draft 4gpu' first.\n"
             f"  -> Run 'modal run tinygroot/modal/modal_train.py::list_runs' to discover existing drafter paths."
         )
-    blob = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    if "config" not in blob:
+    meta = load_meta(checkpoint_path)
+    if "config" not in meta:
         raise KeyError(
-            f"drafter checkpoint at {checkpoint_path} has no 'config' key."
+            f"drafter checkpoint at {checkpoint_path} has no 'config'."
         )
-    cfg_dict = blob["config"]
+    cfg_dict = meta["config"]
     if isinstance(cfg_dict, DFlashConfig):
         cfg = cfg_dict
     elif isinstance(cfg_dict, dict) and "target_d_model" in cfg_dict:
@@ -796,14 +797,14 @@ def _build_dflash_drafter_from_checkpoint(
 
     drafter = DFlashDraftModel(cfg).to(device)
     drafter.bind(target)
-    cleaned = _clean_state_dict(blob["model_state"])
+    cleaned = _clean_state_dict(load_model_state(checkpoint_path, map_location=device))
     missing, unexpected = drafter.load_state_dict(cleaned, strict=False)
     if missing:
         print(f"[spec_decode] missing keys when loading drafter: {missing[:5]}{'...' if len(missing) > 5 else ''}")
     if unexpected:
         print(f"[spec_decode] unexpected keys when loading drafter: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
     drafter.eval()
-    return drafter, blob, cfg
+    return drafter, meta, cfg
 
 
 def _load_tokenizer(checkpoint_blob: dict, args: argparse.Namespace):
@@ -824,7 +825,7 @@ def _load_tokenizer(checkpoint_blob: dict, args: argparse.Namespace):
     candidates: list[Path] = []
     if args.tokenizer_dir is not None:
         candidates.append(Path(args.tokenizer_dir))
-    candidates.append(args.checkpoint.parent / "tokenizer_hf")
+    candidates.append(resolve_checkpoint_dir(args.checkpoint) / "tokenizer_hf")
     saved_args = checkpoint_blob.get("args") or {}
     cached = saved_args.get("nanochat_tokenizer_cache_dir")
     if cached:

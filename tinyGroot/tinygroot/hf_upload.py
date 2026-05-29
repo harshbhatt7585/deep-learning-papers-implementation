@@ -5,19 +5,19 @@ import os
 from pathlib import Path
 from typing import Any
 
-import torch
+from tinygroot.utils import load_meta
 
 
-def _checkpoint_summary(checkpoint_path: Path) -> dict[str, Any]:
+def _checkpoint_summary(checkpoint_dir: Path) -> dict[str, Any]:
     try:
-        checkpoint = torch.load(checkpoint_path, map_location="meta", weights_only=False)
+        meta = load_meta(checkpoint_dir)
     except Exception:
         return {"step": None, "tokenizer_type": None, "config": {}, "args": {}}
-    config = checkpoint.get("config", {})
-    args = checkpoint.get("args", {})
+    config = meta.get("config", {})
+    args = meta.get("args", {})
     return {
-        "step": checkpoint.get("step"),
-        "tokenizer_type": checkpoint.get("tokenizer_type"),
+        "step": meta.get("step"),
+        "tokenizer_type": meta.get("tokenizer_type"),
         "config": config if isinstance(config, dict) else {},
         "args": args if isinstance(args, dict) else {},
     }
@@ -28,7 +28,7 @@ def write_model_card(checkpoint_dir: Path, repo_id: str, *, overwrite: bool = Fa
     if readme.exists() and not overwrite:
         return readme
 
-    summary = _checkpoint_summary(checkpoint_dir / "checkpoint.pt")
+    summary = _checkpoint_summary(checkpoint_dir)
     config = summary["config"]
     args = summary["args"]
     lines = [
@@ -56,7 +56,9 @@ def write_model_card(checkpoint_dir: Path, repo_id: str, *, overwrite: bool = Fa
         "",
         "## Files",
         "",
-        "- `checkpoint.pt`: PyTorch training checkpoint containing model weights, optimizer state, config, tokenizer metadata, and training args.",
+        "- `model.pt`: model state_dict (mmap+`weights_only=True` friendly).",
+        "- `optimizer.pt`: optimizer and grad-scaler state (only needed to resume training).",
+        "- `meta.json`: step, model config, tokenizer type, and original training args.",
         "- `tokenizer_hf/tokenizer.json`: tokenizer used by this checkpoint.",
         "",
         "Load this checkpoint with the tinyGroot codebase, not the Transformers `AutoModel` API.",
@@ -77,10 +79,11 @@ def push_checkpoint_to_hub(
     overwrite_model_card: bool = False,
 ) -> str:
     checkpoint_dir = checkpoint_dir.expanduser().resolve()
-    checkpoint_path = checkpoint_dir / "checkpoint.pt"
+    model_path = checkpoint_dir / "model.pt"
+    legacy_path = checkpoint_dir / "checkpoint.pt"
     tokenizer_path = checkpoint_dir / "tokenizer_hf" / "tokenizer.json"
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"missing checkpoint: {checkpoint_path}")
+    if not (model_path.exists() or legacy_path.exists()):
+        raise FileNotFoundError(f"missing model.pt or checkpoint.pt under {checkpoint_dir}")
     if not tokenizer_path.exists():
         raise FileNotFoundError(f"missing tokenizer: {tokenizer_path}")
 

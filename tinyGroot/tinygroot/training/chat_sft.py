@@ -29,8 +29,11 @@ from tinygroot.utils import (
     init_wandb,
     is_dist,
     is_main_process,
+    load_meta,
+    load_model_state,
     log,
     rank,
+    resolve_checkpoint_dir,
     save_checkpoint,
     set_lr,
     unwrap_model,
@@ -201,20 +204,23 @@ def clean_state_dict(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
 
 def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tuple[torch.nn.Module, NanochatTokenizer, dict[str, Any]]:
-    checkpoint = torch.load(args.checkpoint, map_location=runtime.device, weights_only=False)
-    config = TinyGrootConfig(**checkpoint["config"])
+    meta = load_meta(args.checkpoint)
+    config = TinyGrootConfig(**meta["config"])
     if args.seq_len is None:
         args.seq_len = config.max_seq_len
     if args.seq_len > config.max_seq_len:
         raise ValueError(f"--seq-len {args.seq_len} exceeds checkpoint max_seq_len {config.max_seq_len}")
 
-    tokenizer_dir = args.checkpoint.parent / "tokenizer_hf"
+    tokenizer_dir = resolve_checkpoint_dir(args.checkpoint) / "tokenizer_hf"
     tokenizer = NanochatTokenizer.load(tokenizer_dir)
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
     model = TinyGrootModel(config).to(runtime.device)
-    model.load_state_dict(clean_state_dict(checkpoint["model_state"]), strict=True)
+    model.load_state_dict(
+        clean_state_dict(load_model_state(args.checkpoint, map_location=runtime.device)),
+        strict=True,
+    )
     if not args.train_mtp_heads:
         for param in model.mtp_heads.parameters():
             param.requires_grad = False
@@ -227,11 +233,11 @@ def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tupl
         model = torch.compile(model, mode=args.compile_mode, dynamic=False)
     if is_dist() and args.optimizer == "muon":
         log("distributed model: replicated parameters with DistMuonAdamW gradient sync")
-        return model, tokenizer, checkpoint
+        return model, tokenizer, meta
     if is_dist():
         ddp_kwargs = {"device_ids": [runtime.local_rank]} if runtime.device.type == "cuda" else {}
         model = DDP(model, **ddp_kwargs)
-    return model, tokenizer, checkpoint
+    return model, tokenizer, meta
 
 
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
@@ -459,7 +465,7 @@ def log_wandb(wandb_run: Any, metrics: dict[str, float], step: int) -> None:
 
 
 def train(args: argparse.Namespace, runtime: Runtime) -> None:
-    model, tokenizer, checkpoint = load_model_and_tokenizer(args, runtime)
+    model, tokenizer, source_meta = load_model_and_tokenizer(args, runtime)
     train_dataset, val_dataset = build_datasets(args)
     tokens_per_micro = args.batch_size * args.seq_len * world_size()
     if args.total_batch_size % tokens_per_micro != 0:
@@ -477,7 +483,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
 
     train_batcher = SFTBatcher(train_dataset, tokenizer, args, runtime, "train")
     val_batcher = SFTBatcher(val_dataset, tokenizer, args, runtime, "val")
-    log(f"loaded checkpoint: {args.checkpoint} step={checkpoint.get('step')}")
+    log(f"loaded checkpoint: {args.checkpoint} step={source_meta.get('step')}")
     log(f"train conversations: {len(train_dataset):,}; val conversations: {len(val_dataset):,}")
     log(f"tokens/micro={tokens_per_micro:,}; grad_accum={args.grad_accum_steps}; tokens/step={args.total_batch_size:,}")
 

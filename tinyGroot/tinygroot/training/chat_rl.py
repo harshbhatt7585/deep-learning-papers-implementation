@@ -31,8 +31,11 @@ from tinygroot.utils import (
     init_wandb,
     is_dist,
     is_main_process,
+    load_meta,
+    load_model_state,
     log,
     rank,
+    resolve_checkpoint_dir,
     save_checkpoint,
     unwrap_model,
     world_size,
@@ -114,14 +117,17 @@ def gsm_reward(conversation: dict[str, Any], completion: str) -> float:
 
 
 def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tuple[torch.nn.Module, NanochatTokenizer, dict[str, Any]]:
-    checkpoint = torch.load(args.checkpoint, map_location=runtime.device, weights_only=False)
-    config = TinyGrootConfig(**checkpoint["config"])
-    tokenizer = NanochatTokenizer.load(args.checkpoint.parent / "tokenizer_hf")
+    meta = load_meta(args.checkpoint)
+    config = TinyGrootConfig(**meta["config"])
+    tokenizer = NanochatTokenizer.load(resolve_checkpoint_dir(args.checkpoint) / "tokenizer_hf")
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
     model = TinyGrootModel(config).to(runtime.device)
-    model.load_state_dict(clean_state_dict(checkpoint["model_state"]), strict=True)
+    model.load_state_dict(
+        clean_state_dict(load_model_state(args.checkpoint, map_location=runtime.device)),
+        strict=True,
+    )
     if len(model.mtp_heads) > 0:
         for param in model.mtp_heads.parameters():
             param.requires_grad = False
@@ -132,11 +138,11 @@ def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tupl
         model = torch.compile(model, mode=args.compile_mode, dynamic=False)
     if is_dist() and args.optimizer == "muon":
         log("distributed RL model: replicated parameters with DistMuonAdamW gradient sync")
-        return model, tokenizer, checkpoint
+        return model, tokenizer, meta
     if is_dist():
         ddp_kwargs = {"device_ids": [runtime.local_rank]} if runtime.device.type == "cuda" else {}
         model = DDP(model, **ddp_kwargs)
-    return model, tokenizer, checkpoint
+    return model, tokenizer, meta
 
 
 def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: Runtime) -> torch.optim.Optimizer:
@@ -377,9 +383,9 @@ def microbatch_ranges(total: int, batch_size: int) -> list[tuple[int, int]]:
 
 def train(args: argparse.Namespace, runtime: Runtime) -> None:
     torch.manual_seed(args.seed + rank())
-    model, tokenizer, checkpoint = load_model_and_tokenizer(args, runtime)
+    model, tokenizer, source_meta = load_model_and_tokenizer(args, runtime)
     source = unwrap_model(model)
-    tokenizer_dir = args.checkpoint.parent / "tokenizer_hf"
+    tokenizer_dir = resolve_checkpoint_dir(args.checkpoint) / "tokenizer_hf"
     optimizer = build_optimizer(args, model, runtime)
     for group in optimizer.param_groups:
         group["initial_lr"] = group["lr"] * args.init_lr_frac
@@ -402,7 +408,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     args.wandb_name = args.wandb_name or args.out_dir.name
     wandb_run = init_wandb(args, source.config, runtime)
     scaler = None
-    log(f"loaded RL checkpoint: {args.checkpoint} step={checkpoint.get('step')}")
+    log(f"loaded RL checkpoint: {args.checkpoint} step={source_meta.get('step')}")
     log(f"RL steps={num_steps} examples_per_rank={examples_per_rank} num_samples={args.num_samples}")
     log(
         "rollout logging: "

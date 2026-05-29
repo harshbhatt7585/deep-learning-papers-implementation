@@ -36,6 +36,9 @@ from tinygroot.utils import (
     is_dist,
     is_main_process,
     learning_rate,
+    load_meta,
+    load_model_state,
+    load_optimizer_state,
     log,
     save_checkpoint,
     set_lr,
@@ -280,15 +283,12 @@ def _load_frozen_target(
     runtime: Runtime,
 ) -> TinyGrootModel:
     """Load a target TinyGrootModel checkpoint into eval/frozen mode."""
-    blob = torch.load(checkpoint_path, map_location=runtime.device, weights_only=False)
-    cfg_blob = blob.get("config")
+    meta = load_meta(checkpoint_path)
+    cfg_blob = meta.get("config")
     if cfg_blob is None:
         raise KeyError(f"target checkpoint {checkpoint_path} has no 'config' key")
-    if isinstance(cfg_blob, TinyGrootConfig):
-        cfg = cfg_blob
-    else:
-        cfg = TinyGrootConfig(**cfg_blob)
-    state = blob["model_state"]
+    cfg = cfg_blob if isinstance(cfg_blob, TinyGrootConfig) else TinyGrootConfig(**cfg_blob)
+    state = load_model_state(checkpoint_path, map_location=runtime.device)
     cleaned = {}
     for key, value in state.items():
         new_key = key
@@ -419,14 +419,14 @@ def load_training_checkpoint(
     scaler: torch.amp.GradScaler,
     runtime: Runtime,
 ) -> int:
-    checkpoint = torch.load(checkpoint_path, map_location=runtime.device, weights_only=False)
     source_model = unwrap_model(model)
-    source_model.load_state_dict(checkpoint["model_state"])
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
-    scaler_state = checkpoint.get("scaler_state")
+    source_model.load_state_dict(load_model_state(checkpoint_path, map_location=runtime.device))
+    opt_state, scaler_state = load_optimizer_state(checkpoint_path, map_location=runtime.device)
+    if opt_state is not None:
+        optimizer.load_state_dict(opt_state)
     if scaler_state is not None:
         scaler.load_state_dict(scaler_state)
-    step = int(checkpoint.get("step", 0))
+    step = int(load_meta(checkpoint_path).get("step") or 0)
     log(f"resumed checkpoint: {checkpoint_path} at step {step:,}")
     return step
 
