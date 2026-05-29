@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -178,19 +179,22 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
             "eps": 1e-10,
             "weight_decay": 0.0,
         },
-        {
+    ]
+    for shape in sorted({param.shape for param in matrix_params}):
+        shape_params = [param for param in matrix_params if param.shape == shape]
+        groups.append({
             "kind": "muon",
-            "params": matrix_params,
+            "params": shape_params,
             "lr": args.matrix_lr * dmodel_lr_scale,
             "lr_multiplier": args.matrix_lr * dmodel_lr_scale / args.lr,
             "momentum": args.muon_momentum,
             "ns_steps": args.muon_ns_steps,
+            "beta2": 0.9,
             "weight_decay": 0.0,
-        },
-    ]
+        })
     groups = [group for group in groups if group["params"]]
     opt_cls = DistMuonAdamW if is_dist() else MuonAdamW
-    return opt_cls(groups, lr=args.lr, weight_decay=args.weight_decay, fused=runtime.device.type == "cuda")
+    return opt_cls(groups)
 
 
 @torch.no_grad()
@@ -299,13 +303,19 @@ def make_rollout_batch(
     return inputs, targets, rewards_tensor, advantages
 
 
-def policy_gradient_loss(model: torch.nn.Module, inputs: torch.Tensor, targets: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
+def policy_gradient_loss(
+    model: torch.nn.Module,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    advantages: torch.Tensor,
+    normalizer: torch.Tensor | None = None,
+) -> torch.Tensor:
     logits = model(inputs, attention_mask=None, causal=True)
     valid = targets != IGNORE_INDEX
     safe_targets = targets.masked_fill(~valid, 0)
     logp = F.log_softmax(logits, dim=-1).gather(-1, safe_targets.unsqueeze(-1)).squeeze(-1)
     pg_obj = (logp * valid.to(logp.dtype) * advantages[:, None]).sum()
-    return -pg_obj / valid.sum().clamp(min=1)
+    return -pg_obj / (normalizer if normalizer is not None else valid.sum().clamp(min=1))
 
 
 @torch.no_grad()
@@ -353,6 +363,10 @@ def log_wandb(wandb_run: Any, metrics: dict[str, float], step: int) -> None:
         wandb_run.log(metrics, step=step)
 
 
+def microbatch_ranges(total: int, batch_size: int) -> list[tuple[int, int]]:
+    return [(start, min(start + batch_size, total)) for start in range(0, total, batch_size)]
+
+
 def train(args: argparse.Namespace, runtime: Runtime) -> None:
     torch.manual_seed(args.seed + rank())
     model, tokenizer, checkpoint = load_model_and_tokenizer(args, runtime)
@@ -367,11 +381,13 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     val_task = GSM8K("test")
     epoch_steps = (len(train_task) // args.examples_per_step) * args.num_epochs
     num_steps = args.max_steps if args.max_steps > 0 else max(1, epoch_steps)
+    if args.batch_size <= 0:
+        raise ValueError("--device-batch-size must be positive")
+    if args.num_samples <= 0:
+        raise ValueError("--num-samples must be positive")
     if args.examples_per_step % world_size() != 0:
         raise ValueError("--examples-per-step must be divisible by world size")
     examples_per_rank = args.examples_per_step // world_size()
-    if args.num_samples % args.batch_size != 0:
-        raise ValueError("--num-samples must be divisible by --device-batch-size")
     if (args.eval_num_samples or args.batch_size) > args.batch_size:
         raise ValueError("--eval-num-samples must be <= --device-batch-size")
 
@@ -404,13 +420,15 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             )
             all_sequences: list[list[int]] = []
             all_masks: list[list[int]] = []
-            for sampling_step in range(args.num_samples // args.batch_size):
+            for sampling_step, (sample_start, sample_end) in enumerate(
+                microbatch_ranges(args.num_samples, args.batch_size)
+            ):
                 seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
                 sequences, masks = generate_batch_with_masks(
                     model,
                     tokenizer,
                     prompt_ids,
-                    num_samples=args.batch_size,
+                    num_samples=sample_end - sample_start,
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temperature,
                     top_k=args.top_k if args.top_k > 0 else None,
@@ -428,17 +446,18 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 tokenizer, len(prompt_ids), all_sequences, all_masks, rewards, runtime.device
             )
             model.train()
-            num_passes = inputs_all.size(0) // args.batch_size
-            for pass_idx in range(num_passes):
-                b0, b1 = pass_idx * args.batch_size, (pass_idx + 1) * args.batch_size
+            total_valid = (targets_all != IGNORE_INDEX).sum().clamp(min=1)
+            batch_ranges = microbatch_ranges(inputs_all.size(0), args.batch_size)
+            for pass_idx, (b0, b1) in enumerate(batch_ranges):
                 with autocast_context(runtime.device, args.amp_dtype):
                     loss = policy_gradient_loss(
                         model,
                         inputs_all[b0:b1],
                         targets_all[b0:b1],
                         advantages_all[b0:b1],
+                        normalizer=total_valid,
                     )
-                    loss = loss / (num_passes * examples_per_rank)
+                    loss = loss / examples_per_rank
                 loss.backward()
                 log(
                     f"step {step}/{num_steps} example {example_step} pass {pass_idx} "
@@ -497,6 +516,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             wandb_run.finish()
 
 
+@record
 def main() -> None:
     args = parse_args()
     runtime = create_runtime(args)
