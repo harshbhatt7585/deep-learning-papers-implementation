@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="tinyGroot chat SFT from a pretrain checkpoint.pt")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Pretrain checkpoint.pt")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for SFT checkpoint.pt")
-    parser.add_argument("--run", "--wandb-name", dest="wandb_name", type=str, default=None)
+    parser.add_argument("--run-name", "--run", "--wandb-name", dest="wandb_name", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="tinyGroot-sft")
     parser.add_argument("--wandb-entity", type=str, default=None)

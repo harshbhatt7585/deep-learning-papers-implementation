@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="tinyGroot GSM8K RL with nanochat-style GRPO/REINFORCE.")
     parser.add_argument("--checkpoint", type=Path, required=True, help="SFT checkpoint.pt to initialize from.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for RL checkpoint.pt.")
-    parser.add_argument("--run", "--wandb-name", dest="wandb_name", type=str, default=None)
+    parser.add_argument("--run-name", "--run", "--wandb-name", dest="wandb_name", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="tinyGroot-rl")
     parser.add_argument("--wandb-entity", type=str, default=None)
@@ -388,7 +388,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             metrics = run_gsm8k_eval(model, tokenizer, runtime, args, val_task)
             if is_main_process():
                 log(" ".join(f"{k}={v:.4f}" for k, v in metrics.items()))
-        log_wandb(wandb_run, {f"eval/{k}": v for k, v in metrics.items()}, step)
+            log_wandb(wandb_run, {f"eval/{k}": v for k, v in metrics.items()}, step)
 
         model.train()
         optimizer.zero_grad(set_to_none=True)

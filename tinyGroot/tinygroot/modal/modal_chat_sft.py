@@ -66,12 +66,27 @@ image = (
 app = modal.App(APP_NAME)
 
 
+def add_workspace_pythonpath(env: dict[str, str]) -> None:
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{WORKDIR}:{pythonpath}" if pythonpath else str(WORKDIR)
+
+
+def hf_upload_secrets() -> list[modal.Secret]:
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if token:
+        return [modal.Secret.from_dict({"HF_TOKEN": token})]
+    secret_name = os.environ.get("MODAL_HF_SECRET_NAME")
+    if secret_name:
+        return [modal.Secret.from_name(secret_name, required_keys=["HF_TOKEN"])]
+    return []
+
+
 @app.function(
     image=image,
     cpu=4,
     memory=8192,
     timeout=2 * 60 * 60,
-    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
+    secrets=hf_upload_secrets(),
     volumes={"/runs": runs_volume},
 )
 def upload_checkpoint_to_hf(
@@ -143,18 +158,15 @@ def run_sft(
     spellingbee_size: int,
 ) -> None:
     command = [
-        "python",
-        "-m",
-        "torch.distributed.run",
+        "torchrun",
         "--standalone",
         f"--nproc_per_node={gpu_count}",
-        "-m",
-        "tinygroot.training.chat_sft",
+        "tinygroot/training/chat_sft.py",
         "--checkpoint",
         checkpoint,
         "--out-dir",
         out_dir,
-        "--run",
+        "--run-name",
         run_name,
         "--wandb",
         "--wandb-project",
@@ -203,6 +215,7 @@ def run_sft(
     command.append("--train-mtp-heads" if train_mtp_heads else "--no-train-mtp-heads")
 
     env = os.environ.copy()
+    add_workspace_pythonpath(env)
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     if compile:
         env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")

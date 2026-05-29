@@ -18,6 +18,8 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 
 PROJECT_FILES = [
     "__init__.py",
+    "chat_core_eval.py",
+    "chat_sft.py",
     "core_eval.py",
     "dflash_model.py",
     "eval_core.py",
@@ -29,6 +31,8 @@ PROJECT_FILES = [
     "chat_rl.py",
     "pretokenize.py",
     "sample.py",
+    "sft_chat.py",
+    "sft_data.py",
     "spec_decode.py",
     "tokenizer.py",
     "train.py",
@@ -65,12 +69,27 @@ image = (
 app = modal.App(APP_NAME)
 
 
+def add_workspace_pythonpath(env: dict[str, str]) -> None:
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{WORKDIR}:{pythonpath}" if pythonpath else str(WORKDIR)
+
+
+def hf_upload_secrets() -> list[modal.Secret]:
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if token:
+        return [modal.Secret.from_dict({"HF_TOKEN": token})]
+    secret_name = os.environ.get("MODAL_HF_SECRET_NAME")
+    if secret_name:
+        return [modal.Secret.from_name(secret_name, required_keys=["HF_TOKEN"])]
+    return []
+
+
 @app.function(
     image=image,
     cpu=4,
     memory=8192,
     timeout=2 * 60 * 60,
-    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
+    secrets=hf_upload_secrets(),
     volumes={"/runs": runs_volume},
 )
 def upload_checkpoint_to_hf(
@@ -210,8 +229,7 @@ def run_train(
         "torchrun",
         "--standalone",
         f"--nproc_per_node={gpu_count}",
-        "-m",
-        "tinygroot.training.train",
+        "tinygroot/training/train.py",
         "--nanochat-tokenizer-cache-dir",
         nanochat_tokenizer_cache_dir,
         "--nanochat-tokenizer-vocab-size",
@@ -318,6 +336,7 @@ def run_train(
 
     try:
         env = os.environ.copy()
+        add_workspace_pythonpath(env)
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         if compile:
             env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
@@ -359,8 +378,7 @@ def run_chat_rl(
         "torchrun",
         "--standalone",
         f"--nproc_per_node={gpu_count}",
-        "-m",
-        "tinygroot.training.chat_rl",
+        "tinygroot/training/chat_rl.py",
         "--checkpoint",
         checkpoint,
         "--out-dir",
@@ -395,7 +413,7 @@ def run_chat_rl(
     if wandb:
         command.append("--wandb")
     if run_name is not None:
-        command.extend(["--run", run_name])
+        command.extend(["--run-name", run_name])
     if compile:
         command.append("--compile")
     if fp8:
@@ -403,6 +421,7 @@ def run_chat_rl(
 
     try:
         env = os.environ.copy()
+        add_workspace_pythonpath(env)
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         if compile:
             env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")

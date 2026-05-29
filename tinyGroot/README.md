@@ -65,8 +65,17 @@ HF_TOKEN=... python -m tinygroot.training.train ... \
 Push automatically after Modal training:
 
 ```bash
-modal secret create huggingface HF_TOKEN=...
+export HF_TOKEN=...
 modal run tinygroot/modal/modal_train.py::main ... \
+  --push-to-hf \
+  --hf-repo-id username/my-run
+```
+
+Alternatively, create a Modal secret and opt into it at app startup:
+
+```bash
+modal secret create huggingface HF_TOKEN=...
+MODAL_HF_SECRET_NAME=huggingface modal run tinygroot/modal/modal_train.py::main ... \
   --push-to-hf \
   --hf-repo-id username/my-run
 ```
