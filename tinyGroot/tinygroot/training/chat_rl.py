@@ -67,6 +67,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-examples", type=int, default=400)
     parser.add_argument("--save-every", type=int, default=60)
     parser.add_argument("--eval-num-samples", type=int, default=None, help="Defaults to device batch size.")
+    parser.add_argument("--log-rollouts-every", type=int, default=1, help="Log decoded rollout samples on rank 0 every N steps; 0 disables.")
+    parser.add_argument("--log-rollout-samples", type=int, default=2, help="Number of rollout completions to print when logging is enabled.")
+    parser.add_argument("--log-rollout-chars", type=int, default=1200, help="Maximum decoded characters per logged rollout completion.")
 
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="muon")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -119,6 +122,10 @@ def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tupl
 
     model = TinyGrootModel(config).to(runtime.device)
     model.load_state_dict(clean_state_dict(checkpoint["model_state"]), strict=True)
+    if len(model.mtp_heads) > 0:
+        for param in model.mtp_heads.parameters():
+            param.requires_grad = False
+        log(f"MTP heads frozen and unused during RL: heads={len(model.mtp_heads)}")
     model = apply_fp8_training(model, args, runtime)
     if args.compile:
         log("compiling RL model with torch.compile(dynamic=False)")
@@ -148,7 +155,7 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
     dmodel_lr_scale = (model_dim / 768) ** -0.5
     embedding_params = trainable(source.token_emb.parameters())
     lm_head_params = trainable(source.lm_head.parameters())
-    matrix_params = trainable(source.blocks.parameters()) + trainable(source.mtp_heads.parameters())
+    matrix_params = trainable(source.blocks.parameters())
     seen = {id(p) for p in embedding_params + lm_head_params + matrix_params}
     scalar_params = [p for p in source.parameters() if p.requires_grad and id(p) not in seen]
     groups: list[dict[str, Any]] = [
@@ -308,14 +315,19 @@ def policy_gradient_loss(
     inputs: torch.Tensor,
     targets: torch.Tensor,
     advantages: torch.Tensor,
-    normalizer: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    """DAPO-style token-level REINFORCE: per-pass mean of (logp * advantage) over
+    valid positions. Returns ``-pg_obj / num_valid_in_this_pass``. Callers should
+    further divide by ``num_passes * examples_per_rank`` so that summing the
+    .backward() calls across one optimizer step yields the per-example mean of
+    per-pass-token-means (matches nanochat/scripts/chat_rl.py)."""
     logits = model(inputs, attention_mask=None, causal=True)
     valid = targets != IGNORE_INDEX
     safe_targets = targets.masked_fill(~valid, 0)
     logp = F.log_softmax(logits, dim=-1).gather(-1, safe_targets.unsqueeze(-1)).squeeze(-1)
     pg_obj = (logp * valid.to(logp.dtype) * advantages[:, None]).sum()
-    return -pg_obj / (normalizer if normalizer is not None else valid.sum().clamp(min=1))
+    num_valid = valid.sum().clamp(min=1)
+    return -pg_obj / num_valid
 
 
 @torch.no_grad()
@@ -363,6 +375,58 @@ def log_wandb(wandb_run: Any, metrics: dict[str, float], step: int) -> None:
         wandb_run.log(metrics, step=step)
 
 
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(part.get("text", "")) for part in content)
+    return str(content)
+
+
+def conversation_prompt_text(conversation: dict[str, Any]) -> str:
+    for message in reversed(conversation.get("messages", [])[:-1]):
+        if message.get("role") == "user":
+            return _message_text(message)
+    return _message_text(conversation.get("messages", [{}])[0])
+
+
+def compact_log_text(text: str, max_chars: int) -> str:
+    text = " ".join(text.strip().split())
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)] + "..."
+
+
+def log_rollout_responses(
+    *,
+    step: int,
+    example_step: int,
+    example_idx: int,
+    conversation: dict[str, Any],
+    tokenizer: NanochatTokenizer,
+    prompt_len: int,
+    sequences: list[list[int]],
+    rewards: list[float],
+    args: argparse.Namespace,
+) -> None:
+    if not is_main_process() or args.log_rollouts_every <= 0:
+        return
+    if step % args.log_rollouts_every != 0 or example_step != 0:
+        return
+    prompt = compact_log_text(conversation_prompt_text(conversation), args.log_rollout_chars)
+    log(f"[rollout] step={step} example_idx={example_idx} prompt={prompt!r}")
+    for sample_idx, (seq, reward) in enumerate(zip(sequences, rewards)):
+        if sample_idx >= args.log_rollout_samples:
+            break
+        completion = tokenizer.decode(seq[prompt_len:], skip_special=True)
+        completion = compact_log_text(completion, args.log_rollout_chars)
+        log(
+            f"[rollout] step={step} example_idx={example_idx} sample={sample_idx} "
+            f"reward={reward:.1f} tokens={len(seq) - prompt_len} response={completion!r}"
+        )
+
+
 def microbatch_ranges(total: int, batch_size: int) -> list[tuple[int, int]]:
     return [(start, min(start + batch_size, total)) for start in range(0, total, batch_size)]
 
@@ -396,14 +460,25 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
     scaler = None
     log(f"loaded RL checkpoint: {args.checkpoint} step={checkpoint.get('step')}")
     log(f"RL steps={num_steps} examples_per_rank={examples_per_rank} num_samples={args.num_samples}")
+    log(
+        "rollout logging: "
+        f"every={args.log_rollouts_every} samples={args.log_rollout_samples} chars={args.log_rollout_chars}"
+    )
     batch_iter = itertools.cycle(range(rank(), len(train_task), world_size()))
     start_time = time.time()
 
     for step in range(num_steps):
         if args.eval_every > 0 and step % args.eval_every == 0:
+            eval_start = time.time()
+            if is_main_process():
+                log(
+                    f"starting eval step={step} examples={min(args.eval_examples, len(val_task))} "
+                    f"samples={args.eval_num_samples or args.batch_size} max_new_tokens={args.max_new_tokens}"
+                )
             metrics = run_gsm8k_eval(model, tokenizer, runtime, args, val_task)
             if is_main_process():
-                log(" ".join(f"{k}={v:.4f}" for k, v in metrics.items()))
+                elapsed = time.time() - eval_start
+                log(" ".join(f"{k}={v:.4f}" for k, v in metrics.items()) + f" eval_time={elapsed:.1f}s")
             log_wandb(wandb_run, {f"eval/{k}": v for k, v in metrics.items()}, step)
 
         model.train()
@@ -440,14 +515,25 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 gsm_reward(conversation, tokenizer.decode(seq[len(prompt_ids):], skip_special=True))
                 for seq in all_sequences
             ]
+            log_rollout_responses(
+                step=step,
+                example_step=example_step,
+                example_idx=example_idx,
+                conversation=conversation,
+                tokenizer=tokenizer,
+                prompt_len=len(prompt_ids),
+                sequences=all_sequences,
+                rewards=rewards,
+                args=args,
+            )
             rewards_by_example.append(sum(rewards) / max(1, len(rewards)))
             sequence_lengths.extend(len(seq) for seq in all_sequences)
             inputs_all, targets_all, rewards_all, advantages_all = make_rollout_batch(
                 tokenizer, len(prompt_ids), all_sequences, all_masks, rewards, runtime.device
             )
             model.train()
-            total_valid = (targets_all != IGNORE_INDEX).sum().clamp(min=1)
             batch_ranges = microbatch_ranges(inputs_all.size(0), args.batch_size)
+            num_passes = len(batch_ranges)
             for pass_idx, (b0, b1) in enumerate(batch_ranges):
                 with autocast_context(runtime.device, args.amp_dtype):
                     loss = policy_gradient_loss(
@@ -455,9 +541,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                         inputs_all[b0:b1],
                         targets_all[b0:b1],
                         advantages_all[b0:b1],
-                        normalizer=total_valid,
                     )
-                    loss = loss / examples_per_rank
+                    loss = loss / (num_passes * examples_per_rank)
                 loss.backward()
                 log(
                     f"step {step}/{num_steps} example {example_step} pass {pass_idx} "

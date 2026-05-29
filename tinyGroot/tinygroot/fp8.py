@@ -27,6 +27,15 @@ def _to_col_major(x: torch.Tensor) -> torch.Tensor:
     return x.t().contiguous().t()
 
 
+def _pad_dim_to_multiple(x: torch.Tensor, dim: int, multiple: int) -> torch.Tensor:
+    remainder = x.size(dim) % multiple
+    if remainder == 0:
+        return x
+    pad_shape = list(x.shape)
+    pad_shape[dim] = multiple - remainder
+    return torch.cat((x, x.new_zeros(pad_shape)), dim=dim)
+
+
 @torch._dynamo.allow_in_graph
 class _Float8Matmul(torch.autograd.Function):
     @staticmethod
@@ -58,8 +67,11 @@ class _Float8Matmul(torch.autograd.Function):
             use_fast_accum=False,
         )
 
-        go_t = go_fp8.t().contiguous()
-        in_col = _to_col_major(in_fp8)
+        # FP8 scaled_mm requires the reduction dimension to be divisible by 16.
+        # RL rollouts have variable token counts, so pad the internal B dimension
+        # with zeros before grad_output.T @ input.
+        go_t = _pad_dim_to_multiple(go_fp8.t().contiguous(), dim=1, multiple=16)
+        in_col = _to_col_major(_pad_dim_to_multiple(in_fp8, dim=0, multiple=16))
         grad_weight = torch._scaled_mm(
             go_t,
             in_col,
