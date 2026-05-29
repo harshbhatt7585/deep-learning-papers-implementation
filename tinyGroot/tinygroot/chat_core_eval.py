@@ -22,6 +22,7 @@ import signal
 import tempfile
 import warnings
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 
@@ -31,7 +32,14 @@ GSM_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 def extract_gsm_answer(completion: str) -> Optional[str]:
     match = GSM_RE.search(completion)
     if match:
-        return match.group(1).strip().replace(",", "")
+        answer = match.group(1).strip().replace(",", "")
+        try:
+            number = Decimal(answer)
+        except InvalidOperation:
+            return answer
+        if number == number.to_integral_value():
+            return str(number.quantize(Decimal(1)))
+        return format(number.normalize(), "f")
     return None
 
 
