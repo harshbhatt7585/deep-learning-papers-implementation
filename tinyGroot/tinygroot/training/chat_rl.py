@@ -435,6 +435,11 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         optimizer.zero_grad(set_to_none=True)
         rewards_by_example = []
         sequence_lengths = []
+        rollout_tokens = 0
+        rollout_count = 0
+        rollout_generate_time = 0.0
+        loss_sum = 0.0
+        loss_count = 0
         for example_step in range(examples_per_rank):
             example_idx = next(batch_iter)
             conversation = train_task[example_idx]
@@ -449,6 +454,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 microbatch_ranges(args.num_samples, args.batch_size)
             ):
                 seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
+                generate_start = time.time()
                 sequences, masks = generate_batch_with_masks(
                     model,
                     tokenizer,
@@ -459,6 +465,9 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     top_k=args.top_k if args.top_k > 0 else None,
                     seed=seed,
                 )
+                rollout_generate_time += time.time() - generate_start
+                rollout_tokens += sum(max(0, len(seq) - len(prompt_ids)) for seq in sequences)
+                rollout_count += len(sequences)
                 all_sequences.extend(sequences)
                 all_masks.extend(masks)
             rewards = [
@@ -494,6 +503,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     )
                     loss = loss / (num_passes * examples_per_rank)
                 loss.backward()
+                loss_sum += float(loss.detach().item())
+                loss_count += 1
                 log(
                     f"step {step}/{num_steps} example {example_step} pass {pass_idx} "
                     f"loss {loss.item():.6f} reward {rewards_all[b0:b1].mean().item():.4f}"
@@ -507,15 +518,50 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
 
         mean_reward = sum(rewards_by_example) / max(1, len(rewards_by_example))
         mean_seq_len = sum(sequence_lengths) / max(1, len(sequence_lengths))
-        metrics_tensor = torch.tensor([mean_reward, mean_seq_len], dtype=torch.float32, device=runtime.device)
+        metrics_tensor = torch.tensor(
+            [
+                mean_reward,
+                mean_seq_len,
+                float(rollout_tokens),
+                float(rollout_count),
+                rollout_generate_time,
+                loss_sum,
+                float(loss_count),
+            ],
+            dtype=torch.float32,
+            device=runtime.device,
+        )
         if is_dist():
-            dist.all_reduce(metrics_tensor, op=dist.ReduceOp.AVG)
-        log(f"step {step}/{num_steps} reward {metrics_tensor[0].item():.4f} seq_len {metrics_tensor[1].item():.2f} lrm {lrm:.4f}")
+            dist.all_reduce(metrics_tensor[:2], op=dist.ReduceOp.AVG)
+            dist.all_reduce(metrics_tensor[2:], op=dist.ReduceOp.SUM)
+        global_rollout_tokens = float(metrics_tensor[2].item())
+        global_rollout_count = float(metrics_tensor[3].item())
+        total_rollout_generate_time = float(metrics_tensor[4].item())
+        mean_loss = float(metrics_tensor[5].item()) / max(1.0, float(metrics_tensor[6].item()))
+        avg_rank_rollout_time = total_rollout_generate_time / world_size()
+        rollout_tokens_per_sec = global_rollout_tokens / max(1e-9, avg_rank_rollout_time)
+        rollout_tokens_per_sec_per_rank = rollout_tokens_per_sec / world_size()
+        log(
+            f"step {step}/{num_steps} reward {metrics_tensor[0].item():.4f} "
+            f"loss {mean_loss:.6f} seq_len {metrics_tensor[1].item():.2f} lrm {lrm:.4f} "
+            f"rollouts {global_rollout_count:.0f} "
+            f"rollout_tokens {global_rollout_tokens:.0f} "
+            f"rollout_tok/s {rollout_tokens_per_sec:.1f} "
+            f"rollout_tok/s/rank {rollout_tokens_per_sec_per_rank:.1f} "
+            f"rollout_time/rank {avg_rank_rollout_time:.1f}s"
+        )
         log_wandb(
             wandb_run,
             {
                 "train/reward": float(metrics_tensor[0].item()),
+                "train/loss": mean_loss,
                 "train/sequence_length": float(metrics_tensor[1].item()),
+                "train/rollouts": global_rollout_count,
+                "train/rollouts_per_rank": global_rollout_count / world_size(),
+                "train/rollout_tokens": global_rollout_tokens,
+                "train/rollout_tokens_per_sec": rollout_tokens_per_sec,
+                "train/rollout_tokens_per_sec_per_rank": rollout_tokens_per_sec_per_rank,
+                "train/rollout_time_per_rank": avg_rank_rollout_time,
                 "train/lrm": lrm,
                 "train/lr": optimizer.param_groups[0]["lr"],
             },
