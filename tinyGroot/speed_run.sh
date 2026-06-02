@@ -199,26 +199,28 @@ esac
 
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-${DEFAULT_GRAD_ACCUM_STEPS}}"
 
-DEFAULT_RUN_TIME="$(date +"%Y-%m-%d--%I-%M%p" | tr '[:upper:]' '[:lower:]')"
-if [[ "${MODE}" == "draft" || "${MODE}" == "drafter" ]]; then
-  DEFAULT_RUN_NAME="tinygroot-dflash-drafter-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
-elif [[ "${MODE}" == "rl" || "${MODE}" == "chat-rl" || "${MODE}" == "chat_rl" ]]; then
-  DEFAULT_RUN_NAME="tinygroot-rl-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
-elif [[ "${MODE}" == "sft" || "${MODE}" == "chat-sft" || "${MODE}" == "chat_sft" ]]; then
-  DEFAULT_RUN_NAME="tinygroot-sft-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
-elif [[ "${PIPELINE_MODE}" == "1" ]]; then
-  DEFAULT_RUN_NAME="tinygroot-pipeline-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
-else
-  DEFAULT_RUN_NAME="tinygroot-${RUN_CONFIG_NAME}--${DEFAULT_RUN_TIME}"
-fi
+# Canonical run names come from a single source of truth (tinygroot.exp_naming):
+#   groot/{stage}/{YYYYMMDD}-{slug}-{gpu}x{count}-{gitsha}
+# SLUG is the one human-facing knob; everything else (date, gpu, git sha) is filled
+# in for you, and the full hyperparameter set lives in each run's meta.json + wandb.
+GPU_LABEL="$(printf '%s' "${GPU_TYPE_UPPER}" | sed 's/-80GB//')"
+SLUG="${SLUG:-}"
+gen_name() { python -m tinygroot.exp_naming --stage "$1" --slug "${SLUG}" --gpu-type "${GPU_LABEL}" --gpu-count "${GPU_COUNT}"; }
+case "${MODE}" in
+  draft|drafter) DEFAULT_STAGE="draft" ;;
+  rl|chat-rl|chat_rl) DEFAULT_STAGE="rl" ;;
+  sft|chat-sft|chat_sft) DEFAULT_STAGE="sft" ;;
+  *) DEFAULT_STAGE="pretrain" ;;
+esac
+DEFAULT_RUN_NAME="$(gen_name "${DEFAULT_STAGE}")"
 RUN_NAME="${RUN_NAME:-${DEFAULT_RUN_NAME}}"
 OUT_DIR="${OUT_DIR:-/runs/${RUN_NAME}}"
 RESUME="${RESUME:-}"
 
 if [[ "${PIPELINE_MODE}" == "1" ]]; then
-  PRETRAIN_RUN_NAME="${PRETRAIN_RUN_NAME:-${RUN_NAME}-pretrain}"
-  SFT_RUN_NAME="${SFT_RUN_NAME:-${RUN_NAME}-sft}"
-  RL_RUN_NAME="${RL_RUN_NAME:-${RUN_NAME}-rl}"
+  PRETRAIN_RUN_NAME="${PRETRAIN_RUN_NAME:-$(gen_name pretrain)}"
+  SFT_RUN_NAME="${SFT_RUN_NAME:-$(gen_name sft)}"
+  RL_RUN_NAME="${RL_RUN_NAME:-$(gen_name rl)}"
   PRETRAIN_OUT_DIR="${PRETRAIN_OUT_DIR:-/runs/${PRETRAIN_RUN_NAME}}"
   SFT_OUT_DIR="${SFT_OUT_DIR:-/runs/${SFT_RUN_NAME}}"
   RL_OUT_DIR="${RL_OUT_DIR:-/runs/${RL_RUN_NAME}}"

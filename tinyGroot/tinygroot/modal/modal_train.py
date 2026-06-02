@@ -7,6 +7,49 @@ from pathlib import Path
 
 import modal
 
+from tinygroot.exp_naming import experiment_name
+
+
+def args_to_argv(mapping: dict) -> list[str]:
+    """Flatten ``{dest: value}`` into CLI argv, replacing the hand-maintained
+    per-flag ``command.extend([...])`` walls. ``None``/``False`` are omitted,
+    ``True`` becomes a bare flag, and underscores become hyphens
+    (``num_samples=16`` -> ``["--num-samples", "16"]``)."""
+    argv: list[str] = []
+    for key, value in mapping.items():
+        if value is None or value is False:
+            continue
+        flag = "--" + key.replace("_", "-")
+        if value is True:
+            argv.append(flag)
+        else:
+            argv.extend([flag, str(value)])
+    return argv
+
+
+def resolve_run_paths(
+    stage: str,
+    slug: str,
+    out_dir: str,
+    run_name: str | None,
+    *,
+    gpu_type: str | None = None,
+    gpu_count: int | None = None,
+) -> tuple[str, str]:
+    """Resolve the canonical out_dir (``/runs/groot/...``) and wandb run name from
+    a slug, unless the caller passed an explicit ``out_dir`` (e.g. speed_run.sh's
+    pipeline chaining, which pre-resolves paths via ``tinygroot.exp_naming``). When
+    an explicit out_dir is given, the run name is derived from it so the two stay
+    consistent."""
+    if out_dir:
+        name = out_dir[len("/runs/"):] if out_dir.startswith("/runs/") else out_dir
+    else:
+        name = experiment_name(stage, slug, gpu_type=gpu_type, gpu_count=gpu_count)
+        out_dir = f"/runs/{name}"
+    if run_name is None:
+        run_name = name.replace("/", "-")
+    return out_dir, run_name
+
 
 APP_NAME = "tinygroot-train"
 WORKDIR = Path("/workspace")
@@ -151,32 +194,23 @@ def run_chat_eval(
         f"--nproc_per_node={gpu_count}",
         "-m",
         "tinygroot.eval",
-        "--checkpoint",
-        checkpoint,
-        "--suite",
-        suite,
-        "--eval-examples",
-        str(eval_examples),
-        "--eval-num-samples",
-        str(eval_num_samples),
-        "--max-new-tokens",
-        str(max_new_tokens),
-        "--temperature",
-        str(temperature),
-        "--top-k",
-        str(top_k),
-        "--chatcore-max-cat",
-        str(chatcore_max_cat),
-        "--chatcore-max-sample",
-        str(chatcore_max_sample),
-        "--chatcore-max-new-tokens",
-        str(chatcore_max_new_tokens),
-        "--chatcore-temperature",
-        str(chatcore_temperature),
-        "--chatcore-top-k",
-        str(chatcore_top_k),
-        "--chatcore-batch-size",
-        str(chatcore_batch_size),
+        *args_to_argv(
+            {
+                "checkpoint": checkpoint,
+                "suite": suite,
+                "eval_examples": eval_examples,
+                "eval_num_samples": eval_num_samples,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_k": top_k,
+                "chatcore_max_cat": chatcore_max_cat,
+                "chatcore_max_sample": chatcore_max_sample,
+                "chatcore_max_new_tokens": chatcore_max_new_tokens,
+                "chatcore_temperature": chatcore_temperature,
+                "chatcore_top_k": chatcore_top_k,
+                "chatcore_batch_size": chatcore_batch_size,
+            }
+        ),
     ]
     env = os.environ.copy()
     add_workspace_pythonpath(env)
@@ -293,53 +327,41 @@ def run_train(
         "--standalone",
         f"--nproc_per_node={gpu_count}",
         "tinygroot/training/train.py",
-        "--nanochat-tokenizer-cache-dir",
-        nanochat_tokenizer_cache_dir,
-        "--nanochat-tokenizer-vocab-size",
-        str(nanochat_tokenizer_vocab_size),
-        "--seq-len",
-        str(seq_len),
-        "--batch-size",
-        str(batch_size),
-        "--grad-accum-steps",
-        str(grad_accum_steps),
-        "--optimizer",
-        optimizer,
-        "--mtp-heads",
-        str(mtp_heads),
-        "--mtp-arch",
-        mtp_arch,
-        "--mtp-loss-weight",
-        str(mtp_loss_weight),
-        "--tst-bag-size",
-        str(tst_bag_size),
-        "--tst-ratio",
-        str(tst_ratio),
-        "--aurora-weight-decay",
-        str(aurora_weight_decay),
-        "--max-steps",
-        str(max_steps),
-        "--target-param-data-ratio",
-        str(target_param_data_ratio),
-        "--target-tokens",
-        str(target_tokens),
-        "--d-model",
-        str(d_model),
-        "--n-heads",
-        str(n_heads),
-        "--n-layers",
-        str(n_layers),
-        "--ff-mult",
-        str(ff_mult),
-        "--amp-dtype",
-        "bfloat16",
-        "--out-dir",
-        out_dir,
+        *args_to_argv(
+            {
+                "nanochat_tokenizer_cache_dir": nanochat_tokenizer_cache_dir,
+                "nanochat_tokenizer_vocab_size": nanochat_tokenizer_vocab_size,
+                "seq_len": seq_len,
+                "batch_size": batch_size,
+                "grad_accum_steps": grad_accum_steps,
+                "optimizer": optimizer,
+                "mtp_heads": mtp_heads,
+                "mtp_arch": mtp_arch,
+                "mtp_loss_weight": mtp_loss_weight,
+                "tst_bag_size": tst_bag_size,
+                "tst_ratio": tst_ratio,
+                "aurora_weight_decay": aurora_weight_decay,
+                "max_steps": max_steps,
+                "target_param_data_ratio": target_param_data_ratio,
+                "target_tokens": target_tokens,
+                "d_model": d_model,
+                "n_heads": n_heads,
+                "n_layers": n_layers,
+                "ff_mult": ff_mult,
+                "amp_dtype": "bfloat16",
+                "out_dir": out_dir,
+                # bool flags + optional values; args_to_argv drops False/None.
+                "gated_mlp": gated_mlp,
+                "resume": resume,
+                "eval_interval": eval_interval,
+                "core_metric_every": core_metric_every,
+                "sample_interval": sample_interval,
+                "compile": compile,
+                "fp8": fp8,
+                "wandb": wandb,
+            }
+        ),
     ]
-    if gated_mlp:
-        command.append("--gated-mlp")
-    if resume:
-        command.extend(["--resume", resume])
     if dflash:
         if not target_checkpoint:
             raise ValueError("--dflash requires --target-checkpoint")
@@ -356,12 +378,6 @@ def run_train(
             "--block-size", str(block_size),
             "--n-draft-layers", str(n_draft_layers),
         ])
-    if eval_interval is not None:
-        command.extend(["--eval-interval", str(eval_interval)])
-    if core_metric_every is not None:
-        command.extend(["--core-metric-every", str(core_metric_every)])
-    if sample_interval is not None:
-        command.extend(["--sample-interval", str(sample_interval)])
     if stream_nanochat:
         command.extend(
             [
@@ -390,12 +406,6 @@ def run_train(
                 str(max_val_chars),
             ]
         )
-    if compile:
-        command.append("--compile")
-    if fp8:
-        command.append("--fp8")
-    if wandb:
-        command.append("--wandb")
 
     try:
         env = os.environ.copy()
@@ -449,59 +459,37 @@ def run_chat_rl(
         "--standalone",
         f"--nproc_per_node={gpu_count}",
         "tinygroot/training/chat_rl.py",
-        "--checkpoint",
-        checkpoint,
-        "--out-dir",
-        out_dir,
-        "--wandb-project",
-        wandb_project,
-        "--num-epochs",
-        str(num_epochs),
-        "--max-steps",
-        str(max_steps),
-        "--device-batch-size",
-        str(device_batch_size),
-        "--examples-per-step",
-        str(examples_per_step),
-        "--num-samples",
-        str(num_samples),
-        "--max-new-tokens",
-        str(max_new_tokens),
-        "--temperature",
-        str(temperature),
-        "--top-k",
-        str(top_k),
-        "--eval-suite",
-        eval_suite,
-        "--eval-every",
-        str(eval_every),
-        "--eval-examples",
-        str(eval_examples),
-        "--chatcore-max-cat",
-        str(chatcore_max_cat),
-        "--chatcore-max-sample",
-        str(chatcore_max_sample),
-        "--chatcore-max-new-tokens",
-        str(chatcore_max_new_tokens),
-        "--chatcore-temperature",
-        str(chatcore_temperature),
-        "--chatcore-top-k",
-        str(chatcore_top_k),
-        "--chatcore-batch-size",
-        str(chatcore_batch_size),
-        "--save-every",
-        str(save_every),
-        "--optimizer",
-        optimizer,
+        *args_to_argv(
+            {
+                "checkpoint": checkpoint,
+                "out_dir": out_dir,
+                "run_name": run_name,
+                "wandb_project": wandb_project,
+                "num_epochs": num_epochs,
+                "max_steps": max_steps,
+                "device_batch_size": device_batch_size,
+                "examples_per_step": examples_per_step,
+                "num_samples": num_samples,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_k": top_k,
+                "eval_suite": eval_suite,
+                "eval_every": eval_every,
+                "eval_examples": eval_examples,
+                "chatcore_max_cat": chatcore_max_cat,
+                "chatcore_max_sample": chatcore_max_sample,
+                "chatcore_max_new_tokens": chatcore_max_new_tokens,
+                "chatcore_temperature": chatcore_temperature,
+                "chatcore_top_k": chatcore_top_k,
+                "chatcore_batch_size": chatcore_batch_size,
+                "save_every": save_every,
+                "optimizer": optimizer,
+                "wandb": wandb,
+                "compile": compile,
+                "fp8": fp8,
+            }
+        ),
     ]
-    if wandb:
-        command.append("--wandb")
-    if run_name is not None:
-        command.extend(["--run-name", run_name])
-    if compile:
-        command.append("--compile")
-    if fp8:
-        command.append("--fp8")
 
     try:
         env = os.environ.copy()
@@ -514,298 +502,66 @@ def run_chat_rl(
         runs_volume.commit()
 
 
-@app.function(
-    image=image,
-    gpu="A100-80GB",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_a100_1gpu(**kwargs) -> None:
-    run_train(gpu_count=1, **kwargs)
+def _gpu_spec(gpu_type: str, gpu_count: int) -> str:
+    base = "A100-80GB" if gpu_type == "A100" else gpu_type
+    return f"{base}:{gpu_count}" if gpu_count > 1 else base
 
 
-@app.function(
-    image=image,
-    gpu="A100-80GB:2",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_a100_2gpu(**kwargs) -> None:
-    run_train(gpu_count=2, **kwargs)
+# The train / RL / eval Modal functions differ only by GPU type x count (and whether
+# they need the wandb secret), so register them in a loop instead of hand-writing 16
+# near-identical defs. Each is given a unique name so Modal can import it by name in
+# the container, and is exposed both as a module global and via the registry that
+# select_*_function() looks up.
+_DAY = 24 * 60 * 60
+_WANDB_SECRET = [modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])]
+_STAGE_RUNNERS = {
+    "train": (run_train, _WANDB_SECRET),
+    "rl": (run_chat_rl, _WANDB_SECRET),
+    "eval": (run_chat_eval, []),
+}
+_GPU_MATRIX = [("A100", n) for n in (1, 2, 4, 8)] + [("H100", n) for n in (1, 2, 4, 8)]
+
+TRAIN_FUNCTIONS: dict = {}
+RL_FUNCTIONS: dict = {}
+EVAL_FUNCTIONS: dict = {}
+_STAGE_REGISTRIES = {"train": TRAIN_FUNCTIONS, "rl": RL_FUNCTIONS, "eval": EVAL_FUNCTIONS}
 
 
-@app.function(
-    image=image,
-    gpu="A100-80GB:4",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_a100_4gpu(**kwargs) -> None:
-    run_train(gpu_count=4, **kwargs)
+def _make_stage_fn(runner, gpu_count: int):
+    def fn(**kwargs):
+        runner(gpu_count=gpu_count, **kwargs)
+
+    return fn
 
 
-@app.function(
-    image=image,
-    gpu="A100-80GB:8",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_a100_8gpu(**kwargs) -> None:
-    run_train(gpu_count=8, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_h100_1gpu(**kwargs) -> None:
-    run_train(gpu_count=1, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:2",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_h100_2gpu(**kwargs) -> None:
-    run_train(gpu_count=2, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:4",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_h100_4gpu(**kwargs) -> None:
-    run_train(gpu_count=4, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:8",
-    timeout=24 * 60 * 60,
-    secrets=[
-        modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"]),
-    ],
-    volumes={
-        "/data": data_volume,
-        "/runs": runs_volume,
-    },
-)
-def train_h100_8gpu(**kwargs) -> None:
-    run_train(gpu_count=8, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="A100-80GB",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_a100_1gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=1, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="A100-80GB:2",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_a100_2gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=2, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="A100-80GB:4",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_a100_4gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=4, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="A100-80GB:8",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_a100_8gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=8, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_h100_1gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=1, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:2",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_h100_2gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=2, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:4",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_h100_4gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=4, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:8",
-    timeout=24 * 60 * 60,
-    secrets=[modal.Secret.from_name("wandb", required_keys=["WANDB_API_KEY"])],
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def rl_h100_8gpu(**kwargs) -> None:
-    run_chat_rl(gpu_count=8, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100",
-    timeout=24 * 60 * 60,
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def eval_h100_1gpu(**kwargs) -> None:
-    run_chat_eval(gpu_count=1, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:2",
-    timeout=24 * 60 * 60,
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def eval_h100_2gpu(**kwargs) -> None:
-    run_chat_eval(gpu_count=2, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:4",
-    timeout=24 * 60 * 60,
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def eval_h100_4gpu(**kwargs) -> None:
-    run_chat_eval(gpu_count=4, **kwargs)
-
-
-@app.function(
-    image=image,
-    gpu="H100:8",
-    timeout=24 * 60 * 60,
-    volumes={"/data": data_volume, "/runs": runs_volume},
-)
-def eval_h100_8gpu(**kwargs) -> None:
-    run_chat_eval(gpu_count=8, **kwargs)
+for _stage, (_runner, _secrets) in _STAGE_RUNNERS.items():
+    for _gpu_type, _gpu_count in _GPU_MATRIX:
+        _fn_name = f"{_stage}_{_gpu_type.lower()}_{_gpu_count}gpu"
+        _fn = app.function(
+            image=image,
+            gpu=_gpu_spec(_gpu_type, _gpu_count),
+            name=_fn_name,
+            timeout=_DAY,
+            secrets=_secrets,
+            volumes={"/data": data_volume, "/runs": runs_volume},
+            # Loop-generated (non-global-scope) functions must be serialized; Modal
+            # cloudpickles the closure over the module-level runner + gpu_count.
+            serialized=True,
+        )(_make_stage_fn(_runner, _gpu_count))
+        globals()[_fn_name] = _fn
+        _STAGE_REGISTRIES[_stage][(_gpu_type, _gpu_count)] = _fn
 
 
 def select_train_function(gpu_type: str, gpu_count: int):
-    train_functions = {
-        ("A100", 1): train_a100_1gpu,
-        ("A100", 2): train_a100_2gpu,
-        ("A100", 4): train_a100_4gpu,
-        ("A100", 8): train_a100_8gpu,
-        ("H100", 1): train_h100_1gpu,
-        ("H100", 2): train_h100_2gpu,
-        ("H100", 4): train_h100_4gpu,
-        ("H100", 8): train_h100_8gpu,
-    }
-    return train_functions.get((gpu_type, gpu_count))
+    return TRAIN_FUNCTIONS.get((gpu_type, gpu_count))
 
 
 def select_rl_function(gpu_type: str, gpu_count: int):
-    rl_functions = {
-        ("A100", 1): rl_a100_1gpu,
-        ("A100", 2): rl_a100_2gpu,
-        ("A100", 4): rl_a100_4gpu,
-        ("A100", 8): rl_a100_8gpu,
-        ("H100", 1): rl_h100_1gpu,
-        ("H100", 2): rl_h100_2gpu,
-        ("H100", 4): rl_h100_4gpu,
-        ("H100", 8): rl_h100_8gpu,
-    }
-    return rl_functions.get((gpu_type, gpu_count))
+    return RL_FUNCTIONS.get((gpu_type, gpu_count))
 
 
 def select_eval_function(gpu_type: str, gpu_count: int):
-    eval_functions = {
-        ("H100", 1): eval_h100_1gpu,
-        ("H100", 2): eval_h100_2gpu,
-        ("H100", 4): eval_h100_4gpu,
-        ("H100", 8): eval_h100_8gpu,
-    }
-    return eval_functions.get((gpu_type, gpu_count))
+    return EVAL_FUNCTIONS.get((gpu_type, gpu_count))
 
 
 @app.local_entrypoint()
@@ -837,7 +593,8 @@ def main(
     n_layers: int = 4,
     ff_mult: int = 4,
     gated_mlp: bool = False,
-    out_dir: str = "/runs/tinygroot-4gpu",
+    slug: str = "",
+    out_dir: str = "",
     resume: str | None = None,
     token_shards_dir: str = "/data/nanochat_tokens_32k",
     nanochat_tokenizer_cache_dir: str = "/data/nanochat_tokenizer_32k",
@@ -890,10 +647,9 @@ def main(
     if train_function is None:
         raise ValueError("--gpu-type must be A100, A100-80GB, or H100, and --gpu-count must be one of: 1, 2, 4, 8")
 
-    modal_gpu_request = f"A100-80GB:{gpu_count}" if gpu_type == "A100" and gpu_count > 1 else gpu_type
-    if gpu_type == "A100" and gpu_count == 1:
-        modal_gpu_request = "A100-80GB"
-    print(f"modal_gpu_request: {modal_gpu_request}", flush=True)
+    stage = "draft" if dflash else "pretrain"
+    out_dir, _ = resolve_run_paths(stage, slug, out_dir, None, gpu_type=gpu_type, gpu_count=gpu_count)
+    print(f"modal_gpu_request: {_gpu_spec(gpu_type, gpu_count)}  out_dir: {out_dir}", flush=True)
 
     train_function.remote(
         max_steps=max_steps,
@@ -970,7 +726,7 @@ def evaluate(
         gpu_type = "A100"
     eval_function = select_eval_function(gpu_type, gpu_count)
     if eval_function is None:
-        raise ValueError("--gpu-type must be H100 and --gpu-count must be one of: 1, 2, 4, 8")
+        raise ValueError("--gpu-type must be A100, A100-80GB, or H100, and --gpu-count must be one of: 1, 2, 4, 8")
     eval_function.remote(
         checkpoint=checkpoint,
         suite=suite,
@@ -991,7 +747,8 @@ def evaluate(
 @app.local_entrypoint()
 def rl(
     checkpoint: str,
-    out_dir: str = "/runs/tinygroot-rl",
+    slug: str = "gsm8k",
+    out_dir: str = "",
     run_name: str | None = None,
     wandb_project: str = "tinyGroot-rl",
     gpu_type: str = "H100",
@@ -1033,6 +790,8 @@ def rl(
     rl_function = select_rl_function(gpu_type, gpu_count)
     if rl_function is None:
         raise ValueError("--gpu-type must be A100, A100-80GB, or H100, and --gpu-count must be one of: 1, 2, 4, 8")
+    out_dir, run_name = resolve_run_paths("rl", slug, out_dir, run_name, gpu_type=gpu_type, gpu_count=gpu_count)
+    print(f"rl run: out_dir={out_dir} run_name={run_name}", flush=True)
     rl_function.remote(
         checkpoint=checkpoint,
         out_dir=out_dir,
