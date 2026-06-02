@@ -442,7 +442,8 @@ def evaluate_sft(model: torch.nn.Module, batcher: SFTBatcher, args: argparse.Nam
     batcher.consumed = rank()
     batcher.conv_buffer.clear()
     model.eval()
-    losses = LossAccumulator.empty(runtime.device, torch.float64)
+    accumulator_dtype = torch.float32 if runtime.device.type == "mps" else torch.float64
+    losses = LossAccumulator.empty(runtime.device, accumulator_dtype)
     steps = max(1, args.eval_tokens // (args.batch_size * args.seq_len * world_size()))
     for _ in range(steps):
         x, y = batcher.next()
