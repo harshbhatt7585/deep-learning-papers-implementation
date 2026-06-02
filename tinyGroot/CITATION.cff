@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use tinyGroot in your work, please cite it as below."
+title: "tinyGroot: small-scale LLM training with multi-token prediction and speculative decoding"
+authors:
+  - family-names: Bhatt
+    given-names: Harsh
+repository-code: "https://github.com/harshbhatt7585/deep-learning-papers-implementation/tree/main/tinyGroot"
+license: MIT
+version: "0.1.0"
+keywords:
+  - large language models
+  - pretraining
+  - multi-token prediction
+  - speculative decoding
+  - reinforcement learning

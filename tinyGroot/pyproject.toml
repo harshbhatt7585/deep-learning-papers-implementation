@@ -1,14 +1,25 @@
 [project]
 name = "tinygroot"
 version = "0.1.0"
-description = "Text MTP training and speculative decoding experiments."
-readme = "BLOG.md"
+description = "Small-scale LLM training: nanochat-style pretraining, multi-token prediction, speculative decoding, chat SFT, and GSM8K RL."
+readme = "README.md"
 requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Harsh Bhatt" }]
+keywords = ["llm", "transformer", "pretraining", "rl", "multi-token-prediction", "speculative-decoding", "nanochat"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Minimal core: enough to pretrain / SFT / sample locally (CPU or Apple-Silicon MPS).
+# Heavier, optional pieces (Modal, wandb, FA3 kernels) live under extras below.
 dependencies = [
     "datasets>=2.20",
     "huggingface-hub>=0.24",
-    "kernels>=0.11",
-    "modal>=1.1",
     "numpy>=1.26",
     "pyarrow>=15",
     "pyyaml>=6",
@@ -17,17 +28,28 @@ dependencies = [
     "tokenizers>=0.19",
     "torch>=2.5",
     "transformers>=4.44",
-    "wandb>=0.17",
 ]
 
+[project.optional-dependencies]
+modal = ["modal>=1.1"]                 # remote multi-GPU training/inference launchers
+wandb = ["wandb>=0.17"]                # experiment logging (training has a --wandb flag)
+gpu = ["kernels>=0.11"]                # FlashAttention-3 kernels on Hopper; falls back to SDPA without
+dev = ["ruff>=0.6", "pytest>=8", "matplotlib>=3.8"]
+all = ["tinygroot[modal,wandb,gpu]"]
+
+[project.urls]
+Homepage = "https://github.com/harshbhatt7585/deep-learning-papers-implementation/tree/main/tinyGroot"
+Repository = "https://github.com/harshbhatt7585/deep-learning-papers-implementation"
+Changelog = "https://github.com/harshbhatt7585/deep-learning-papers-implementation/blob/main/tinyGroot/CHANGELOG.md"
+
 [project.scripts]
-tinygroot-chat-infer = "tinygroot.infer.chat_infer:main"
-tinygroot-sample = "tinygroot.infer.sample:main"
-tinygroot-spec-decode = "tinygroot.infer.spec_decode:main"
 tinygroot-train = "tinygroot.training.train:main"
 tinygroot-chat-sft = "tinygroot.training.chat_sft:main"
 tinygroot-chat-rl = "tinygroot.training.chat_rl:main"
 tinygroot-pretokenize = "tinygroot.training.pretokenize:main"
+tinygroot-sample = "tinygroot.infer.sample:main"
+tinygroot-chat-infer = "tinygroot.infer.chat_infer:main"
+tinygroot-spec-decode = "tinygroot.infer.spec_decode:main"
 tinygroot-eval-core = "tinygroot.eval_core:main"
 tinygroot-hf-upload = "tinygroot.hf_upload:main"
 
@@ -50,3 +72,7 @@ torch = [
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
