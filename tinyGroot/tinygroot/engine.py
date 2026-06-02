@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from tinygroot.chat_core_eval import use_calculator
-from tinygroot.model import KVCache, TinyGrootModel
+from tinygroot.model import StaticKVCache, TinyGrootModel
 from tinygroot.tokenizer import NanochatTokenizer
 
 
@@ -17,16 +17,6 @@ def special_id(tokenizer: NanochatTokenizer, text: str) -> int:
     if token_id is None:
         raise KeyError(f"Tokenizer is missing special token {text!r}")
     return int(token_id)
-
-
-def clone_cache_for_batch(cache: KVCache, batch_size: int) -> KVCache:
-    return [
-        (
-            key.expand(batch_size, -1, -1, -1).contiguous(),
-            value.expand(batch_size, -1, -1, -1).contiguous(),
-        )
-        for key, value in cache
-    ]
 
 
 @torch.inference_mode()
@@ -94,10 +84,28 @@ class Engine:
         assistant_end = special_id(self.tokenizer, "<|assistant_end|>")
         bos = self.tokenizer.bos_token_id
 
-        prompt = torch.tensor([tokens], dtype=torch.long, device=device)
-        logits, prefill_cache = self.model(prompt, attention_mask=None, causal=True, use_cache=True)
-        logits = logits[:, -1, :].expand(num_samples, -1).contiguous()
-        cache = clone_cache_for_batch(prefill_cache, num_samples)
+        config = self.model.config
+        head_dim = config.d_model // config.n_heads
+        prompt_len = len(tokens)
+        horizon = max_tokens if max_tokens is not None else config.max_seq_len - prompt_len
+        cache_len = min(config.max_seq_len, prompt_len + max(0, horizon))
+        cache = StaticKVCache(
+            n_layers=config.n_layers,
+            batch_size=num_samples,
+            max_len=cache_len,
+            n_kv_heads=config.n_kv_heads,
+            head_dim=head_dim,
+            device=device,
+            dtype=next(self.model.parameters()).dtype,
+        )
+
+        # Prefill once with the prompt broadcast across all samples, writing the
+        # prompt's keys/values straight into the static buffer for every row.
+        prompt = torch.tensor([tokens], dtype=torch.long, device=device).expand(num_samples, -1).contiguous()
+        logits, cache = self.model(
+            prompt, attention_mask=None, causal=True, past_key_values=cache, use_cache=True
+        )
+        logits = logits[:, -1, :].contiguous()
         row_states = [RowState(tokens.copy()) for _ in range(num_samples)]
 
         generated = 0

@@ -13,6 +13,47 @@ from tinygroot.flash_attention import flash_attn
 KVCache = list[tuple[torch.Tensor, torch.Tensor]]
 
 
+class StaticKVCache:
+    """Pre-allocated KV buffers for autoregressive decoding.
+
+    The list-based :data:`KVCache` re-runs ``torch.cat`` on the full key/value
+    tensors every decode step, reallocating and copying the whole cache per token
+    (O(T^2) memory traffic over a rollout). This cache instead writes new
+    keys/values into a fixed ``(batch, max_len, n_kv_heads, head_dim)`` buffer and
+    reads back only the filled prefix, so generation is allocation-free and every
+    step -- prefill and single-token decode alike -- can go through
+    :func:`flash_attn_with_kvcache` instead of the masked-SDPA fallback.
+    """
+
+    def __init__(
+        self,
+        n_layers: int,
+        batch_size: int,
+        max_len: int,
+        n_kv_heads: int,
+        head_dim: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        # Zero-initialised: the flash decode kernel can read block-padded regions
+        # past the written prefix, and uninitialised (NaN/inf) bytes there would
+        # propagate through the masked softmax (NaN * 0 = NaN).
+        shape = (batch_size, max_len, n_kv_heads, head_dim)
+        self.k = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_layers)]
+        self.v = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_layers)]
+        self.batch_size = batch_size
+        self.max_len = max_len
+        # Number of valid tokens currently stored (the write offset for the next step).
+        self.pos = 0
+
+    def __len__(self) -> int:
+        return len(self.k)
+
+    def reset(self) -> None:
+        self.pos = 0
+
+
 @dataclass
 class TinyGrootConfig:
     vocab_size: int
@@ -99,6 +140,7 @@ class SelfAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
         past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        cache_pos: int | None = None,
         use_cache: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         batch_size, seq_len, _ = x.shape
@@ -107,6 +149,34 @@ class SelfAttention(nn.Module):
         v = self.c_v(x).view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
 
         cos, sin = cos_sin
+
+        if cache_pos is not None:
+            # Static pre-allocated cache: ``past_key_value`` holds the fixed
+            # (k_cache, v_cache) buffers. Rope/norm the new keys at the write
+            # offset, store them into the buffer, then attend over the filled
+            # prefix. Single-token decode uses flash_attn_with_kvcache (its
+            # intended mode); multi-token prefill writes the buffer and reuses the
+            # proven full-attention flash_attn_func path -- the cache_seqlens=0
+            # multi-token append mode is fragile (and read uninitialised cache
+            # padding on FA3, producing NaN logits).
+            k_cache, v_cache = past_key_value
+            q = apply_rotary_emb(q, cos[:, cache_pos : cache_pos + seq_len], sin[:, cache_pos : cache_pos + seq_len])
+            k = apply_rotary_emb(k, cos[:, cache_pos : cache_pos + seq_len], sin[:, cache_pos : cache_pos + seq_len])
+            q = norm(q) * 1.2
+            k = norm(k) * 1.2
+            if seq_len == 1:
+                y = flash_attn.flash_attn_with_kvcache(
+                    q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_pos, causal=causal
+                )
+            else:
+                end = cache_pos + seq_len
+                k_cache[:, cache_pos:end] = k
+                v_cache[:, cache_pos:end] = v
+                y = flash_attn.flash_attn_func(q, k_cache[:, :end], v_cache[:, :end], causal=causal)
+            y = y.contiguous().view(batch_size, seq_len, self.d_model)
+            y = self.c_proj(y)
+            return y, (k_cache, v_cache)
+
         past_len = 0 if past_key_value is None else past_key_value[0].size(1)
         q = apply_rotary_emb(q, cos[:, past_len : past_len + seq_len], sin[:, past_len : past_len + seq_len])
         k = apply_rotary_emb(k, cos[:, past_len : past_len + seq_len], sin[:, past_len : past_len + seq_len])
@@ -213,6 +283,7 @@ class TransformerBlock(nn.Module):
         attention_mask: torch.Tensor | None = None,
         causal: bool = False,
         past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        cache_pos: int | None = None,
         use_cache: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         attn_out = self.attn(
@@ -221,6 +292,7 @@ class TransformerBlock(nn.Module):
             attention_mask=attention_mask,
             causal=causal,
             past_key_value=past_key_value,
+            cache_pos=cache_pos,
             use_cache=use_cache,
         )
         present = None
@@ -299,13 +371,14 @@ class TinyGrootModel(nn.Module):
         causal: bool = False,
         return_hidden: bool = False,
         output_hidden_states: bool = False,
-        past_key_values: KVCache | None = None,
+        past_key_values: KVCache | StaticKVCache | None = None,
         use_cache: bool = False,
     ) -> (
         torch.Tensor
         | tuple[torch.Tensor, torch.Tensor]
         | tuple[torch.Tensor, list[torch.Tensor]]
         | tuple[torch.Tensor, KVCache]
+        | tuple[torch.Tensor, StaticKVCache]
         | tuple[torch.Tensor, torch.Tensor, KVCache]
         | tuple[torch.Tensor, list[torch.Tensor], KVCache]
     ):
@@ -320,16 +393,23 @@ class TinyGrootModel(nn.Module):
         if input_ids.ndim not in (2, 3):
             raise ValueError(f"input_ids must be 2D or 3D, got shape {tuple(input_ids.shape)}")
 
+        static_cache = past_key_values if isinstance(past_key_values, StaticKVCache) else None
+
         if input_ids.ndim == 3:
             if past_key_values is not None:
                 raise ValueError("3D bagged input_ids cannot be used with past_key_values")
             batch_size, seq_len, bag_size = input_ids.shape
         else:
             batch_size, seq_len = input_ids.shape
-        past_len = 0 if past_key_values is None else past_key_values[0][0].size(1)
+        if static_cache is not None:
+            past_len = static_cache.pos
+        else:
+            past_len = 0 if past_key_values is None else past_key_values[0][0].size(1)
         total_len = past_len + seq_len
         if total_len > self.config.max_seq_len:
             raise ValueError(f"seq_len {total_len} exceeds max_seq_len {self.config.max_seq_len}")
+        if static_cache is not None and total_len > static_cache.max_len:
+            raise ValueError(f"seq_len {total_len} exceeds static cache max_len {static_cache.max_len}")
         if past_key_values is not None and len(past_key_values) != len(self.blocks):
             raise ValueError(
                 f"past_key_values has {len(past_key_values)} layers, expected {len(self.blocks)}"
@@ -350,24 +430,38 @@ class TinyGrootModel(nn.Module):
             # index i (i>=1) is the output of block i-1.
             hidden_states_list = [x]
 
-        present_key_values: KVCache | None = [] if use_cache else None
+        present_key_values: KVCache | StaticKVCache | None = None
+        if use_cache:
+            present_key_values = static_cache if static_cache is not None else []
         for idx, block in enumerate(self.blocks):
-            past = None if past_key_values is None else past_key_values[idx]
+            if static_cache is not None:
+                past = (static_cache.k[idx], static_cache.v[idx])
+                cache_pos = past_len
+            else:
+                past = None if past_key_values is None else past_key_values[idx]
+                cache_pos = None
             block_out = block(
                 x,
                 cos_sin=cos_sin,
                 attention_mask=attention_mask,
                 causal=causal,
                 past_key_value=past,
+                cache_pos=cache_pos,
                 use_cache=use_cache,
             )
             if use_cache:
                 x, present = block_out
-                present_key_values.append(present)
+                # The static cache mutates its buffers in place; only the list-based
+                # cache needs the freshly concatenated tensors collected back.
+                if static_cache is None:
+                    present_key_values.append(present)
             else:
                 x = block_out
             if output_hidden_states:
                 hidden_states_list.append(x)
+
+        if static_cache is not None:
+            static_cache.pos += seq_len
 
         x = norm(x)
         logits = self.lm_head(x)
