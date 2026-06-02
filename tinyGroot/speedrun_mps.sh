@@ -36,7 +36,7 @@ RUN_NAME="${RUN_NAME:-tinygroot-mps--${DEFAULT_RUN_TIME}}"
 OUT_DIR="${OUT_DIR:-runs/${RUN_NAME}}"
 RESUME="${RESUME:-}"
 
-MAX_STEPS="${MAX_STEPS:-100}"
+PRETRAIN_MAX_STEPS="${PRETRAIN_MAX_STEPS:-${MAX_STEPS:-100}}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 SEQ_LEN="${SEQ_LEN:-256}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
@@ -65,22 +65,64 @@ WANDB="${WANDB:-0}"
 ALLOW_CPU_FALLBACK="${ALLOW_CPU_FALLBACK:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 
+PRETRAIN_OUT_DIR="${PRETRAIN_OUT_DIR:-${OUT_DIR}}"
+SFT_OUT_DIR="${SFT_OUT_DIR:-${OUT_DIR}-sft}"
+RL_OUT_DIR="${RL_OUT_DIR:-${OUT_DIR}-rl}"
+SFT_CHECKPOINT="${SFT_CHECKPOINT:-${PRETRAIN_OUT_DIR}}"
+RL_CHECKPOINT="${RL_CHECKPOINT:-${SFT_OUT_DIR}}"
+
+SFT_MAX_STEPS="${SFT_MAX_STEPS:-100}"
+SFT_DEVICE_BATCH_SIZE="${SFT_DEVICE_BATCH_SIZE:-2}"
+SFT_TOTAL_BATCH_SIZE="${SFT_TOTAL_BATCH_SIZE:-2048}"
+SFT_SEQ_LEN="${SFT_SEQ_LEN:-${SEQ_LEN}}"
+SFT_EVAL_EVERY="${SFT_EVAL_EVERY:-50}"
+SFT_EVAL_TOKENS="${SFT_EVAL_TOKENS:-4096}"
+SFT_CHATCORE_EVERY="${SFT_CHATCORE_EVERY:-0}"
+SFT_SAMPLE_EVERY="${SFT_SAMPLE_EVERY:-50}"
+SFT_SAMPLE_LENGTH="${SFT_SAMPLE_LENGTH:-64}"
+SFT_SAVE_EVERY="${SFT_SAVE_EVERY:-50}"
+SFT_OPTIMIZER="${SFT_OPTIMIZER:-adamw}"
+SFT_MMLU_EPOCHS="${SFT_MMLU_EPOCHS:-1}"
+SFT_GSM8K_EPOCHS="${SFT_GSM8K_EPOCHS:-1}"
+SFT_SIMPLE_SPELLING_SIZE="${SFT_SIMPLE_SPELLING_SIZE:-2000}"
+SFT_SPELLINGBEE_SIZE="${SFT_SPELLINGBEE_SIZE:-1000}"
+SFT_NO_SMOLTALK="${SFT_NO_SMOLTALK:-0}"
+IDENTITY_JSONL="${IDENTITY_JSONL:-data/identity_conversations.jsonl}"
+WORDS_PATH="${WORDS_PATH:-data/words_alpha.txt}"
+
+RL_MAX_STEPS="${RL_MAX_STEPS:-100}"
+RL_DEVICE_BATCH_SIZE="${RL_DEVICE_BATCH_SIZE:-1}"
+RL_EXAMPLES_PER_STEP="${RL_EXAMPLES_PER_STEP:-1}"
+RL_NUM_SAMPLES="${RL_NUM_SAMPLES:-2}"
+RL_MAX_NEW_TOKENS="${RL_MAX_NEW_TOKENS:-64}"
+RL_TEMPERATURE="${RL_TEMPERATURE:-1.0}"
+RL_TOP_K="${RL_TOP_K:-50}"
+RL_EVAL_EVERY="${RL_EVAL_EVERY:-0}"
+RL_EVAL_EXAMPLES="${RL_EVAL_EXAMPLES:-16}"
+RL_SAVE_EVERY="${RL_SAVE_EVERY:-50}"
+RL_OPTIMIZER="${RL_OPTIMIZER:-adamw}"
+RL_LOG_ROLLOUTS_EVERY="${RL_LOG_ROLLOUTS_EVERY:-10}"
+
 # Some PyTorch operations do not have an MPS kernel yet. Let PyTorch use CPU
 # for those isolated operations while the model itself remains on MPS.
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
 
 usage() {
   cat >&2 <<EOF
-usage: $0 [doctor|download|tokenizer|pretokenize|train|eval|all]
+usage: $0 [doctor|download|tokenizer|pretokenize|train|pretrain|sft|rl|pipeline|eval|all]
 
 Local Apple Silicon speedrun defaults:
   model:      d_model=${D_MODEL} n_layers=${N_LAYERS} n_heads=${N_HEADS} mtp_heads=${MTP_HEADS}
-  training:   max_steps=${MAX_STEPS} batch=${BATCH_SIZE} seq_len=${SEQ_LEN} grad_accum=${GRAD_ACCUM_STEPS}
-  output:     ${OUT_DIR}
+  pretrain:   steps=${PRETRAIN_MAX_STEPS} batch=${BATCH_SIZE} seq_len=${SEQ_LEN} grad_accum=${GRAD_ACCUM_STEPS}
+  sft:        steps=${SFT_MAX_STEPS} batch=${SFT_DEVICE_BATCH_SIZE} total_batch=${SFT_TOTAL_BATCH_SIZE}
+  rl:         steps=${RL_MAX_STEPS} batch=${RL_DEVICE_BATCH_SIZE} examples=${RL_EXAMPLES_PER_STEP} samples=${RL_NUM_SAMPLES}
+  output:     ${PRETRAIN_OUT_DIR}, ${SFT_OUT_DIR}, ${RL_OUT_DIR}
 
 Examples:
   $0 all
-  MAX_STEPS=10 $0 train
+  PRETRAIN_MAX_STEPS=10 SFT_MAX_STEPS=10 RL_MAX_STEPS=10 $0 pipeline
+  SFT_CHECKPOINT=runs/<pretrain-run> $0 sft
+  RL_CHECKPOINT=runs/<sft-run> $0 rl
   CHECKPOINT=runs/<run-name> $0 eval
   DATA=path/to/local.txt $0 pretokenize
 EOF
@@ -185,9 +227,9 @@ train() {
 
   local command=(
     "${PYTHON_CMD[@]}" -m tinygroot.training.train
-    --out-dir "${OUT_DIR}"
+    --out-dir "${PRETRAIN_OUT_DIR}"
     --nanochat-tokenizer-cache-dir "${TOKENIZER_CACHE_DIR}"
-    --max-steps "${MAX_STEPS}"
+    --max-steps "${PRETRAIN_MAX_STEPS}"
     --batch-size "${BATCH_SIZE}"
     --seq-len "${SEQ_LEN}"
     --grad-accum-steps "${GRAD_ACCUM_STEPS}"
@@ -222,14 +264,93 @@ train() {
   fi
 
   echo "[speedrun_mps] starting local training:" >&2
-  echo "  out_dir: ${OUT_DIR}" >&2
+  echo "  out_dir: ${PRETRAIN_OUT_DIR}" >&2
   echo "  model:   d_model=${D_MODEL} n_layers=${N_LAYERS} n_heads=${N_HEADS} mtp_heads=${MTP_HEADS}" >&2
-  echo "  budget:  max_steps=${MAX_STEPS} batch=${BATCH_SIZE} seq_len=${SEQ_LEN} grad_accum=${GRAD_ACCUM_STEPS}" >&2
+  echo "  budget:  max_steps=${PRETRAIN_MAX_STEPS} batch=${BATCH_SIZE} seq_len=${SEQ_LEN} grad_accum=${GRAD_ACCUM_STEPS}" >&2
   run "${command[@]}" "${data_flags[@]}"
 }
 
+sft() {
+  local command=(
+    "${PYTHON_CMD[@]}" -m tinygroot.training.chat_sft
+    --checkpoint "${SFT_CHECKPOINT}"
+    --out-dir "${SFT_OUT_DIR}"
+    --run-name "${RUN_NAME}-sft"
+    --max-steps "${SFT_MAX_STEPS}"
+    --device-batch-size "${SFT_DEVICE_BATCH_SIZE}"
+    --total-batch-size "${SFT_TOTAL_BATCH_SIZE}"
+    --seq-len "${SFT_SEQ_LEN}"
+    --eval-every "${SFT_EVAL_EVERY}"
+    --eval-tokens "${SFT_EVAL_TOKENS}"
+    --chatcore-every "${SFT_CHATCORE_EVERY}"
+    --sample-every "${SFT_SAMPLE_EVERY}"
+    --sample-length "${SFT_SAMPLE_LENGTH}"
+    --save-every "${SFT_SAVE_EVERY}"
+    --optimizer "${SFT_OPTIMIZER}"
+    --mmlu-epochs "${SFT_MMLU_EPOCHS}"
+    --gsm8k-epochs "${SFT_GSM8K_EPOCHS}"
+    --simple-spelling-size "${SFT_SIMPLE_SPELLING_SIZE}"
+    --spellingbee-size "${SFT_SPELLINGBEE_SIZE}"
+    --identity-jsonl "${IDENTITY_JSONL}"
+    --words-path "${WORDS_PATH}"
+    --amp-dtype float32
+  )
+
+  if [[ "${SFT_NO_SMOLTALK}" == "1" ]]; then
+    command+=(--no-smoltalk)
+  fi
+  if [[ "${COMPILE}" == "1" ]]; then
+    command+=(--compile)
+  fi
+  if [[ "${WANDB}" == "1" ]]; then
+    command+=(--wandb)
+  fi
+
+  echo "[speedrun_mps] starting local SFT:" >&2
+  echo "  checkpoint: ${SFT_CHECKPOINT}" >&2
+  echo "  out_dir:    ${SFT_OUT_DIR}" >&2
+  echo "  budget:     max_steps=${SFT_MAX_STEPS} batch=${SFT_DEVICE_BATCH_SIZE} total_batch=${SFT_TOTAL_BATCH_SIZE}" >&2
+  run "${command[@]}"
+}
+
+rl() {
+  local command=(
+    "${PYTHON_CMD[@]}" -m tinygroot.training.chat_rl
+    --checkpoint "${RL_CHECKPOINT}"
+    --out-dir "${RL_OUT_DIR}"
+    --run-name "${RUN_NAME}-rl"
+    --max-steps "${RL_MAX_STEPS}"
+    --device-batch-size "${RL_DEVICE_BATCH_SIZE}"
+    --examples-per-step "${RL_EXAMPLES_PER_STEP}"
+    --num-samples "${RL_NUM_SAMPLES}"
+    --max-new-tokens "${RL_MAX_NEW_TOKENS}"
+    --temperature "${RL_TEMPERATURE}"
+    --top-k "${RL_TOP_K}"
+    --eval-every "${RL_EVAL_EVERY}"
+    --eval-examples "${RL_EVAL_EXAMPLES}"
+    --save-every "${RL_SAVE_EVERY}"
+    --optimizer "${RL_OPTIMIZER}"
+    --log-rollouts-every "${RL_LOG_ROLLOUTS_EVERY}"
+    --words-path "${WORDS_PATH}"
+    --amp-dtype float32
+  )
+
+  if [[ "${COMPILE}" == "1" ]]; then
+    command+=(--compile)
+  fi
+  if [[ "${WANDB}" == "1" ]]; then
+    command+=(--wandb)
+  fi
+
+  echo "[speedrun_mps] starting local GSM8K RL:" >&2
+  echo "  checkpoint: ${RL_CHECKPOINT}" >&2
+  echo "  out_dir:    ${RL_OUT_DIR}" >&2
+  echo "  budget:     max_steps=${RL_MAX_STEPS} batch=${RL_DEVICE_BATCH_SIZE} examples=${RL_EXAMPLES_PER_STEP} samples=${RL_NUM_SAMPLES}" >&2
+  run "${command[@]}"
+}
+
 evaluate() {
-  local checkpoint="${CHECKPOINT:-${OUT_DIR}}"
+  local checkpoint="${CHECKPOINT:-${PRETRAIN_OUT_DIR}}"
   run "${PYTHON_CMD[@]}" -m tinygroot.eval_core \
     --checkpoint-dir "${checkpoint}" \
     --max-per-task "${CORE_EVAL_MAX_PER_TASK}"
@@ -252,14 +373,29 @@ case "${MODE}" in
     check_mps
     train
     ;;
+  pretrain|pre-training)
+    check_mps
+    pretokenize
+    train
+    ;;
+  sft|chat-sft|chat_sft)
+    check_mps
+    sft
+    ;;
+  rl|chat-rl|chat_rl)
+    check_mps
+    rl
+    ;;
   eval)
     check_mps
     evaluate
     ;;
-  all)
+  pipeline|full|all)
     check_mps
     pretokenize
     train
+    sft
+    rl
     ;;
   help|-h|--help)
     usage
