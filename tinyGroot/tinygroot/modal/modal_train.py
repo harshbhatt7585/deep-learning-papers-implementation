@@ -7,8 +7,6 @@ from pathlib import Path
 
 import modal
 
-from tinygroot.exp_naming import experiment_name
-
 
 def args_to_argv(mapping: dict) -> list[str]:
     """Flatten ``{dest: value}`` into CLI argv, replacing the hand-maintained
@@ -40,7 +38,14 @@ def resolve_run_paths(
     a slug, unless the caller passed an explicit ``out_dir`` (e.g. speed_run.sh's
     pipeline chaining, which pre-resolves paths via ``tinygroot.exp_naming``). When
     an explicit out_dir is given, the run name is derived from it so the two stay
-    consistent."""
+    consistent.
+
+    ``experiment_name`` is imported lazily (not at module top level): this module is
+    re-imported inside the Modal container as a top-level ``modal_train`` module with
+    no ``tinygroot`` package on its path, and naming is only ever resolved locally in
+    the entrypoints before ``.remote()``."""
+    from tinygroot.exp_naming import experiment_name
+
     if out_dir:
         name = out_dir[len("/runs/"):] if out_dir.startswith("/runs/") else out_dir
     else:
@@ -527,10 +532,19 @@ EVAL_FUNCTIONS: dict = {}
 _STAGE_REGISTRIES = {"train": TRAIN_FUNCTIONS, "rl": RL_FUNCTIONS, "eval": EVAL_FUNCTIONS}
 
 
-def _make_stage_fn(runner, gpu_count: int):
+def _make_stage_fn(runner, gpu_count: int, name: str):
     def fn(**kwargs):
         runner(gpu_count=gpu_count, **kwargs)
 
+    # Modal's @app.function rejects non-global functions (qualname containing
+    # "<locals>") unless serialized=True — but serialized functions require the
+    # local and image Python versions to match (we have 3.13 local / 3.11 image).
+    # Giving the closure a bare module-level qualname + name satisfies the global
+    # check and lets Modal re-import it by name in the container, where re-running
+    # this loop re-registers the same name. No serialization needed.
+    fn.__name__ = name
+    fn.__qualname__ = name
+    fn.__module__ = __name__
     return fn
 
 
@@ -544,10 +558,7 @@ for _stage, (_runner, _secrets) in _STAGE_RUNNERS.items():
             timeout=_DAY,
             secrets=_secrets,
             volumes={"/data": data_volume, "/runs": runs_volume},
-            # Loop-generated (non-global-scope) functions must be serialized; Modal
-            # cloudpickles the closure over the module-level runner + gpu_count.
-            serialized=True,
-        )(_make_stage_fn(_runner, _gpu_count))
+        )(_make_stage_fn(_runner, _gpu_count, _fn_name))
         globals()[_fn_name] = _fn
         _STAGE_REGISTRIES[_stage][(_gpu_type, _gpu_count)] = _fn
 
