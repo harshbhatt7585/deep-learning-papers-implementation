@@ -8,7 +8,8 @@ import torch
 import torch.nn.functional as F
 
 from tinygroot.chat_core_eval import use_calculator
-from tinygroot.model import StaticKVCache, TinyGrootModel
+from tinygroot.cache_management import StaticKVCache
+from tinygroot.model import TinyGrootModel
 from tinygroot.tokenizer import NanochatTokenizer
 
 

@@ -66,6 +66,7 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 
 PROJECT_FILES = [
     "__init__.py",
+    "cache_management.py",
     "chat_core_eval.py",
     "chat_sft.py",
     "core_eval.py",
