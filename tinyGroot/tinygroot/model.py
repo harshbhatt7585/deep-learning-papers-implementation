@@ -398,9 +398,9 @@ class TinyGrootModel(nn.Module):
         if input_ids.ndim == 3:
             if past_key_values is not None:
                 raise ValueError("3D bagged input_ids cannot be used with past_key_values")
-            batch_size, seq_len, bag_size = input_ids.shape
+            seq_len = input_ids.size(1)
         else:
-            batch_size, seq_len = input_ids.shape
+            seq_len = input_ids.size(1)
         if static_cache is not None:
             past_len = static_cache.pos
         else:
@@ -520,60 +520,6 @@ class TinyGrootModel(nn.Module):
         return cos[None, :, None, :], sin[None, :, None, :]
 
 
-def causal_mtp_loss(
-    model: TinyGrootModel,
-    input_ids: torch.Tensor,
-    *,
-    mtp_loss_weight: float = 0.3,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    if input_ids.size(1) < 2:
-        raise ValueError("causal_mtp_loss requires seq_len >= 2")
-
-    logits, hidden = model(input_ids, attention_mask=None, causal=True, return_hidden=True)
-    main_loss = F.cross_entropy(
-        logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
-        input_ids[:, 1:].contiguous().view(-1),
-    )
-    loss = main_loss
-    aux_losses = []
-    mtp_hidden: torch.Tensor | None = None
-    for depth, head in enumerate(model.mtp_heads, start=1):
-        offset = depth + 1
-        if input_ids.size(1) <= offset:
-            break
-        if model.config.mtp_arch == "deepseek":
-            if depth == 1:
-                previous_hidden = hidden[:, :-offset, :]
-            else:
-                previous_hidden = mtp_hidden[:, :-1, :]
-            token_ids = input_ids[:, depth:-1]
-            cos_sin = (
-                model.cos[:, : previous_hidden.size(1)],
-                model.sin[:, : previous_hidden.size(1)],
-            )
-            mtp_hidden = head(
-                previous_hidden,
-                token_ids,
-                token_emb=model.token_emb,
-                cos_sin=cos_sin,
-            )
-            h_offset = mtp_hidden
-        else:
-            h_offset = norm(head(hidden[:, :-offset, :]))
-        aux_logits = model.lm_head(h_offset)
-        aux_loss = F.cross_entropy(
-            aux_logits.contiguous().view(-1, aux_logits.size(-1)),
-            input_ids[:, offset:].contiguous().view(-1),
-        )
-        aux_losses.append(aux_loss)
-        loss = loss + mtp_loss_weight * aux_loss / max(1, len(model.mtp_heads))
-
-    metrics = {"main_loss": main_loss.detach()}
-    if aux_losses:
-        metrics["mtp_loss"] = torch.stack([aux.detach() for aux in aux_losses]).mean()
-    return loss, metrics
-
-
 def _sample_tokens(
     logits: torch.Tensor,
     *,
@@ -654,16 +600,3 @@ def generate_causal(
             break
 
     return x[0]
-
-
-# Backward-compatible aliases for older checkpoints/scripts.
-TextDiffusionConfig = TinyGrootConfig
-TextDiffusionModel = TinyGrootModel
-
-
-def main() -> None:
-    raise SystemExit("Use training/train.py and infer/sample.py; this project now supports only the LLaDA2.1 tokenizer.")
-
-
-if __name__ == "__main__":
-    main()
