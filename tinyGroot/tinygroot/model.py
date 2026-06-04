@@ -11,6 +11,10 @@ from tinygroot.cache_management import KVCache, StaticKVCache
 from tinygroot.flash_attention import flash_attn
 
 
+RECURRENT_L_STEPS = 2
+RECURRENT_H_STEPS = 2
+
+
 @dataclass
 class TinyGrootConfig:
     vocab_size: int
@@ -290,6 +294,33 @@ class DeepSeekMTPModule(nn.Module):
         return norm(x)
 
 
+class MagicRecurrentCore(nn.Module):
+    """Small fixed HRM-style recurrent tail: L, H, L, H with MagicNorm exits."""
+
+    def __init__(self, config: TinyGrootConfig) -> None:
+        super().__init__()
+        self.L_blocks = nn.ModuleList([TransformerBlock(config) for _ in range(RECURRENT_L_STEPS)])
+        self.H_blocks = nn.ModuleList([TransformerBlock(config) for _ in range(RECURRENT_H_STEPS)])
+        z_l_init = torch.empty(config.d_model)
+        nn.init.trunc_normal_(z_l_init, std=1.0)
+        self.register_buffer("z_l_init", z_l_init, persistent=True)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        cos_sin: tuple[torch.Tensor, torch.Tensor],
+        causal: bool,
+        attention_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        z_h = x
+        z_l = self.z_l_init.to(dtype=x.dtype)
+        for l_block, h_block in zip(self.L_blocks, self.H_blocks):
+            z_l = norm(l_block(z_l + z_h + x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal))
+            z_h = norm(h_block(z_h + z_l, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal))
+        return z_h
+
+
 class TinyGrootModel(nn.Module):
     """Decoder-only Transformer used for causal LM, MTP, TST, and DFlash targets."""
 
@@ -299,6 +330,7 @@ class TinyGrootModel(nn.Module):
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
+        self.recurrent_core = MagicRecurrentCore(config)
         self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
         if config.mtp_arch == "deepseek":
             self.mtp_heads = nn.ModuleList(
@@ -420,6 +452,8 @@ class TinyGrootModel(nn.Module):
         if static_cache is not None:
             static_cache.pos += seq_len
 
+        recurrent_cos_sin = (self.cos[:, past_len:total_len], self.sin[:, past_len:total_len])
+        x = self.recurrent_core(x, cos_sin=recurrent_cos_sin, causal=causal, attention_mask=attention_mask)
         x = norm(x)
         logits = self.lm_head(x)
         if output_hidden_states:
@@ -461,6 +495,8 @@ class TinyGrootModel(nn.Module):
                 nn.init.uniform_(head.weight, -scale, scale)
 
         for block in self.blocks:
+            init_block(block)
+        for block in list(self.recurrent_core.L_blocks) + list(self.recurrent_core.H_blocks):
             init_block(block)
 
     def _precompute_rotary_embeddings(

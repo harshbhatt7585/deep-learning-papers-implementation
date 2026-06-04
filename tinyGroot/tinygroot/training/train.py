@@ -551,6 +551,8 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
         embedding_params = list(source_model.token_emb.parameters())
         lm_head_params = list(source_model.lm_head.parameters())
         matrix_params = list(source_model.blocks.parameters())
+        if hasattr(source_model, "recurrent_core"):
+            matrix_params += list(source_model.recurrent_core.parameters())
         # DeepSeek-V3 style MTP heads are d_model x d_model projections that
         # feed the shared lm_head, so they belong with the other matrix params
         # (muon group), not the unembedding-vocab group.

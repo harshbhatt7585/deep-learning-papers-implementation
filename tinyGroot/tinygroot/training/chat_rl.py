@@ -171,6 +171,8 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
     embedding_params = trainable(source.token_emb.parameters())
     lm_head_params = trainable(source.lm_head.parameters())
     matrix_params = trainable(source.blocks.parameters())
+    if hasattr(source, "recurrent_core"):
+        matrix_params += trainable(source.recurrent_core.parameters())
     seen = {id(p) for p in embedding_params + lm_head_params + matrix_params}
     scalar_params = [p for p in source.parameters() if p.requires_grad and id(p) not in seen]
     groups: list[dict[str, Any]] = [
