@@ -652,7 +652,7 @@ Result at the last eval, step `3600`:
 | shared-linear MTP2 + TST s4 r0.3 d12 | 3.0028 | 0.9446 | 0.1133 |
 | **DeepSeek-MTP2 + TST s4 r0.3 d12** | **2.9866** | **0.9387** | **0.1162** |
 
-This is the new long-run best. It improves CORE by `+0.0029` over the shared-linear D12 run and `+0.0103` over the public nanochat d12 reference. It also improves BPB to `0.9387`, below both shared-linear MTP2+TST (`0.9446`) and nanochat d12 (`0.9825`).
+This became the long-run best at the time. It improved CORE by `+0.0029` over the shared-linear D12 run and `+0.0103` over the public nanochat d12 reference. It also improved BPB to `0.9387`, below both shared-linear MTP2+TST (`0.9446`) and nanochat d12 (`0.9825`).
 
 The run trained to step `3663`; the final checkpoint was saved at:
 
