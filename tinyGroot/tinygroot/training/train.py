@@ -366,6 +366,26 @@ def count_scaling_params(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in source_model.parameters())
 
 
+def dense_training_flops(num_params: int, num_tokens: int) -> int:
+    # Standard dense LM estimate: 2 FLOPs/token/param forward + 4 backward.
+    return int(6 * num_params * num_tokens)
+
+
+def format_flops(value: int | float) -> str:
+    units = [
+        (1e21, "ZFLOPs"),
+        (1e18, "EFLOPs"),
+        (1e15, "PFLOPs"),
+        (1e12, "TFLOPs"),
+        (1e9, "GFLOPs"),
+    ]
+    magnitude = float(value)
+    for scale, suffix in units:
+        if abs(magnitude) >= scale:
+            return f"{magnitude / scale:.3f} {suffix}"
+    return f"{magnitude:.0f} FLOPs"
+
+
 def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -> None:
     step_tokens = tokens_per_step(args)
     scaling_params = count_scaling_params(model)
@@ -391,13 +411,18 @@ def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -
     args.tst_steps = int(args.max_steps * args.tst_ratio) if args.tst_bag_size > 1 and args.tst_ratio > 0 else 0
     args.effective_training_tokens = total_tokens + args.tst_steps * step_tokens * max(0, args.tst_bag_size - 1)
     args.total_training_tokens = total_tokens
+    args.flops_per_step = dense_training_flops(scaling_params, step_tokens)
+    args.total_training_flops = dense_training_flops(scaling_params, total_tokens)
+    args.effective_training_flops = dense_training_flops(scaling_params, args.effective_training_tokens)
     log(
         "training_horizon: "
         f"{horizon} "
         f"scaling_params={scaling_params:,} "
         f"tokens_per_step={step_tokens:,} "
+        f"flops_per_step={format_flops(args.flops_per_step)} "
         f"max_steps={args.max_steps:,} "
         f"total_tokens={total_tokens:,} "
+        f"total_flops={format_flops(args.total_training_flops)} "
         f"tokens_per_scaling_param={total_tokens / scaling_params:.2f}"
     )
     if args.tst_steps > 0:
@@ -407,6 +432,7 @@ def resolve_training_horizon(args: argparse.Namespace, model: torch.nn.Module) -
             f"ratio={args.tst_ratio:g} "
             f"steps={args.tst_steps:,} "
             f"effective_raw_tokens={args.effective_training_tokens:,} "
+            f"effective_raw_flops_equiv={format_flops(args.effective_training_flops)} "
             f"effective_tokens_per_scaling_param={args.effective_training_tokens / scaling_params:.2f}"
         )
 
@@ -1011,10 +1037,16 @@ def log_startup(args: argparse.Namespace, data: TokenData, config: TinyGrootConf
     log(f"mlp: kind={'gated_swiglu' if config.gated_mlp else 'relu2'} ff_mult={config.ff_mult}")
     log(f"scaling_params: {args.scaling_params:,}")
     log(f"tokens_per_step: {args.tokens_per_step:,}")
+    log(f"flops_per_step: {args.flops_per_step:,} ({format_flops(args.flops_per_step)})")
     log(f"max_steps: {args.max_steps:,}")
     log(f"total_training_tokens: {args.total_training_tokens:,}")
+    log(f"total_training_flops: {args.total_training_flops:,} ({format_flops(args.total_training_flops)})")
     if args.tst_steps > 0:
         log(f"effective_training_tokens: {args.effective_training_tokens:,}")
+        log(
+            "effective_training_flops_equiv: "
+            f"{args.effective_training_flops:,} ({format_flops(args.effective_training_flops)})"
+        )
     log(f"amp_dtype: {args.amp_dtype}")
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bfloat16" else torch.float16 if args.amp_dtype == "float16" else torch.float32
     log(f"attention_backend: {describe_attention_backend(masked=False, dtype=amp_dtype)}")
@@ -1231,12 +1263,23 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             )
             tokens = current_tokens_per_step * args.log_interval
             tokens_per_second = tokens / max(elapsed, 1e-9)
+            flops = args.flops_per_step * args.log_interval
+            flops_per_second = flops / max(elapsed, 1e-9)
             train_loss = running_loss / args.log_interval
             phase = "tst" if use_tst_phase(args, step_id) else ("dflash" if args.dflash else "causal_mtp")
-            log(f"step {step_id:05d} phase {phase} train_loss {train_loss:.4f} lr {lr:.2e} tok/s {tokens_per_second:,.0f}")
+            model_tokens_seen = step_id * args.tokens_per_step
             raw_tokens_seen = step_id * args.tokens_per_step
             if args.tst_steps > 0:
                 raw_tokens_seen += min(step_id, args.tst_steps) * args.tokens_per_step * (args.tst_bag_size - 1)
+            flops_seen = step_id * args.flops_per_step
+            effective_flops_seen = dense_training_flops(args.scaling_params, raw_tokens_seen)
+            log(
+                f"step {step_id:05d} phase {phase} "
+                f"train_loss {train_loss:.4f} lr {lr:.2e} "
+                f"tok/s {tokens_per_second:,.0f} "
+                f"tokens {raw_tokens_seen:,} "
+                f"flops {format_flops(flops_seen)}"
+            )
             log_train_metrics(
                 wandb_run,
                 step_id,
@@ -1245,6 +1288,11 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     "train/lr": lr,
                     "train/tokens_per_second": tokens_per_second,
                     "train/tokens": raw_tokens_seen,
+                    "train/model_tokens": model_tokens_seen,
+                    "train/effective_raw_tokens": raw_tokens_seen,
+                    "train/flops_per_second": flops_per_second,
+                    "train/flops": flops_seen,
+                    "train/effective_raw_flops_equiv": effective_flops_seen,
                     "train/phase_is_tst": 1.0 if phase == "tst" else 0.0,
                 },
             )
