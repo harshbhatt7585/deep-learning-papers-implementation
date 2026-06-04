@@ -10,20 +10,21 @@ This table mixes short gates and long runs, so use the **Budget** column before 
 
 | # | Run | Budget | MLP | MTP design | Hardware | Val Loss | BPB | **CORE** | Notes |
 | ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| 1 | **DeepSeek-MTP2 + TST s4 r0.3 d12** | ratio-12 long run | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 8× H100 FP8 compile | **2.9866** | **0.9387** | **0.1162** | New long-run best; eval at step 3600, final checkpoint at step 3663 |
-| 2 | MTP2 + TST s4 r0.3 d12 | ratio-12 long run | SwiGLU ff=3 | shared × 2 + TST | 8× H100 FP8 compile | 3.0028 | 0.9446 | 0.1133 | Previous long-run best; beats public nanochat d12 CORE/BPB |
-| 3 | nanochat d12 public reference | d12 reference | nanochat | causal LM | 8× H100 | — | 0.9825 | 0.1059 | External reference |
-| 4 | **H100 bf16 DeepSeek-MTP2 + TST s4 r0.3** | 400-step gate | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 4× H100 | 3.5576 | 1.1165 | **0.0737** | New best 400-step gate; first short run above 0.071 |
-| 5 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Previous best 400-step gate |
-| 6 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
-| 7 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
-| 8 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
-| 9 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
-| 10 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
+| 1 | **HRM-loop MTP1 + TST s4 r0.3 d12** | ratio-12 long run | SwiGLU ff=4 | shared × 1 + small HRM loop + TST | 8× H100 FP8 compile | 2.9872 | 0.9397 | **0.1329** | New pretraining best; eval at step 3600, final checkpoint at step 3757 |
+| 2 | DeepSeek-MTP2 + TST s4 r0.3 d12 | ratio-12 long run | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 8× H100 FP8 compile | **2.9866** | **0.9387** | 0.1162 | Previous long-run best; eval at step 3600, final checkpoint at step 3663 |
+| 3 | MTP2 + TST s4 r0.3 d12 | ratio-12 long run | SwiGLU ff=3 | shared × 2 + TST | 8× H100 FP8 compile | 3.0028 | 0.9446 | 0.1133 | Previous long-run best; beats public nanochat d12 CORE/BPB |
+| 4 | nanochat d12 public reference | d12 reference | nanochat | causal LM | 8× H100 | — | 0.9825 | 0.1059 | External reference |
+| 5 | **H100 bf16 DeepSeek-MTP2 + TST s4 r0.3** | 400-step gate | SwiGLU ff=3 | DeepSeek-style × 2 + TST | 4× H100 | 3.5576 | 1.1165 | **0.0737** | New best 400-step gate; first short run above 0.071 |
+| 6 | H100 FP8 MTP2 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5491 | 1.1157 | 0.0710 | Previous best 400-step gate |
+| 7 | A100 MTP1 ReLU² | 400-step gate | ReLU² ff=4 | full-vocab × 1 | 8× A100 | 3.5953 | 1.1289 | 0.0693 | Best A100 gate |
+| 8 | H100 bf16 SwiGLU MTP1 shared, dropout=0 | 400-step gate | SwiGLU ff=3 | shared × 1 | 4× H100 | 3.5866 | 1.1246 | 0.0688 | Best efficient non-TST gate |
+| 9 | H100 bf16 SwiGLU MTP1 shared + TST s4 r0.3 | 400-step gate | SwiGLU ff=3 | shared × 1 + TST | 4× H100 | 3.5789 | 1.1222 | 0.0685 | Better val/BPB than efficient baseline; CORE tied/slightly lower |
+| 10 | H100 FP8 MoE top-1 | 400-step gate | MoE 4×ff=1 | full-vocab × 2 | 8× H100 FP8 | 3.6385 | 1.1439 | 0.0688 | Similar CORE, weaker BPB |
+| 11 | H100 FP8 GQA3 | 400-step gate | ReLU² ff=4 | full-vocab × 2 | 8× H100 FP8 | 3.5655 | 1.1188 | 0.0681 | GQA hurt CORE relative to dense attention |
 
 Reading the overall table:
 
-- The long-run DeepSeek-MTP2+TST d12 run is the current best result (`CORE=0.1162`, `BPB=0.9387`), above both the shared-linear D12 run (`CORE=0.1133`) and the public nanochat d12 reference (`CORE=0.1059`).
+- The HRM-loop MTP1+TST d12 run is the current best result (`CORE=0.1329`, `BPB=0.9397`), a large CORE gain over the previous DeepSeek-MTP2+TST d12 best (`CORE=0.1162`) while essentially tying BPB.
 - The best 400-step gate is now DeepSeek-style MTP2 + TST (`CORE=0.0737`), beating the older H100 FP8 MTP2 ReLU² full-vocab run (`0.0710`) while using 4× H100 bf16.
 - TST alone did not beat the old short-run CORE, but TST plus DeepSeek-style MTP2 did.
 
@@ -665,6 +666,45 @@ Sample quality is still not solved: the model knows some short facts (`hot -> co
 
 Caveat: this is not a strict same-token comparison to nanochat d12. The public nanochat d12 table reports about `1.08B` training tokens. The shared-linear D12 run used roughly `1.72B` latent training tokens (`~143M params * 12`) and about `3.26B` effective raw-token exposure from TST. The DeepSeek-MTP2 D12 run used roughly `1.92B` latent training tokens (`~160M params * 12`) and about `3.65B` effective raw-token exposure from TST. The fair claim is: at the same d12 model scale and D12-style parameter-data ratio, MTP2+TST beats the nanochat d12 reference on CORE and BPB, with the best result coming from the DeepSeek-style auxiliary path.
 
+## HRM-Loop D12 Pretraining Best
+
+We promoted the small recurrent HRM-loop architecture to a ratio-12 run with the pretokenized nanochat path. The config kept TST consistent with the previous best long run but used the injected recurrent loop and a cheaper MTP setup:
+
+```bash
+MTP_HEADS=1
+TST_BAG_SIZE=4
+TST_RATIO=0.3
+TARGET_PARAM_DATA_RATIO=12
+BATCH_SIZE=16
+GRAD_ACCUM_STEPS=2
+EVAL_INTERVAL=600
+CORE_METRIC_EVERY=600
+SAMPLE_INTERVAL=600
+RUN_NAME=hrm-loop-pdr12-tst-s4-r03-mtp1
+```
+
+Run: `hrm-loop-pdr12-tst-s4-r03-mtp1`
+
+Result at the last eval, step `3600`:
+
+| Run | Val Loss | BPB | CORE |
+| --- | ---: | ---: | ---: |
+| public nanochat d12 reference | — | 0.9825 | 0.1059 |
+| previous DeepSeek-MTP2 + TST s4 r0.3 d12 best | 2.9866 | 0.9387 | 0.1162 |
+| **HRM-loop MTP1 + TST s4 r0.3 d12** | **2.9872** | **0.9397** | **0.1329** |
+
+This is the new pretraining best. CORE improved by `+0.0167` absolute over the previous long-run best (`0.1329` vs `0.1162`), a relative gain of about `+14.4%`, while BPB remained essentially tied (`0.9397` vs `0.9387`). That pattern is useful: the recurrent loop appears to improve benchmark answer discrimination much more than plain next-token compression.
+
+The run trained to step `3757`; the final checkpoint was saved at:
+
+```text
+/runs/hrm-loop-pdr12-tst-s4-r03-mtp1/checkpoint.pt
+```
+
+At step `3600`, the run had seen `3.660B` effective raw tokens and used an estimated `1.859 EFLOPs`. At final checkpoint step `3757`, it reached `3.742B` effective raw tokens and `1.940 EFLOPs`.
+
+Sample quality is still not solved. The model produces some short correct facts (`gold -> Au`, `favorite color -> blue`) but still repeats, gets simple temporal/math prompts wrong, and makes factual errors (`France -> United Kingdom`, `gold atomic number -> 10`). So the claim is not "chat-ready"; the claim is that the small HRM loop produced the strongest pretraining CORE so far at the same ratio-12 budget.
+
 ## Lessons Learned
 
 1. **Dropout is not free with SwiGLU.** The standard `dropout=0.1` carryover from nanoGPT silently destroys generalization once the FFN becomes multiplicative-gated. If you change MLP architecture, recheck dropout.
@@ -693,6 +733,6 @@ Priorities, roughly in order:
 
 The current best 400-step gate score is `CORE = 0.0737` from `mtp2-deepseek-tst-s4-r03-400step-swiglu-ff3-h100-bf16-4gpu-bs16`. This replaces the old H100 FP8 MTP2 ReLU² full-vocab result (`CORE = 0.0710`) as the short-run leader. The current best **cheap non-TST baseline** remains `CORE = 0.0688` on 4× H100 with SwiGLU + shared MTP + dropout=0.
 
-The long-run best is now `CORE = 0.1162`, `BPB = 0.9387` from `mtp2-deepseek-tst-s4-r03-d12-swiglu-ff3-h100-fp8-compile-8gpu-bs32`, with the final eval at step `3600` and final checkpoint at step `3663`. This beats both the shared-linear MTP2+TST D12 run (`CORE = 0.1133`, `BPB = 0.9446`) and the public nanochat d12 reference (`CORE ≈ 0.1059`, `BPB = 0.9825`). This is not a strict same-token comparison because TST increases effective raw-token exposure, but it is the strongest result so far at the d12 model scale.
+The long-run best is now `CORE = 0.1329`, `BPB = 0.9397` from `hrm-loop-pdr12-tst-s4-r03-mtp1`, with the final eval at step `3600` and final checkpoint at step `3757`. This beats the previous DeepSeek-MTP2+TST D12 run (`CORE = 0.1162`, `BPB = 0.9387`), the shared-linear MTP2+TST D12 run (`CORE = 0.1133`, `BPB = 0.9446`), and the public nanochat d12 reference (`CORE ≈ 0.1059`, `BPB = 0.9825`). BPB is essentially tied with the DeepSeek-MTP2 run, but CORE is much stronger, suggesting the recurrent loop is improving evaluation behavior more than token-level compression.
 
 GQA in either flavor (-2 over SwiGLU MTP1, -3 over ReLU² MTP2) has now been tested twice and rejected both times. Attention stays full multi-head (`N_HEADS=6, N_KV_HEADS=6`) on the recommended pretraining config. Any future GQA attempt should be paired with a capacity-reinvestment knob (`FF_MULT=4` or `N_LAYERS=14`), not run as a standalone change.
