@@ -189,9 +189,14 @@ def run_chat_eval(
     chatcore_top_k: int,
     chatcore_batch_size: int,
 ) -> None:
-    if not os.path.exists(checkpoint):
+    checkpoint_path = Path(checkpoint)
+    checkpoint_dir = checkpoint_path if checkpoint_path.is_dir() else checkpoint_path.parent
+    has_legacy_checkpoint = checkpoint_path.exists()
+    has_split_checkpoint = (checkpoint_dir / "model.pt").exists() and (checkpoint_dir / "meta.json").exists()
+    if not has_legacy_checkpoint and not has_split_checkpoint:
         raise SystemExit(
             f"[modal_train] eval checkpoint not found inside the container: {checkpoint}\n"
+            f"  -> New-format checkpoints are directories containing model.pt + meta.json.\n"
             f"  -> Run 'modal run tinygroot/modal/modal_train.py::list_runs' to find the exact /runs path."
         )
     command = [
@@ -863,9 +868,14 @@ def _list_runs_remote() -> list[dict]:
             continue
         entry = {"run": name, "path": run_dir, "has_checkpoint": False, "size_mb": 0.0, "files": []}
         ckpt = os.path.join(run_dir, "checkpoint.pt")
+        model = os.path.join(run_dir, "model.pt")
+        meta = os.path.join(run_dir, "meta.json")
         if os.path.exists(ckpt):
             entry["has_checkpoint"] = True
             entry["size_mb"] = round(os.path.getsize(ckpt) / 1e6, 2)
+        elif os.path.exists(model) and os.path.exists(meta):
+            entry["has_checkpoint"] = True
+            entry["size_mb"] = round(os.path.getsize(model) / 1e6, 2)
         try:
             entry["files"] = sorted(os.listdir(run_dir))[:10]
         except Exception:
