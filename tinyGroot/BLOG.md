@@ -705,6 +705,83 @@ At step `3600`, the run had seen `3.660B` effective raw tokens and used an estim
 
 Sample quality is still not solved. The model produces some short correct facts (`gold -> Au`, `favorite color -> blue`) but still repeats, gets simple temporal/math prompts wrong, and makes factual errors (`France -> United Kingdom`, `gold atomic number -> 10`). So the claim is not "chat-ready"; the claim is that the small HRM loop produced the strongest pretraining CORE so far at the same ratio-12 budget.
 
+## HRM-Loop Chat SFT
+
+We ran chat SFT from the HRM-loop pretraining checkpoint, then continued from the first SFT checkpoint for another 500 optimizer steps after fixing the SFT `max_steps` accounting bug. The continuation checkpoint was saved at:
+
+```text
+/runs/hrm-loop-pdr12-sft-1000-plus500/checkpoint.pt
+```
+
+At step `400` of the continuation run:
+
+| Metric | Value |
+| --- | ---: |
+| val_loss | 1.2980 |
+| mtp_loss | 2.4627 |
+| chatcore | 0.1890 |
+| chatcore_cat | 0.0725 |
+| ARC-Easy | 33.50% |
+| ARC-Challenge | 27.99% |
+| MMLU | 29.82% |
+| GSM8K | 0.00% |
+| HumanEval | 4.17% |
+| SpellingBee | 87.50% |
+
+The final continuation step `500` had `train_loss=1.4416`, `main=1.1168`, `mtp=2.1653`, `smooth=1.1478`, and `lr=1.20e-06`. W&B run: `hrm-loop-pdr12-sft-1000-plus500`.
+
+Qualitative samples show that chat formatting and spelling/counting behavior are improving, but arithmetic reasoning is still not reliable:
+
+```text
+USER:
+What gas do plants absorb during photosynthesis?
+- Oxygen=A
+- Carbon dioxide=B
+- Nitrogen=C
+- Helium=D
+
+Respond only with the letter of the correct answer.
+
+MODEL:
+A
+
+---
+
+USER:
+Sarah has 3 bags with 4 apples each. She eats 2 apples. How many apples are left?
+
+MODEL:
+She eats 2 apples each.
+She eats 2 apples/apple = 222 apples/apple
+There are 3 bags and she eats 2 apples, so there are 3 bags * 2 apples/apple = 3*266 apples left.
+#### 6
+
+---
+
+USER:
+Spell the word: strawberry
+
+MODEL:
+strawberry:s,t,r,a,w,b,e,r,r,y
+
+---
+
+USER:
+How many r are in the word strawberry?
+
+MODEL:
+We need to count 'r' in 'strawberry'.
+
+First spell the word:
+strawberry:s,t,r,a,w,b,e,r,r,y
+
+The letter 'r' appears 3 times.
+
+#### 3
+```
+
+Readout: SFT is strongly improving format following and SpellingBee (`87.5%`), but GSM8K remains `0%`, and even simple multiple-choice knowledge can be wrong (`photosynthesis -> A` instead of `B`). The next post-training improvement should target math/reasoning behavior specifically, likely with GSM8K-focused RL or a better math SFT mix, rather than simply adding more generic chat SFT.
+
 ## Lessons Learned
 
 1. **Dropout is not free with SwiGLU.** The standard `dropout=0.1` carryover from nanoGPT silently destroys generalization once the FFN becomes multiplicative-gated. If you change MLP architecture, recheck dropout.
