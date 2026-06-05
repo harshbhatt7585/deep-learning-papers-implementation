@@ -86,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-rollouts-every", type=int, default=1, help="Log decoded rollout samples on rank 0 every N steps; 0 disables.")
     parser.add_argument("--log-rollout-samples", type=int, default=2, help="Number of rollout completions to print when logging is enabled.")
     parser.add_argument("--log-rollout-chars", type=int, default=1200, help="Maximum decoded characters per logged rollout completion.")
+    parser.add_argument("--stream-rollouts", action="store_true", help="Stream the first logged rollout completion token-by-token on rank 0.")
 
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="muon")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -252,6 +253,7 @@ def generate_batch_with_masks(
     temperature: float,
     top_k: int | None,
     seed: int,
+    stream_prefix: str | None = None,
 ) -> tuple[list[list[int]], list[list[int]]]:
     source = unwrap_model(model)
     source.eval()
@@ -265,12 +267,15 @@ def generate_batch_with_masks(
     sequences: list[list[int]] = []
     masks: list[list[int]] = []
 
-    for _ in range(num_samples):
+    for sample_idx in range(num_samples):
         seq = list(prompt_ids)
         mask = [0] * len(seq)
         forced: list[int] = []
         in_python = False
         python_expr_tokens: list[int] = []
+        should_stream = stream_prefix is not None and sample_idx == 0 and is_main_process()
+        if should_stream:
+            print(stream_prefix, end="", flush=True)
 
         for _token_step in range(max_tokens):
             train_mask = 0
@@ -290,6 +295,10 @@ def generate_batch_with_masks(
 
             seq.append(next_token)
             mask.append(train_mask)
+            if should_stream:
+                piece = tokenizer.decode([next_token], skip_special=True)
+                if piece:
+                    print(piece, end="", flush=True)
 
             if next_token == specials.python_start:
                 in_python = True
@@ -306,6 +315,8 @@ def generate_batch_with_masks(
             elif in_python:
                 python_expr_tokens.append(next_token)
 
+        if should_stream:
+            print("", flush=True)
         sequences.append(seq)
         masks.append(mask)
 
@@ -509,6 +520,19 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             ):
                 seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
                 generate_start = time.time()
+                stream_prefix = None
+                if (
+                    args.stream_rollouts
+                    and args.log_rollouts_every > 0
+                    and step % args.log_rollouts_every == 0
+                    and example_step == 0
+                    and sampling_step == 0
+                    and is_main_process()
+                ):
+                    stream_prefix = (
+                        f"[rollout:live] step={step} example_idx={example_idx} "
+                        "sample=0 response: "
+                    )
                 sequences, masks = generate_batch_with_masks(
                     model,
                     tokenizer,
@@ -518,6 +542,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     temperature=args.temperature,
                     top_k=args.top_k if args.top_k > 0 else None,
                     seed=seed,
+                    stream_prefix=stream_prefix,
                 )
                 rollout_generate_time += time.time() - generate_start
                 rollout_tokens += sum(max(0, len(seq) - len(prompt_ids)) for seq in sequences)
