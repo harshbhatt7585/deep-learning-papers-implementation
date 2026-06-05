@@ -10,50 +10,78 @@
     <main class="shell">
       <section class="chat-pane">
         <header class="topbar">
-          <div>
-            <h1>tinyGroot Chat</h1>
-            <p id="modelLine">Loading model status...</p>
+          <div class="brand">
+            <span class="logo" aria-hidden="true">🌱</span>
+            <div>
+              <h1>tinyGroot Chat</h1>
+              <p id="modelLine">Loading model status…</p>
+            </div>
           </div>
-          <button id="resetButton" class="icon-button" title="Start a new conversation" type="button">New</button>
+          <div class="topbar-actions">
+            <span id="deviceBadge" class="badge" hidden></span>
+            <button id="settingsToggle" class="ghost-button" type="button" aria-expanded="false" title="Toggle settings">
+              Settings
+            </button>
+            <button id="resetButton" class="ghost-button" type="button" title="Start a new conversation">
+              New chat
+            </button>
+          </div>
         </header>
 
         <div id="messages" class="messages" aria-live="polite"></div>
 
         <form id="chatForm" class="composer">
-          <textarea id="prompt" name="prompt" rows="1" placeholder="Ask anything..." autocomplete="off"></textarea>
-          <button id="sendButton" type="submit">Send</button>
+          <div class="composer-box">
+            <textarea
+              id="prompt"
+              name="prompt"
+              rows="1"
+              placeholder="Ask anything…  (Enter to send · Shift+Enter for newline)"
+              autocomplete="off"
+            ></textarea>
+            <button id="sendButton" type="submit" title="Send">
+              <span class="send-label">Send</span>
+            </button>
+            <button id="stopButton" class="stop-button" type="button" title="Stop generating" hidden>
+              Stop
+            </button>
+          </div>
+          <p class="composer-hint" id="composerHint"></p>
         </form>
       </section>
 
-      <aside class="side-pane">
+      <aside class="side-pane" id="sidePane">
         <div class="setting">
-          <label for="systemPrompt">System</label>
-          <textarea id="systemPrompt" rows="5" placeholder="Optional system instruction"></textarea>
+          <label for="systemPrompt">System prompt</label>
+          <textarea id="systemPrompt" rows="4" placeholder="Optional system instruction"></textarea>
         </div>
         <div class="setting">
-          <label for="contextMode">Context</label>
+          <label for="contextMode">Context sent to model</label>
           <select id="contextMode">
-            <option value="latest" selected>Latest turn</option>
+            <option value="latest" selected>Latest turn only</option>
             <option value="recent">Recent turns</option>
             <option value="full">Full chat</option>
           </select>
+          <p class="hint">This small checkpoint degrades when fed its own earlier replies, so it defaults to the latest turn.</p>
         </div>
         <div class="setting">
-          <label for="temperature">Temperature <span id="temperatureValue">0.0</span></label>
+          <label for="temperature">Temperature <span id="temperatureValue" class="pill">0.0</span></label>
           <input id="temperature" type="range" min="0" max="1.2" step="0.1" value="0" />
         </div>
-        <div class="setting compact">
-          <label for="maxTokens">Max tokens</label>
-          <input id="maxTokens" type="number" min="16" max="1024" step="16" value="256" />
-        </div>
-        <div class="setting compact">
-          <label for="topK">Top K</label>
-          <input id="topK" type="number" min="0" max="200" step="1" value="50" />
+        <div class="setting-grid">
+          <div class="setting">
+            <label for="maxTokens">Max tokens</label>
+            <input id="maxTokens" type="number" min="16" max="1024" step="16" value="256" />
+          </div>
+          <div class="setting">
+            <label for="topK">Top K</label>
+            <input id="topK" type="number" min="0" max="200" step="1" value="50" />
+          </div>
         </div>
         <dl class="stats">
-          <div><dt>Device</dt><dd id="deviceValue">...</dd></div>
-          <div><dt>Step</dt><dd id="stepValue">...</dd></div>
-          <div><dt>Speed</dt><dd id="speedValue">...</dd></div>
+          <div><dt>Device</dt><dd id="deviceValue">…</dd></div>
+          <div><dt>Step</dt><dd id="stepValue">…</dd></div>
+          <div><dt>Last speed</dt><dd id="speedValue">…</dd></div>
         </dl>
       </aside>
     </main>

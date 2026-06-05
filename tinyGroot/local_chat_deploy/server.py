@@ -198,10 +198,10 @@ class TinyGrootChat:
                     )
                     next_token = int(sampled.item())
 
-                seq.append(next_token)
-                output_ids.append(next_token)
                 if next_token == specials.assistant_end or next_token == self.tokenizer.bos_token_id:
                     break
+                seq.append(next_token)
+                output_ids.append(next_token)
                 if next_token == specials.python_start:
                     in_python = True
                     python_expr_tokens = []
@@ -236,6 +236,10 @@ class TinyGrootChat:
                 "tokens_per_second": len(output_ids) / elapsed,
             },
         }
+
+
+class ClientDisconnected(Exception):
+    """Raised when the browser closes a streaming connection mid-generation."""
 
 
 class ChatHandler(SimpleHTTPRequestHandler):
@@ -291,21 +295,38 @@ class ChatHandler(SimpleHTTPRequestHandler):
             self.write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        # The streamed body has no Content-Length, so the client only learns the
+        # response is finished when the connection closes. Force-close it (rather
+        # than keep-alive) or the browser's reader blocks forever after the last
+        # token and the UI stays locked.
+        self.close_connection = True
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
+        # Closing the generator on exit throws GeneratorExit into stream_generate,
+        # which unwinds its `with self.lock` block so a disconnect (or Stop button)
+        # promptly stops decoding and frees the model for the next request.
+        events = self.service.stream_generate(
+            messages,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+        )
         try:
-            for event in self.service.stream_generate(
-                messages,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-            ):
+            for event in events:
                 self.write_sse(event)
-        except Exception as exc:
-            self.write_sse({"type": "error", "error": str(exc)})
+        except ClientDisconnected:
+            self.log_message("client disconnected; stopping generation")
+        except Exception as exc:  # noqa: BLE001 - surface any model error to the client
+            try:
+                self.write_sse({"type": "error", "error": str(exc)})
+            except ClientDisconnected:
+                pass
+        finally:
+            events.close()
 
     def read_json(self) -> dict[str, Any]:
         size = int(self.headers.get("Content-Length", "0"))
@@ -322,8 +343,11 @@ class ChatHandler(SimpleHTTPRequestHandler):
 
     def write_sse(self, payload: dict[str, Any]) -> None:
         data = f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-        self.wfile.write(data)
-        self.wfile.flush()
+        try:
+            self.wfile.write(data)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise ClientDisconnected from exc
 
 
 def sanitize_messages(raw: Any) -> list[dict[str, str]]:
