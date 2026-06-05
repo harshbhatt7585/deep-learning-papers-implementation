@@ -13,8 +13,8 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tinygroot.chat_core_eval import extract_gsm_answer
-from tinygroot.engine import Engine
+from tinygroot.chat_core_eval import extract_gsm_answer, use_calculator
+from tinygroot.engine import Engine, sample_next_token
 from tinygroot.eval import evaluate_chatcore, evaluate_gsm8k_passk
 from tinygroot.hf_upload import download_checkpoint_from_hub, push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel
@@ -85,6 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-rollouts-every", type=int, default=1, help="Log decoded rollout samples on rank 0 every N steps; 0 disables.")
     parser.add_argument("--log-rollout-samples", type=int, default=2, help="Number of rollout completions to print when logging is enabled.")
     parser.add_argument("--log-rollout-chars", type=int, default=1200, help="Maximum decoded characters per logged rollout completion.")
+    parser.add_argument("--no-kv-cache-rollouts", action="store_true", help="Generate RL rollouts with full forward passes instead of StaticKVCache.")
 
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="muon")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -259,6 +260,77 @@ def generate_batch_with_masks(
         top_k=top_k,
         seed=seed,
     )
+
+
+@torch.no_grad()
+def generate_batch_with_masks_uncached(
+    model: torch.nn.Module,
+    tokenizer: NanochatTokenizer,
+    prompt_ids: list[int],
+    *,
+    num_samples: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int | None,
+    seed: int,
+) -> tuple[list[list[int]], list[list[int]]]:
+    source = unwrap_model(model)
+    source.eval()
+    device = source.device
+    rng = torch.Generator(device=device)
+    rng.manual_seed(seed)
+
+    specials = ChatSpecialIds.from_tokenizer(tokenizer)
+    bos = tokenizer.bos_token_id
+    max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - len(prompt_ids)))
+    sequences: list[list[int]] = []
+    masks: list[list[int]] = []
+
+    for _ in range(num_samples):
+        seq = list(prompt_ids)
+        mask = [0] * len(seq)
+        forced: list[int] = []
+        in_python = False
+        python_expr_tokens: list[int] = []
+
+        for _token_step in range(max_tokens):
+            train_mask = 0
+            if forced:
+                next_token = forced.pop(0)
+            else:
+                if len(seq) >= source.config.max_seq_len:
+                    break
+                x = torch.tensor([seq], dtype=torch.long, device=device)
+                logits = source(x, attention_mask=None, causal=True)[:, -1, :]
+                sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k)
+                next_token = int(sampled.item())
+                train_mask = 1
+
+            if next_token == specials.assistant_end or next_token == bos:
+                break
+
+            seq.append(next_token)
+            mask.append(train_mask)
+
+            if next_token == specials.python_start:
+                in_python = True
+                python_expr_tokens = []
+            elif next_token == specials.python_end and in_python:
+                in_python = False
+                expr = tokenizer.decode(python_expr_tokens, skip_special=True)
+                result = use_calculator(expr)
+                if result is not None:
+                    forced.append(specials.output_start)
+                    forced.extend(tokenizer.encode(str(result)))
+                    forced.append(specials.output_end)
+                python_expr_tokens = []
+            elif in_python:
+                python_expr_tokens.append(next_token)
+
+        sequences.append(seq)
+        masks.append(mask)
+
+    return sequences, masks
 
 
 def make_rollout_batch(
@@ -458,7 +530,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             ):
                 seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
                 generate_start = time.time()
-                sequences, masks = generate_batch_with_masks(
+                generate_fn = generate_batch_with_masks_uncached if args.no_kv_cache_rollouts else generate_batch_with_masks
+                sequences, masks = generate_fn(
                     model,
                     tokenizer,
                     prompt_ids,
