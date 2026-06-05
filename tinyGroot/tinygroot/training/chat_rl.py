@@ -14,7 +14,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinygroot.chat_core_eval import extract_gsm_answer, use_calculator
-from tinygroot.engine import Engine, sample_next_token
+from tinygroot.engine import sample_next_token
 from tinygroot.eval import evaluate_chatcore, evaluate_gsm8k_passk
 from tinygroot.hf_upload import download_checkpoint_from_hub, push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel
@@ -85,7 +85,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-rollouts-every", type=int, default=1, help="Log decoded rollout samples on rank 0 every N steps; 0 disables.")
     parser.add_argument("--log-rollout-samples", type=int, default=2, help="Number of rollout completions to print when logging is enabled.")
     parser.add_argument("--log-rollout-chars", type=int, default=1200, help="Maximum decoded characters per logged rollout completion.")
-    parser.add_argument("--no-kv-cache-rollouts", action="store_true", help="Generate RL rollouts with full forward passes instead of StaticKVCache.")
 
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="muon")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -238,32 +237,6 @@ def build_optimizer(args: argparse.Namespace, model: torch.nn.Module, runtime: R
 
 @torch.no_grad()
 def generate_batch_with_masks(
-    model: torch.nn.Module,
-    tokenizer: NanochatTokenizer,
-    prompt_ids: list[int],
-    *,
-    num_samples: int,
-    max_new_tokens: int,
-    temperature: float,
-    top_k: int | None,
-    seed: int,
-) -> tuple[list[list[int]], list[list[int]]]:
-    source = unwrap_model(model)
-    source.eval()
-    max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - len(prompt_ids)))
-    engine = Engine(source, tokenizer)
-    return engine.generate_batch(
-        prompt_ids,
-        num_samples=num_samples,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        seed=seed,
-    )
-
-
-@torch.no_grad()
-def generate_batch_with_masks_uncached(
     model: torch.nn.Module,
     tokenizer: NanochatTokenizer,
     prompt_ids: list[int],
@@ -530,8 +503,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
             ):
                 seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
                 generate_start = time.time()
-                generate_fn = generate_batch_with_masks_uncached if args.no_kv_cache_rollouts else generate_batch_with_masks
-                sequences, masks = generate_fn(
+                sequences, masks = generate_batch_with_masks(
                     model,
                     tokenizer,
                     prompt_ids,
