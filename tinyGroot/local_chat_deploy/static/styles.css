@@ -1,0 +1,280 @@
+:root {
+  color-scheme: dark;
+  --bg: #111315;
+  --panel: #191c20;
+  --panel-2: #21262b;
+  --text: #f2f0e8;
+  --muted: #a7adad;
+  --line: #343a40;
+  --accent: #f0b35b;
+  --accent-2: #4fb39b;
+  --danger: #df6b6b;
+  --user: #284a55;
+  --assistant: #242b32;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+button,
+textarea,
+input,
+select {
+  font: inherit;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 100vh;
+}
+
+.chat-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 100vh;
+  border-right: 1px solid var(--line);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(25, 28, 32, 0.9);
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.icon-button,
+.composer button {
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #17130d;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.icon-button {
+  padding: 9px 12px;
+}
+
+.messages {
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.empty {
+  max-width: 760px;
+  margin: 15vh auto 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.message {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 760px);
+  gap: 14px;
+  margin: 0 auto 16px;
+  max-width: 940px;
+}
+
+.role {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding-top: 12px;
+  text-transform: uppercase;
+}
+
+.bubble {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 13px 15px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message.user .bubble {
+  background: var(--user);
+  border-color: #38606c;
+}
+
+.message.assistant .bubble {
+  background: var(--assistant);
+}
+
+.message.pending .bubble {
+  color: var(--muted);
+}
+
+.message.error .bubble {
+  border-color: var(--danger);
+  color: #ffd6d6;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  gap: 12px;
+  padding: 16px 24px 22px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 180px;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1113;
+  color: var(--text);
+  padding: 13px 14px;
+  outline: none;
+}
+
+.composer textarea:focus,
+.setting textarea:focus,
+.setting input:focus {
+  border-color: var(--accent-2);
+}
+
+.composer button {
+  min-height: 48px;
+}
+
+.composer button:disabled,
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.side-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 100vh;
+  padding: 22px;
+  background: var(--panel);
+}
+
+.setting {
+  display: grid;
+  gap: 8px;
+}
+
+.setting label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.setting textarea,
+.setting input[type="number"],
+.setting select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101316;
+  color: var(--text);
+  padding: 10px;
+  outline: none;
+}
+
+.setting textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.setting input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-2);
+}
+
+.setting select {
+  min-height: 40px;
+}
+
+.stats {
+  display: grid;
+  gap: 10px;
+  margin: auto 0 0;
+}
+
+.stats div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.stats dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stats dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+}
+
+@media (max-width: 840px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-pane {
+    min-height: 72vh;
+    border-right: 0;
+  }
+
+  .side-pane {
+    min-height: auto;
+    border-top: 1px solid var(--line);
+  }
+
+  .message {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .role {
+    padding-top: 0;
+  }
+}

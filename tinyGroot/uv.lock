@@ -2155,6 +2155,8 @@ source = { editable = "." }
 dependencies = [
     { name = "datasets" },
     { name = "huggingface-hub" },
+    { name = "kernels" },
+    { name = "modal" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyarrow" },
@@ -2166,36 +2168,23 @@ dependencies = [
     { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "transformers" },
+    { name = "wandb" },
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "kernels" },
-    { name = "modal" },
-    { name = "wandb" },
-]
 dev = [
     { name = "matplotlib" },
     { name = "pytest" },
     { name = "ruff" },
-]
-gpu = [
-    { name = "kernels" },
-]
-modal = [
-    { name = "modal" },
-]
-wandb = [
-    { name = "wandb" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=2.20" },
     { name = "huggingface-hub", specifier = ">=0.24" },
-    { name = "kernels", marker = "extra == 'gpu'", specifier = ">=0.11" },
+    { name = "kernels", specifier = ">=0.11" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.8" },
-    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.1" },
+    { name = "modal", specifier = ">=1.1" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyarrow", specifier = ">=15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -2203,14 +2192,13 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "setuptools", specifier = ">=70" },
-    { name = "tinygroot", extras = ["modal", "wandb", "gpu"], marker = "extra == 'all'" },
     { name = "tokenizers", specifier = ">=0.19" },
     { name = "torch", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'", specifier = ">=2.5" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=2.5", index = "https://download.pytorch.org/whl/cu124" },
     { name = "transformers", specifier = ">=4.44" },
-    { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.17" },
+    { name = "wandb", specifier = ">=0.17" },
 ]
-provides-extras = ["modal", "wandb", "gpu", "dev", "all"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "tokenizers"

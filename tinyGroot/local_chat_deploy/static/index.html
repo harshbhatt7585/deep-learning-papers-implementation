@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tinyGroot Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="chat-pane">
+        <header class="topbar">
+          <div>
+            <h1>tinyGroot Chat</h1>
+            <p id="modelLine">Loading model status...</p>
+          </div>
+          <button id="resetButton" class="icon-button" title="Start a new conversation" type="button">New</button>
+        </header>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="chatForm" class="composer">
+          <textarea id="prompt" name="prompt" rows="1" placeholder="Ask anything..." autocomplete="off"></textarea>
+          <button id="sendButton" type="submit">Send</button>
+        </form>
+      </section>
+
+      <aside class="side-pane">
+        <div class="setting">
+          <label for="systemPrompt">System</label>
+          <textarea id="systemPrompt" rows="5" placeholder="Optional system instruction"></textarea>
+        </div>
+        <div class="setting">
+          <label for="contextMode">Context</label>
+          <select id="contextMode">
+            <option value="latest" selected>Latest turn</option>
+            <option value="recent">Recent turns</option>
+            <option value="full">Full chat</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label for="temperature">Temperature <span id="temperatureValue">0.0</span></label>
+          <input id="temperature" type="range" min="0" max="1.2" step="0.1" value="0" />
+        </div>
+        <div class="setting compact">
+          <label for="maxTokens">Max tokens</label>
+          <input id="maxTokens" type="number" min="16" max="1024" step="16" value="256" />
+        </div>
+        <div class="setting compact">
+          <label for="topK">Top K</label>
+          <input id="topK" type="number" min="0" max="200" step="1" value="50" />
+        </div>
+        <dl class="stats">
+          <div><dt>Device</dt><dd id="deviceValue">...</dd></div>
+          <div><dt>Step</dt><dd id="stepValue">...</dd></div>
+          <div><dt>Speed</dt><dd id="speedValue">...</dd></div>
+        </dl>
+      </aside>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
