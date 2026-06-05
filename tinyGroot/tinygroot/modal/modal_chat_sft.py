@@ -96,9 +96,9 @@ def upload_checkpoint_to_hf(
     *,
     checkpoint_dir: str,
     repo_id: str,
-    private: bool,
-    revision: str | None,
-    commit_message: str | None,
+    private: bool = False,
+    revision: str | None = None,
+    commit_message: str | None = None,
 ) -> None:
     command = [
         "python",

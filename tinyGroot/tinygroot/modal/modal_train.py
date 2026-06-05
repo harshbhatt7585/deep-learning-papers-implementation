@@ -108,7 +108,7 @@ def ignore_local_source(path: Path) -> bool:
         return True
     if path.is_dir():
         return False
-    return path.name not in PROJECT_FILES
+    return path.name not in PROJECT_FILES and path.name not in {"pyproject.toml", "uv.lock"}
 
 
 image = (
@@ -147,9 +147,9 @@ def upload_checkpoint_to_hf(
     *,
     checkpoint_dir: str,
     repo_id: str,
-    private: bool,
-    revision: str | None,
-    commit_message: str | None,
+    private: bool = False,
+    revision: str | None = None,
+    commit_message: str | None = None,
 ) -> None:
     command = [
         "python",
