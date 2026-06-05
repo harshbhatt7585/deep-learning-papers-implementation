@@ -13,8 +13,8 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tinygroot.chat_core_eval import extract_gsm_answer
-from tinygroot.engine import Engine
+from tinygroot.chat_core_eval import extract_gsm_answer, use_calculator
+from tinygroot.engine import sample_next_token
 from tinygroot.eval import evaluate_chatcore, evaluate_gsm8k_passk
 from tinygroot.hf_upload import download_checkpoint_from_hub, push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel
@@ -251,16 +251,61 @@ def generate_batch_with_masks(
 ) -> tuple[list[list[int]], list[list[int]]]:
     source = unwrap_model(model)
     source.eval()
+    device = source.device
+    rng = torch.Generator(device=device)
+    rng.manual_seed(seed)
+
+    specials = ChatSpecialIds.from_tokenizer(tokenizer)
+    bos = tokenizer.bos_token_id
     max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - len(prompt_ids)))
-    engine = Engine(source, tokenizer)
-    return engine.generate_batch(
-        prompt_ids,
-        num_samples=num_samples,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        seed=seed,
-    )
+    sequences: list[list[int]] = []
+    masks: list[list[int]] = []
+
+    for _ in range(num_samples):
+        seq = list(prompt_ids)
+        mask = [0] * len(seq)
+        forced: list[int] = []
+        in_python = False
+        python_expr_tokens: list[int] = []
+
+        for _token_step in range(max_tokens):
+            train_mask = 0
+            if forced:
+                next_token = forced.pop(0)
+            else:
+                if len(seq) >= source.config.max_seq_len:
+                    break
+                x = torch.tensor([seq], dtype=torch.long, device=device)
+                logits = source(x, attention_mask=None, causal=True)[:, -1, :]
+                sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k)
+                next_token = int(sampled.item())
+                train_mask = 1
+
+            if next_token == specials.assistant_end or next_token == bos:
+                break
+
+            seq.append(next_token)
+            mask.append(train_mask)
+
+            if next_token == specials.python_start:
+                in_python = True
+                python_expr_tokens = []
+            elif next_token == specials.python_end and in_python:
+                in_python = False
+                expr = tokenizer.decode(python_expr_tokens, skip_special=True)
+                result = use_calculator(expr)
+                if result is not None:
+                    forced.append(specials.output_start)
+                    forced.extend(tokenizer.encode(str(result)))
+                    forced.append(specials.output_end)
+                python_expr_tokens = []
+            elif in_python:
+                python_expr_tokens.append(next_token)
+
+        sequences.append(seq)
+        masks.append(mask)
+
+    return sequences, masks
 
 
 def make_rollout_batch(
