@@ -17,6 +17,7 @@ runs_volume = modal.Volume.from_name("text-diffusion-runs", create_if_missing=Tr
 
 PROJECT_FILES = [
     "__init__.py",
+    "cache_management.py",
     "chat_core_eval.py",
     "chat_infer.py",
     "chat_sft.py",
@@ -122,12 +123,13 @@ def upload_checkpoint_to_hf(
 
 def validate_checkpoint_path(checkpoint: str) -> None:
     checkpoint_path = Path(checkpoint)
-    if checkpoint_path.is_dir():
-        checkpoint_path = checkpoint_path / "checkpoint.pt"
-    if not checkpoint_path.exists():
+    checkpoint_dir = checkpoint_path if checkpoint_path.is_dir() else checkpoint_path.parent
+    has_legacy_checkpoint = checkpoint_path.exists()
+    has_split_checkpoint = (checkpoint_dir / "model.pt").exists() and (checkpoint_dir / "meta.json").exists()
+    if not has_legacy_checkpoint and not has_split_checkpoint:
         raise SystemExit(
             f"[modal_chat_sft] checkpoint not found inside the container: {checkpoint}\n"
-            "  -> Pass the exact /runs/<run>/checkpoint.pt path from the Modal runs volume."
+            "  -> Pass either /runs/<run>/checkpoint.pt or a new-format /runs/<run> directory containing model.pt + meta.json."
         )
 
 

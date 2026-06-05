@@ -176,9 +176,11 @@ class SFTBatcher:
         self.it += 1
         if self.split == "train":
             if self.args.max_steps > 0:
-                self.approx_progress = self.it / self.args.max_steps
-                if self.it >= self.args.max_steps:
-                    self.last_step = True
+                # The outer training loop owns positive max_steps because it
+                # counts optimizer updates. This batcher is called once per
+                # microbatch, so stopping here would shorten capped runs by
+                # grad_accum_steps.
+                self.approx_progress = 0.0
             else:
                 self.approx_progress = self.consumed / max(1, len(self.dataset))
                 if self.consumed >= len(self.dataset):
