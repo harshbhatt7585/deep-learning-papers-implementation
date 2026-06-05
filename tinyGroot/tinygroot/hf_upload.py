@@ -108,6 +108,37 @@ def push_checkpoint_to_hub(
     return str(commit)
 
 
+def download_checkpoint_from_hub(
+    *,
+    repo_id: str,
+    revision: str | None = None,
+    cache_dir: Path | None = None,
+    token: str | None = None,
+) -> Path:
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise ImportError("Install huggingface_hub to download checkpoints from Hugging Face.") from exc
+
+    token = token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    local_dir = snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        revision=revision,
+        cache_dir=str(cache_dir.expanduser()) if cache_dir is not None else None,
+        token=token,
+        allow_patterns=[
+            "model.pt",
+            "checkpoint.pt",
+            "optimizer.pt",
+            "meta.json",
+            "README.md",
+            "tokenizer_hf/*",
+        ],
+    )
+    return Path(local_dir)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Upload a tinyGroot checkpoint directory to Hugging Face Hub.")
     parser.add_argument("--checkpoint-dir", type=Path, required=True, help="Directory containing checkpoint.pt and tokenizer_hf/tokenizer.json.")
