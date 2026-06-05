@@ -13,6 +13,7 @@ from tinygroot.flash_attention import flash_attn
 
 RECURRENT_L_STEPS = 2
 RECURRENT_H_STEPS = 2
+MODEL_ARCHES = {"causal_mtp", "hrm"}
 
 
 @dataclass
@@ -30,6 +31,7 @@ class TinyGrootConfig:
     n_mtp_heads: int = 0
     mtp_arch: str = "linear"
     gated_mlp: bool = False
+    arch: str = "hrm"
 
     def __post_init__(self) -> None:
         if self.n_kv_heads is None:
@@ -44,6 +46,12 @@ class TinyGrootConfig:
             raise ValueError("n_mtp_heads must be non-negative")
         if self.mtp_arch not in {"linear", "deepseek"}:
             raise ValueError("mtp_arch must be 'linear' or 'deepseek'")
+        if self.arch not in MODEL_ARCHES:
+            raise ValueError("arch must be 'causal_mtp' or 'hrm'")
+
+
+def infer_arch_from_state_dict(state: dict[str, torch.Tensor]) -> str:
+    return "hrm" if any(key.startswith("recurrent_core.") for key in state) else "causal_mtp"
 
 
 def norm(x: torch.Tensor) -> torch.Tensor:
@@ -330,7 +338,8 @@ class TinyGrootModel(nn.Module):
         self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
-        self.recurrent_core = MagicRecurrentCore(config)
+        if config.arch == "hrm":
+            self.recurrent_core = MagicRecurrentCore(config)
         self.lm_head = Linear(config.d_model, config.vocab_size, bias=False)
         if config.mtp_arch == "deepseek":
             self.mtp_heads = nn.ModuleList(
@@ -452,8 +461,9 @@ class TinyGrootModel(nn.Module):
         if static_cache is not None:
             static_cache.pos += seq_len
 
-        recurrent_cos_sin = (self.cos[:, past_len:total_len], self.sin[:, past_len:total_len])
-        x = self.recurrent_core(x, cos_sin=recurrent_cos_sin, causal=causal, attention_mask=attention_mask)
+        if hasattr(self, "recurrent_core"):
+            recurrent_cos_sin = (self.cos[:, past_len:total_len], self.sin[:, past_len:total_len])
+            x = self.recurrent_core(x, cos_sin=recurrent_cos_sin, causal=causal, attention_mask=attention_mask)
         x = norm(x)
         logits = self.lm_head(x)
         if output_hidden_states:
@@ -496,8 +506,9 @@ class TinyGrootModel(nn.Module):
 
         for block in self.blocks:
             init_block(block)
-        for block in list(self.recurrent_core.L_blocks) + list(self.recurrent_core.H_blocks):
-            init_block(block)
+        if hasattr(self, "recurrent_core"):
+            for block in list(self.recurrent_core.L_blocks) + list(self.recurrent_core.H_blocks):
+                init_block(block)
 
     def _precompute_rotary_embeddings(
         self,

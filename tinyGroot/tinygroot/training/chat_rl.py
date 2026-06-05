@@ -17,7 +17,7 @@ from tinygroot.chat_core_eval import extract_gsm_answer, use_calculator
 from tinygroot.engine import sample_next_token
 from tinygroot.eval import evaluate_chatcore, evaluate_gsm8k_passk
 from tinygroot.hf_upload import download_checkpoint_from_hub, push_checkpoint_to_hub
-from tinygroot.model import TinyGrootConfig, TinyGrootModel
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, infer_arch_from_state_dict
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
 from tinygroot.sft_chat import ChatSpecialIds, render_prompt_for_completion
 from tinygroot.sft_data import GSM8K
@@ -49,6 +49,7 @@ IGNORE_INDEX = -100
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="tinyGroot GSM8K RL with nanochat-style GRPO/REINFORCE.")
     parser.add_argument("--checkpoint", type=Path, default=None, help="SFT checkpoint.pt or run directory to initialize from.")
+    parser.add_argument("--arch", choices=["auto", "causal_mtp", "hrm"], default="auto", help="Model architecture for checkpoint loading. 'auto' inspects checkpoint keys.")
     parser.add_argument("--hf-checkpoint-repo-id", type=str, default=None, help="Download the initial SFT checkpoint from this Hugging Face model repo.")
     parser.add_argument("--hf-checkpoint-revision", type=str, default=None, help="Optional revision for --hf-checkpoint-repo-id.")
     parser.add_argument("--hf-checkpoint-cache-dir", type=Path, default=Path("runs/hf_checkpoints"), help="Local cache directory for downloaded HF checkpoints.")
@@ -143,14 +144,17 @@ def gsm_reward(conversation: dict[str, Any], completion: str) -> float:
 
 def load_model_and_tokenizer(args: argparse.Namespace, runtime: Runtime) -> tuple[torch.nn.Module, NanochatTokenizer, dict[str, Any]]:
     meta = load_meta(args.checkpoint)
-    config = TinyGrootConfig(**meta["config"])
+    state = clean_state_dict(load_model_state(args.checkpoint, map_location=runtime.device))
+    cfg = dict(meta["config"])
+    cfg["arch"] = infer_arch_from_state_dict(state) if args.arch == "auto" else args.arch
+    config = TinyGrootConfig(**cfg)
     tokenizer = NanochatTokenizer.load(resolve_checkpoint_dir(args.checkpoint) / "tokenizer_hf")
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
     model = TinyGrootModel(config).to(runtime.device)
     model.load_state_dict(
-        clean_state_dict(load_model_state(args.checkpoint, map_location=runtime.device)),
+        state,
         strict=True,
     )
     if len(model.mtp_heads) > 0:

@@ -10,7 +10,7 @@ import torch
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tinygroot.model import TinyGrootConfig, TinyGrootModel
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, infer_arch_from_state_dict
 from tinygroot.sft_chat import generate_with_tools, render_prompt_for_completion
 from tinygroot.tokenizer import NanochatTokenizer
 from tinygroot.utils import load_meta, load_model_state, resolve_checkpoint_dir
@@ -46,13 +46,20 @@ def load_checkpoint(
 
     tokenizer_dir = tokenizer_dir or resolve_checkpoint_dir(path) / "tokenizer_hf"
     tokenizer = NanochatTokenizer.load(tokenizer_dir)
+    state = clean_state_dict(load_model_state(path, map_location=device))
     config_blob = meta["config"]
-    config = config_blob if isinstance(config_blob, TinyGrootConfig) else TinyGrootConfig(**config_blob)
+    if isinstance(config_blob, TinyGrootConfig):
+        config_blob.arch = infer_arch_from_state_dict(state)
+        config = config_blob
+    else:
+        cfg = dict(config_blob)
+        cfg["arch"] = infer_arch_from_state_dict(state)
+        config = TinyGrootConfig(**cfg)
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
     model = TinyGrootModel(config).to(device)
-    model.load_state_dict(clean_state_dict(load_model_state(path, map_location=device)), strict=True)
+    model.load_state_dict(state, strict=True)
     model.eval()
     return model, tokenizer, meta
 

@@ -20,6 +20,7 @@ from tinygroot.model import (
     TinyGrootConfig,
     TinyGrootModel,
     generate_causal,
+    infer_arch_from_state_dict,
     norm,
 )
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
@@ -69,6 +70,7 @@ INTERNAL_DEFAULTS: dict[str, Any] = {
     "nanochat_tokenizer_batch_size": 128,
     "mtp_heads": 3,
     "mtp_arch": "linear",
+    "arch": "hrm",
     "mtp_loss_weight": 0.3,
     "tst_bag_size": 1,
     "tst_ratio": 0.0,
@@ -143,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-tokens", type=int, default=-1)
     parser.add_argument("--target-param-data-ratio", type=float, default=8.0)
     parser.add_argument("--mtp-heads", type=int, default=None)
+    parser.add_argument("--arch", choices=["causal_mtp", "hrm"], default=None)
     parser.add_argument("--mtp-arch", choices=["linear", "deepseek"], default=None)
     parser.add_argument("--mtp-loss-weight", type=float, default=None)
     parser.add_argument("--tst-bag-size", type=int, default=None)
@@ -195,6 +198,7 @@ def parse_args() -> argparse.Namespace:
     sample_interval = parsed.sample_interval
     nanochat_tokenizer_vocab_size = parsed.nanochat_tokenizer_vocab_size
     mtp_heads = parsed.mtp_heads
+    arch = parsed.arch
     mtp_arch = parsed.mtp_arch
     mtp_loss_weight = parsed.mtp_loss_weight
     tst_bag_size = parsed.tst_bag_size
@@ -212,6 +216,8 @@ def parse_args() -> argparse.Namespace:
         args.nanochat_tokenizer_vocab_size = nanochat_tokenizer_vocab_size
     if mtp_heads is not None:
         args.mtp_heads = mtp_heads
+    if arch is not None:
+        args.arch = arch
     if mtp_arch is not None:
         args.mtp_arch = mtp_arch
     if mtp_loss_weight is not None:
@@ -263,6 +269,7 @@ def build_config(args: argparse.Namespace, tokenizer: Tokenizer) -> TinyGrootCon
         dropout=args.dropout,
         ff_mult=args.ff_mult,
         gated_mlp=args.gated_mlp,
+        arch=args.arch,
         mtp_arch=args.mtp_arch,
         n_mtp_heads=0 if args.dflash else args.mtp_heads,
     )
@@ -287,7 +294,6 @@ def _load_frozen_target(
     cfg_blob = meta.get("config")
     if cfg_blob is None:
         raise KeyError(f"target checkpoint {checkpoint_path} has no 'config' key")
-    cfg = cfg_blob if isinstance(cfg_blob, TinyGrootConfig) else TinyGrootConfig(**cfg_blob)
     state = load_model_state(checkpoint_path, map_location=runtime.device)
     cleaned = {}
     for key, value in state.items():
@@ -296,6 +302,13 @@ def _load_frozen_target(
             if new_key.startswith(prefix):
                 new_key = new_key[len(prefix):]
         cleaned[new_key] = value
+    if isinstance(cfg_blob, TinyGrootConfig):
+        cfg_blob.arch = infer_arch_from_state_dict(cleaned)
+        cfg = cfg_blob
+    else:
+        cfg_dict = dict(cfg_blob)
+        cfg_dict["arch"] = infer_arch_from_state_dict(cleaned)
+        cfg = TinyGrootConfig(**cfg_dict)
     mtp_weight = cleaned.get("mtp_heads.0.weight")
     if (
         mtp_weight is not None

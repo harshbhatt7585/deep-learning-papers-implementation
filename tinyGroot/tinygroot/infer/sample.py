@@ -10,7 +10,7 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tinygroot.engine import Engine
-from tinygroot.model import TinyGrootConfig, TinyGrootModel
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, infer_arch_from_state_dict
 from tinygroot.tokenizer import NanochatTokenizer
 from tinygroot.utils import load_meta, load_model_state, resolve_checkpoint_dir
 
@@ -31,10 +31,13 @@ def load_checkpoint(checkpoint_dir: Path, device: torch.device):
             f"unsupported tokenizer_type {tokenizer_type!r}; only nanochat checkpoints are supported"
         )
     tokenizer = NanochatTokenizer.load(resolve_checkpoint_dir(checkpoint_dir) / "tokenizer_hf")
-    config = TinyGrootConfig(**meta["config"])
+    state = load_model_state(checkpoint_dir, map_location=device)
+    cfg = dict(meta["config"])
+    cfg["arch"] = infer_arch_from_state_dict(state)
+    config = TinyGrootConfig(**cfg)
 
     model = TinyGrootModel(config).to(device)
-    model.load_state_dict(load_model_state(checkpoint_dir, map_location=device))
+    model.load_state_dict(state)
     model.eval()
     return model, tokenizer, meta
 

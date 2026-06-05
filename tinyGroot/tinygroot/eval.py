@@ -15,7 +15,7 @@ if __package__ is None or __package__ == "":
 from tinygroot.chat_core_eval import execute_code, extract_gsm_answer, extract_imports, extract_program
 from tinygroot.engine import Engine
 from tinygroot.fp8 import disable_fp8
-from tinygroot.model import TinyGrootConfig, TinyGrootModel
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, infer_arch_from_state_dict
 from tinygroot.sft_chat import generate_with_tools, render_prompt_for_completion
 from tinygroot.sft_data import ARC, GSM8K, HumanEval, MMLU, SpellingBee, Task, ensure_words
 from tinygroot.tokenizer import NanochatTokenizer
@@ -63,14 +63,17 @@ def load_checkpoint_for_eval(
     tokenizer_dir: Path | None = None,
 ) -> tuple[TinyGrootModel, NanochatTokenizer, dict[str, Any]]:
     meta = load_meta(checkpoint)
-    config = TinyGrootConfig(**meta["config"])
+    state = clean_state_dict(load_model_state(checkpoint, map_location=runtime.device))
+    cfg = dict(meta["config"])
+    cfg["arch"] = infer_arch_from_state_dict(state)
+    config = TinyGrootConfig(**cfg)
     tokenizer_path = tokenizer_dir or resolve_checkpoint_dir(checkpoint) / "tokenizer_hf"
     tokenizer = NanochatTokenizer.load(tokenizer_path)
     if tokenizer.vocab_size != config.vocab_size:
         raise ValueError(f"tokenizer vocab {tokenizer.vocab_size} != model vocab {config.vocab_size}")
 
     model = TinyGrootModel(config).to(runtime.device)
-    model.load_state_dict(clean_state_dict(load_model_state(checkpoint, map_location=runtime.device)), strict=True)
+    model.load_state_dict(state, strict=True)
     model.eval()
     return model, tokenizer, meta
 

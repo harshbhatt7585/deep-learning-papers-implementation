@@ -82,7 +82,7 @@ from torch.nn import functional as F
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tinygroot.model import TinyGrootConfig, TinyGrootModel, generate_causal, norm
+from tinygroot.model import TinyGrootConfig, TinyGrootModel, generate_causal, infer_arch_from_state_dict, norm
 from tinygroot.utils import load_meta, load_model_state, resolve_checkpoint_dir
 
 
@@ -723,12 +723,15 @@ def _build_model_from_checkpoint(checkpoint_path: Path, device: torch.device) ->
             f"checkpoint at {checkpoint_path} has no 'config'. "
             "Use a checkpoint produced by training/train.py (which saves the config alongside the weights)."
         )
+    cleaned = _clean_state_dict(load_model_state(checkpoint_path, map_location=device))
     cfg_dict = meta["config"]
     if isinstance(cfg_dict, TinyGrootConfig):
+        cfg_dict.arch = infer_arch_from_state_dict(cleaned)
         config = cfg_dict
     else:
-        config = TinyGrootConfig(**cfg_dict)
-    cleaned = _clean_state_dict(load_model_state(checkpoint_path, map_location=device))
+        cfg = dict(cfg_dict)
+        cfg["arch"] = infer_arch_from_state_dict(cleaned)
+        config = TinyGrootConfig(**cfg)
     mtp_weight = cleaned.get("mtp_heads.0.weight")
     if (
         mtp_weight is not None
