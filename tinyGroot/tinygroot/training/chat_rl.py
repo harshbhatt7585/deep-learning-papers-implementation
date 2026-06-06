@@ -330,7 +330,10 @@ def generate_batch_with_masks(
         # per row per step against the cached keys/values.
         cache = source.make_static_cache(batch_size=num_samples, max_len=len(prompt_ids) + max_tokens)
         prompt = torch.tensor([prompt_ids], dtype=torch.long, device=device).expand(num_samples, -1).contiguous()
-        logits, cache = source(prompt, attention_mask=None, causal=True, past_key_values=cache, use_cache=True)
+        logits, cache = source(
+            prompt, attention_mask=None, causal=True,
+            past_key_values=cache, use_cache=True, num_logits_to_keep=1,
+        )
         logits = logits[:, -1, :]
 
         for _token_step in range(max_tokens):
@@ -470,7 +473,10 @@ def generate_rollouts_batched(
     key_mask = torch.tensor(mask_rows, dtype=torch.bool, device=device)
 
     cache = source.make_static_cache(batch_size=rows, max_len=max_prompt_len + max_tokens)
-    logits, cache = source(input_ids, attention_mask=key_mask, causal=True, past_key_values=cache, use_cache=True)
+    logits, cache = source(
+        input_ids, attention_mask=key_mask, causal=True,
+        past_key_values=cache, use_cache=True, num_logits_to_keep=1,
+    )
     logits = logits[:, -1, :]
 
     for _token_step in range(max_tokens):

@@ -412,6 +412,7 @@ class TinyGrootModel(nn.Module):
         output_hidden_states: bool = False,
         past_key_values: KVCache | StaticKVCache | None = None,
         use_cache: bool = False,
+        num_logits_to_keep: int = 0,
     ) -> (
         torch.Tensor
         | tuple[torch.Tensor, torch.Tensor]
@@ -519,6 +520,11 @@ class TinyGrootModel(nn.Module):
                 recurrent_cos_sin = (self.cos[:, past_len:total_len], self.sin[:, past_len:total_len])
                 x = self.recurrent_core(x, cos_sin=recurrent_cos_sin, causal=causal, attention_mask=attention_mask)
         x = norm(x)
+        # During generation we only need the final position's logits; computing
+        # lm_head over the whole prefill ([B, prompt_len, vocab]) is the dominant
+        # transient and OOMs on long prompts. Slice before the (huge) vocab matmul.
+        if num_logits_to_keep > 0 and not output_hidden_states and not return_hidden:
+            x = x[:, -num_logits_to_keep:, :]
         logits = self.lm_head(x)
         if output_hidden_states:
             if use_cache:
