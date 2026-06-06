@@ -264,63 +264,73 @@ def generate_batch_with_masks(
     specials = ChatSpecialIds.from_tokenizer(tokenizer)
     bos = tokenizer.bos_token_id
     max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - len(prompt_ids)))
-    sequences: list[list[int]] = []
-    masks: list[list[int]] = []
 
-    for sample_idx in range(num_samples):
-        seq = list(prompt_ids)
-        mask = [0] * len(seq)
-        forced: list[int] = []
-        in_python = False
-        python_expr_tokens: list[int] = []
-        should_stream = stream_prefix is not None and sample_idx == 0 and is_main_process()
-        if should_stream:
-            print(stream_prefix, end="", flush=True)
+    # All ``num_samples`` rollouts are decoded together as one batch. KV caching is
+    # deliberately not used: the HRM recurrent core attends across positions and is
+    # not covered by StaticKVCache, so a full forward over the growing sequence each
+    # step is required for correctness. Because every active row appends exactly one
+    # token per step (sampled or forced), all active rows stay the same length, so no
+    # padding/attention mask is needed -- the batched forward is numerically identical
+    # to decoding each sample on its own, just parallelised across the GPU.
+    seqs: list[list[int]] = [list(prompt_ids) for _ in range(num_samples)]
+    masks: list[list[int]] = [[0] * len(prompt_ids) for _ in range(num_samples)]
+    forced: list[list[int]] = [[] for _ in range(num_samples)]
+    in_python: list[bool] = [False] * num_samples
+    python_expr_tokens: list[list[int]] = [[] for _ in range(num_samples)]
+    completed: list[bool] = [False] * num_samples
 
-        for _token_step in range(max_tokens):
-            train_mask = 0
-            if forced:
-                next_token = forced.pop(0)
+    should_stream = stream_prefix is not None and is_main_process()
+    if should_stream:
+        print(stream_prefix, end="", flush=True)
+
+    for _token_step in range(max_tokens):
+        active = [i for i in range(num_samples) if not completed[i]]
+        if not active:
+            break
+
+        # Active rows share a common length, so this stacks cleanly without padding.
+        batch = torch.tensor([seqs[i] for i in active], dtype=torch.long, device=device)
+        logits = source(batch, attention_mask=None, causal=True)[:, -1, :]
+        sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k).squeeze(1).tolist()
+
+        for pos, i in enumerate(active):
+            if forced[i]:
+                next_token = forced[i].pop(0)
+                train_mask = 0
             else:
-                if len(seq) >= source.config.max_seq_len:
-                    break
-                x = torch.tensor([seq], dtype=torch.long, device=device)
-                logits = source(x, attention_mask=None, causal=True)[:, -1, :]
-                sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k)
-                next_token = int(sampled.item())
+                next_token = int(sampled[pos])
                 train_mask = 1
 
             if next_token == specials.assistant_end or next_token == bos:
-                break
+                completed[i] = True
+                continue
 
-            seq.append(next_token)
-            mask.append(train_mask)
-            if should_stream:
+            seqs[i].append(next_token)
+            masks[i].append(train_mask)
+            if should_stream and i == 0:
                 piece = tokenizer.decode([next_token], skip_special=True)
                 if piece:
                     print(piece, end="", flush=True)
 
             if next_token == specials.python_start:
-                in_python = True
-                python_expr_tokens = []
-            elif next_token == specials.python_end and in_python:
-                in_python = False
-                expr = tokenizer.decode(python_expr_tokens, skip_special=True)
+                in_python[i] = True
+                python_expr_tokens[i] = []
+            elif next_token == specials.python_end and in_python[i]:
+                in_python[i] = False
+                expr = tokenizer.decode(python_expr_tokens[i], skip_special=True)
                 result = use_calculator(expr)
                 if result is not None:
-                    forced.append(specials.output_start)
-                    forced.extend(tokenizer.encode(str(result)))
-                    forced.append(specials.output_end)
-                python_expr_tokens = []
-            elif in_python:
-                python_expr_tokens.append(next_token)
+                    forced[i].append(specials.output_start)
+                    forced[i].extend(tokenizer.encode(str(result)))
+                    forced[i].append(specials.output_end)
+                python_expr_tokens[i] = []
+            elif in_python[i]:
+                python_expr_tokens[i].append(next_token)
 
-        if should_stream:
-            print("", flush=True)
-        sequences.append(seq)
-        masks.append(mask)
+    if should_stream:
+        print("", flush=True)
 
-    return sequences, masks
+    return seqs, masks
 
 
 def make_rollout_batch(
