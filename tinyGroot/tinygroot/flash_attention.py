@@ -146,7 +146,11 @@ def _sdpa_attention(
     t_k = k.size(2)
     left_window, right_window = window_size
 
-    if left_window < 0 and right_window < 0:
+    # ``is_causal=True`` only builds the intended mask for a square attention
+    # matrix. During cached decode (t_q=1, t_k>1) it would top-left-align a (1, t_k)
+    # tril and let the lone query attend to key 0 only, so restrict the shortcut to
+    # the non-causal or square cases and let the explicit paths below handle the rest.
+    if left_window < 0 and right_window < 0 and (not causal or t_q == t_k):
         return F.scaled_dot_product_attention(q, k, v, is_causal=causal, enable_gqa=enable_gqa)
 
     if causal and t_q == 1:

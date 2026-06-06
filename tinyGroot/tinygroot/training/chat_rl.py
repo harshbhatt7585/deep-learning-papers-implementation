@@ -87,6 +87,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-rollout-samples", type=int, default=2, help="Number of rollout completions to print when logging is enabled.")
     parser.add_argument("--log-rollout-chars", type=int, default=1200, help="Maximum decoded characters per logged rollout completion.")
     parser.add_argument("--stream-rollouts", action="store_true", help="Stream the first logged rollout completion token-by-token on rank 0.")
+    parser.add_argument(
+        "--kv-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the static KV cache for rollout generation (default; much faster). "
+        "Pass --no-kv-cache to fall back to full-forward decode.",
+    )
 
     parser.add_argument("--optimizer", choices=["adamw", "muon"], default="muon")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -254,7 +261,17 @@ def generate_batch_with_masks(
     top_k: int | None,
     seed: int,
     stream_prefix: str | None = None,
+    use_kv_cache: bool = True,
 ) -> tuple[list[list[int]], list[list[int]]]:
+    """Decode ``num_samples`` rollouts for a single prompt as one batch.
+
+    With ``use_kv_cache`` (default), the prompt is prefilled once into a
+    :class:`StaticKVCache` and each step decodes a single new token per row,
+    reusing the cached keys/values (including the HRM recurrent core's). With
+    ``use_kv_cache=False`` it falls back to a full forward over the growing
+    sequence each step -- slower, but a useful reference. Both paths are
+    numerically identical under greedy decoding.
+    """
     source = unwrap_model(model)
     source.eval()
     device = source.device
@@ -265,13 +282,6 @@ def generate_batch_with_masks(
     bos = tokenizer.bos_token_id
     max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - len(prompt_ids)))
 
-    # All ``num_samples`` rollouts are decoded together as one batch. KV caching is
-    # deliberately not used: the HRM recurrent core attends across positions and is
-    # not covered by StaticKVCache, so a full forward over the growing sequence each
-    # step is required for correctness. Because every active row appends exactly one
-    # token per step (sampled or forced), all active rows stay the same length, so no
-    # padding/attention mask is needed -- the batched forward is numerically identical
-    # to decoding each sample on its own, just parallelised across the GPU.
     seqs: list[list[int]] = [list(prompt_ids) for _ in range(num_samples)]
     masks: list[list[int]] = [[0] * len(prompt_ids) for _ in range(num_samples)]
     forced: list[list[int]] = [[] for _ in range(num_samples)]
@@ -283,49 +293,79 @@ def generate_batch_with_masks(
     if should_stream:
         print(stream_prefix, end="", flush=True)
 
-    for _token_step in range(max_tokens):
-        active = [i for i in range(num_samples) if not completed[i]]
-        if not active:
-            break
+    def advance(i: int, next_token: int, train_mask: int) -> None:
+        """Apply one chosen token to row ``i``: stop, append+stream, and run the
+        calculator tool-use state machine (forcing tokens on ``</python>``)."""
+        if next_token == specials.assistant_end or next_token == bos:
+            completed[i] = True
+            return
+        seqs[i].append(next_token)
+        masks[i].append(train_mask)
+        if should_stream and i == 0:
+            piece = tokenizer.decode([next_token], skip_special=True)
+            if piece:
+                print(piece, end="", flush=True)
+        if next_token == specials.python_start:
+            in_python[i] = True
+            python_expr_tokens[i] = []
+        elif next_token == specials.python_end and in_python[i]:
+            in_python[i] = False
+            expr = tokenizer.decode(python_expr_tokens[i], skip_special=True)
+            result = use_calculator(expr)
+            if result is not None:
+                forced[i].append(specials.output_start)
+                forced[i].extend(tokenizer.encode(str(result)))
+                forced[i].append(specials.output_end)
+            python_expr_tokens[i] = []
+        elif in_python[i]:
+            python_expr_tokens[i].append(next_token)
 
-        # Active rows share a common length, so this stacks cleanly without padding.
-        batch = torch.tensor([seqs[i] for i in active], dtype=torch.long, device=device)
-        logits = source(batch, attention_mask=None, causal=True)[:, -1, :]
-        sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k).squeeze(1).tolist()
+    def next_token_for(i: int, sampled_token: int) -> tuple[int, int]:
+        if forced[i]:
+            return forced[i].pop(0), 0
+        return sampled_token, 1
 
-        for pos, i in enumerate(active):
-            if forced[i]:
-                next_token = forced[i].pop(0)
-                train_mask = 0
-            else:
-                next_token = int(sampled[pos])
-                train_mask = 1
+    if use_kv_cache and max_tokens > 0:
+        # Prefill the prompt once (broadcast across rows), then decode one token
+        # per row per step against the cached keys/values.
+        cache = source.make_static_cache(batch_size=num_samples, max_len=len(prompt_ids) + max_tokens)
+        prompt = torch.tensor([prompt_ids], dtype=torch.long, device=device).expand(num_samples, -1).contiguous()
+        logits, cache = source(prompt, attention_mask=None, causal=True, past_key_values=cache, use_cache=True)
+        logits = logits[:, -1, :]
 
-            if next_token == specials.assistant_end or next_token == bos:
-                completed[i] = True
-                continue
-
-            seqs[i].append(next_token)
-            masks[i].append(train_mask)
-            if should_stream and i == 0:
-                piece = tokenizer.decode([next_token], skip_special=True)
-                if piece:
-                    print(piece, end="", flush=True)
-
-            if next_token == specials.python_start:
-                in_python[i] = True
-                python_expr_tokens[i] = []
-            elif next_token == specials.python_end and in_python[i]:
-                in_python[i] = False
-                expr = tokenizer.decode(python_expr_tokens[i], skip_special=True)
-                result = use_calculator(expr)
-                if result is not None:
-                    forced[i].append(specials.output_start)
-                    forced[i].extend(tokenizer.encode(str(result)))
-                    forced[i].append(specials.output_end)
-                python_expr_tokens[i] = []
-            elif in_python[i]:
-                python_expr_tokens[i].append(next_token)
+        for _token_step in range(max_tokens):
+            if all(completed):
+                break
+            sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k).squeeze(1).tolist()
+            # Every row must feed exactly one token to keep the cache rectangular;
+            # finished rows feed an ignored sentinel that is never read back.
+            token_column: list[int] = []
+            for i in range(num_samples):
+                if completed[i]:
+                    token_column.append(specials.assistant_end)
+                    continue
+                next_token, train_mask = next_token_for(i, int(sampled[i]))
+                advance(i, next_token, train_mask)
+                token_column.append(next_token)
+            if all(completed):
+                break
+            ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(1)
+            logits, cache = source(ids, attention_mask=None, causal=True, past_key_values=cache, use_cache=True)
+            logits = logits[:, -1, :]
+    else:
+        # No-cache reference: re-forward the growing sequence each step. Every
+        # active row appends one token per step, so active rows stay the same
+        # length and stack without padding.
+        for _token_step in range(max_tokens):
+            active = [i for i in range(num_samples) if not completed[i]]
+            if not active:
+                break
+            batch = torch.tensor([seqs[i] for i in active], dtype=torch.long, device=device)
+            logits = source(batch, attention_mask=None, causal=True)[:, -1, :]
+            sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k).squeeze(1).tolist()
+            for pos, i in enumerate(active):
+                next_token, train_mask = next_token_for(i, int(sampled[pos]))
+                advance(i, next_token, train_mask)
 
     if should_stream:
         print("", flush=True)
@@ -553,6 +593,7 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                     top_k=args.top_k if args.top_k > 0 else None,
                     seed=seed,
                     stream_prefix=stream_prefix,
+                    use_kv_cache=args.kv_cache,
                 )
                 rollout_generate_time += time.time() - generate_start
                 rollout_tokens += sum(max(0, len(seq) - len(prompt_ids)) for seq in sequences)

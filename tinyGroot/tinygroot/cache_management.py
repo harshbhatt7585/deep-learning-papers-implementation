@@ -26,12 +26,21 @@ class StaticKVCache:
         *,
         device: torch.device,
         dtype: torch.dtype,
+        n_recurrent_l: int = 0,
+        n_recurrent_h: int = 0,
     ) -> None:
         # Zero-initialised: flash decode kernels can read block-padded regions
         # past the written prefix, and uninitialised bytes can propagate NaNs.
         shape = (batch_size, max_len, n_kv_heads, head_dim)
         self.k = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_layers)]
         self.v = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_layers)]
+        # Per-recurrence-block buffers for the HRM core. Each L/H block attends
+        # causally over the sequence, so its past-position keys/values are fixed
+        # once written and can be cached exactly like the main blocks.
+        self.rec_l_k = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_recurrent_l)]
+        self.rec_l_v = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_recurrent_l)]
+        self.rec_h_k = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_recurrent_h)]
+        self.rec_h_v = [torch.zeros(shape, device=device, dtype=dtype) for _ in range(n_recurrent_h)]
         self.batch_size = batch_size
         self.max_len = max_len
         self.pos = 0

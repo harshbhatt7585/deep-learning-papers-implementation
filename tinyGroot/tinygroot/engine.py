@@ -8,7 +8,6 @@ import torch
 import torch.nn.functional as F
 
 from tinygroot.chat_core_eval import use_calculator
-from tinygroot.cache_management import StaticKVCache
 from tinygroot.model import TinyGrootModel
 from tinygroot.tokenizer import NanochatTokenizer
 
@@ -86,19 +85,10 @@ class Engine:
         bos = self.tokenizer.bos_token_id
 
         config = self.model.config
-        head_dim = config.d_model // config.n_heads
         prompt_len = len(tokens)
         horizon = max_tokens if max_tokens is not None else config.max_seq_len - prompt_len
         cache_len = min(config.max_seq_len, prompt_len + max(0, horizon))
-        cache = StaticKVCache(
-            n_layers=config.n_layers,
-            batch_size=num_samples,
-            max_len=cache_len,
-            n_kv_heads=config.n_kv_heads,
-            head_dim=head_dim,
-            device=device,
-            dtype=next(self.model.parameters()).dtype,
-        )
+        cache = self.model.make_static_cache(batch_size=num_samples, max_len=cache_len)
 
         # Prefill once with the prompt broadcast across all samples, writing the
         # prompt's keys/values straight into the static buffer for every row.

@@ -320,12 +320,33 @@ class MagicRecurrentCore(nn.Module):
         cos_sin: tuple[torch.Tensor, torch.Tensor],
         causal: bool,
         attention_mask: torch.Tensor | None,
+        cache: "StaticKVCache | None" = None,
+        cache_pos: int | None = None,
     ) -> torch.Tensor:
         z_h = x
         z_l = self.z_l_init.to(dtype=x.dtype)
-        for l_block, h_block in zip(self.L_blocks, self.H_blocks):
-            z_l = norm(l_block(z_l + z_h + x, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal))
-            z_h = norm(h_block(z_h + z_l, cos_sin=cos_sin, attention_mask=attention_mask, causal=causal))
+        use_cache = cache is not None
+        for idx, (l_block, h_block) in enumerate(zip(self.L_blocks, self.H_blocks)):
+            l_out = l_block(
+                z_l + z_h + x,
+                cos_sin=cos_sin,
+                attention_mask=attention_mask,
+                causal=causal,
+                past_key_value=(cache.rec_l_k[idx], cache.rec_l_v[idx]) if use_cache else None,
+                cache_pos=cache_pos if use_cache else None,
+                use_cache=use_cache,
+            )
+            z_l = norm(l_out[0] if use_cache else l_out)
+            h_out = h_block(
+                z_h + z_l,
+                cos_sin=cos_sin,
+                attention_mask=attention_mask,
+                causal=causal,
+                past_key_value=(cache.rec_h_k[idx], cache.rec_h_v[idx]) if use_cache else None,
+                cache_pos=cache_pos if use_cache else None,
+                use_cache=use_cache,
+            )
+            z_h = norm(h_out[0] if use_cache else h_out)
         return z_h
 
 
@@ -360,6 +381,22 @@ class TinyGrootModel(nn.Module):
     @property
     def device(self) -> torch.device:
         return self.token_emb.weight.device
+
+    def make_static_cache(self, batch_size: int, max_len: int) -> StaticKVCache:
+        """Allocate a StaticKVCache sized for this model, including the HRM
+        recurrent core's per-block buffers when present."""
+        has_recurrent = hasattr(self, "recurrent_core")
+        return StaticKVCache(
+            n_layers=len(self.blocks),
+            batch_size=batch_size,
+            max_len=max_len,
+            n_kv_heads=self.config.n_kv_heads,
+            head_dim=self.config.d_model // self.config.n_heads,
+            device=self.device,
+            dtype=self.token_emb.weight.dtype,
+            n_recurrent_l=RECURRENT_L_STEPS if has_recurrent else 0,
+            n_recurrent_h=RECURRENT_H_STEPS if has_recurrent else 0,
+        )
 
     def forward(
         self,
@@ -462,8 +499,21 @@ class TinyGrootModel(nn.Module):
             static_cache.pos += seq_len
 
         if hasattr(self, "recurrent_core"):
-            recurrent_cos_sin = (self.cos[:, past_len:total_len], self.sin[:, past_len:total_len])
-            x = self.recurrent_core(x, cos_sin=recurrent_cos_sin, causal=causal, attention_mask=attention_mask)
+            if static_cache is not None and use_cache:
+                # Full cos/sin: the cached SelfAttention path slices by ``cache_pos``
+                # internally, so it must receive absolute positions, not the
+                # past_len..total_len window the uncached path expects.
+                x = self.recurrent_core(
+                    x,
+                    cos_sin=(self.cos[:, :total_len], self.sin[:, :total_len]),
+                    causal=causal,
+                    attention_mask=attention_mask,
+                    cache=static_cache,
+                    cache_pos=past_len,
+                )
+            else:
+                recurrent_cos_sin = (self.cos[:, past_len:total_len], self.sin[:, past_len:total_len])
+                x = self.recurrent_core(x, cos_sin=recurrent_cos_sin, causal=causal, attention_mask=attention_mask)
         x = norm(x)
         logits = self.lm_head(x)
         if output_hidden_states:
