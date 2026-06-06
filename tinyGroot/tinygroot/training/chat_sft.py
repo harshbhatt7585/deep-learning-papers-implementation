@@ -14,7 +14,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinygroot.fp8 import disable_fp8
-from tinygroot.hf_upload import push_checkpoint_to_hub
+from tinygroot.hf_upload import download_checkpoint_from_hub, push_checkpoint_to_hub
 from tinygroot.model import TinyGrootConfig, TinyGrootModel, infer_arch_from_state_dict, norm
 from tinygroot.nanochat_optim import DistMuonAdamW, MuonAdamW
 from tinygroot.eval import evaluate_chatcore
@@ -47,8 +47,11 @@ IGNORE_INDEX = -100
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="tinyGroot chat SFT from a pretrain checkpoint.pt")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="Pretrain checkpoint.pt")
+    parser.add_argument("--checkpoint", type=Path, default=None, help="Pretrain checkpoint.pt or run directory.")
     parser.add_argument("--arch", choices=["auto", "causal_mtp", "hrm"], default="auto", help="Model architecture for checkpoint loading. 'auto' inspects checkpoint keys.")
+    parser.add_argument("--hf-checkpoint-repo-id", type=str, default=None, help="Download the initial checkpoint from this Hugging Face model repo.")
+    parser.add_argument("--hf-checkpoint-revision", type=str, default=None, help="Optional revision for --hf-checkpoint-repo-id.")
+    parser.add_argument("--hf-checkpoint-cache-dir", type=Path, default=Path("runs/hf_checkpoints"), help="Local cache directory for downloaded HF checkpoints.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for SFT checkpoint.pt")
     parser.add_argument("--run-name", "--run", "--wandb-name", dest="wandb_name", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
@@ -116,6 +119,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--spellingbee-size", type=int, default=80_000)
     parser.add_argument("--words-path", type=Path, default=Path("/data/words_alpha.txt"))
     return parser.parse_args()
+
+
+def resolve_input_checkpoint(args: argparse.Namespace) -> None:
+    if args.hf_checkpoint_repo_id:
+        checkpoint_dir = download_checkpoint_from_hub(
+            repo_id=args.hf_checkpoint_repo_id,
+            revision=args.hf_checkpoint_revision,
+            cache_dir=args.hf_checkpoint_cache_dir,
+        )
+        args.checkpoint = checkpoint_dir
+        log(f"downloaded HF checkpoint {args.hf_checkpoint_repo_id} to {checkpoint_dir}")
+    if args.checkpoint is None:
+        raise SystemExit("pass --checkpoint /path/to/run or --hf-checkpoint-repo-id username/model")
 
 
 class SFTBatcher:
@@ -625,6 +641,7 @@ def main() -> None:
     args = parse_args()
     runtime = create_runtime(args)
     try:
+        resolve_input_checkpoint(args)
         train(args, runtime)
     finally:
         cleanup_distributed()
