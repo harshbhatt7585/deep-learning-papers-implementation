@@ -545,6 +545,66 @@ def policy_gradient_loss(
     return -pg_obj / num_valid
 
 
+def make_flat_rollout_batch(
+    tokenizer: NanochatTokenizer,
+    sequences: list[list[int]],
+    masks: list[list[int]],
+    advantages: list[float],
+    example_ids: list[int],
+    prompt_lens: list[int],
+    num_examples: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pad *all* rollouts (across every example) into one batch for a single GRPO-style
+    update. ``advantages`` are already group-relative (per-example baseline subtracted).
+
+    Returns ``inputs, targets, scale`` where ``scale`` weights each row so that summing
+    the per-microbatch losses over the whole batch yields the mean over examples of each
+    example's token-mean of ``logp * advantage`` -- identical to the per-example loop at
+    1 pass/example, but invariant to how ``--device-batch-size`` splits the batch.
+    """
+    pad_id = ChatSpecialIds.from_tokenizer(tokenizer).assistant_end
+    max_len = max(len(seq) for seq in sequences)
+    padded = [seq + [pad_id] * (max_len - len(seq)) for seq in sequences]
+    padded_masks = [mask + [0] * (max_len - len(mask)) for mask in masks]
+    ids = torch.tensor(padded, dtype=torch.long, device=device)
+    mask_ids = torch.tensor(padded_masks, dtype=torch.bool, device=device)
+    inputs = ids[:, :-1].contiguous()
+    targets = ids[:, 1:].clone().contiguous()
+    targets[~mask_ids[:, 1:]] = IGNORE_INDEX
+    # Per-row prompt guard (each example may have a different prompt length).
+    prompt_lens_t = torch.tensor(prompt_lens, dtype=torch.long, device=device)
+    col = torch.arange(targets.size(1), device=device)[None, :]
+    targets[col < (prompt_lens_t[:, None] - 1).clamp(min=0)] = IGNORE_INDEX
+
+    valid = targets != IGNORE_INDEX
+    n_valid_row = valid.sum(dim=1).to(torch.float32)
+    ex = torch.tensor(example_ids, dtype=torch.long, device=device)
+    n_e = torch.zeros(num_examples, dtype=torch.float32, device=device).index_add_(0, ex, n_valid_row)
+    adv = torch.tensor(advantages, dtype=torch.float32, device=device)
+    # adv / (E * n_e): divide by the example's total valid tokens (token-mean) and by the
+    # number of examples (mean over examples).
+    scale = adv / (num_examples * n_e[ex].clamp(min=1.0))
+    return inputs, targets, scale
+
+
+def weighted_pg_loss(
+    model: torch.nn.Module,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    scale: torch.Tensor,
+) -> torch.Tensor:
+    """Per-row-weighted REINFORCE loss for the flattened batch. The summed loss across
+    all microbatches equals the per-example-normalised objective (see make_flat_rollout_batch),
+    so gradient accumulation is exact for any microbatch split."""
+    logits = model(inputs, attention_mask=None, causal=True)
+    valid = targets != IGNORE_INDEX
+    safe_targets = targets.masked_fill(~valid, 0)
+    logp = F.log_softmax(logits, dim=-1).gather(-1, safe_targets.unsqueeze(-1)).squeeze(-1)
+    obj = (logp * valid.to(logp.dtype) * scale[:, None]).sum()
+    return -obj
+
+
 def log_wandb(wandb_run: Any, metrics: dict[str, float], step: int) -> None:
     if wandb_run is not None and is_main_process():
         wandb_run.log(metrics, step=step)
@@ -750,9 +810,15 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 per_example.append((ex_sequences, ex_masks))
         rollout_generate_time += time.time() - generate_start
 
-        # ---- Phase 2: per-example reward + gradient accumulation (unchanged math) ----
-        for (example_step, example_idx, conversation, prompt_ids), (all_sequences, all_masks) in zip(
-            step_examples, per_example
+        # ---- Phase 2a: per-example rewards + group-relative advantages, flattened ----
+        flat_seqs: list[list[int]] = []
+        flat_masks: list[list[int]] = []
+        flat_adv: list[float] = []
+        flat_rewards: list[float] = []
+        flat_example: list[int] = []
+        flat_prompt_len: list[int] = []
+        for ex_i, ((example_step, example_idx, conversation, prompt_ids), (all_sequences, all_masks)) in enumerate(
+            zip(step_examples, per_example)
         ):
             rollout_tokens += sum(max(0, len(seq) - len(prompt_ids)) for seq in all_sequences)
             rollout_count += len(all_sequences)
@@ -771,30 +837,37 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 rewards=rewards,
                 args=args,
             )
-            rewards_by_example.append(sum(rewards) / max(1, len(rewards)))
+            mean_reward_ex = sum(rewards) / max(1, len(rewards))
+            rewards_by_example.append(mean_reward_ex)
             sequence_lengths.extend(len(seq) for seq in all_sequences)
-            inputs_all, targets_all, rewards_all, advantages_all = make_rollout_batch(
-                tokenizer, len(prompt_ids), all_sequences, all_masks, rewards, runtime.device
-            )
-            model.train()
-            batch_ranges = microbatch_ranges(inputs_all.size(0), args.batch_size)
-            num_passes = len(batch_ranges)
-            for pass_idx, (b0, b1) in enumerate(batch_ranges):
-                with autocast_context(runtime.device, args.amp_dtype):
-                    loss = policy_gradient_loss(
-                        model,
-                        inputs_all[b0:b1],
-                        targets_all[b0:b1],
-                        advantages_all[b0:b1],
-                    )
-                    loss = loss / (num_passes * examples_per_rank)
-                loss.backward()
-                loss_sum += float(loss.detach().item())
-                loss_count += 1
-                log(
-                    f"step {step}/{num_steps} example {example_step} pass {pass_idx} "
-                    f"loss {loss.item():.6f} reward {rewards_all[b0:b1].mean().item():.4f}"
+            for seq, mk, r in zip(all_sequences, all_masks, rewards):
+                flat_seqs.append(seq)
+                flat_masks.append(mk)
+                flat_rewards.append(r)
+                flat_adv.append(r - mean_reward_ex)  # group-relative (per-example) baseline
+                flat_example.append(ex_i)
+                flat_prompt_len.append(len(prompt_ids))
+
+        # ---- Phase 2b: one flattened GRPO-style update, microbatched only for memory ----
+        model.train()
+        inputs_all, targets_all, scale_all = make_flat_rollout_batch(
+            tokenizer, flat_seqs, flat_masks, flat_adv, flat_example, flat_prompt_len,
+            examples_per_rank, runtime.device,
+        )
+        rewards_flat = torch.tensor(flat_rewards, dtype=torch.float32, device=runtime.device)
+        batch_ranges = microbatch_ranges(inputs_all.size(0), args.batch_size)
+        for pass_idx, (b0, b1) in enumerate(batch_ranges):
+            with autocast_context(runtime.device, args.amp_dtype):
+                loss = weighted_pg_loss(
+                    model, inputs_all[b0:b1], targets_all[b0:b1], scale_all[b0:b1]
                 )
+            loss.backward()
+            loss_sum += float(loss.detach().item())
+            loss_count += 1
+            log(
+                f"step {step}/{num_steps} pass {pass_idx}/{len(batch_ranges)} "
+                f"loss {loss.item():.6f} reward {rewards_flat[b0:b1].mean().item():.4f}"
+            )
 
         lrm = max(0.0, 1.0 - step / max(1, num_steps))
         for group in optimizer.param_groups:
