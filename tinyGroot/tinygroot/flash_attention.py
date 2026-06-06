@@ -140,8 +140,13 @@ def _sdpa_attention(
     causal: bool,
     window_size: tuple[int, int],
     enable_gqa: bool,
+    key_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """SDPA attention for tensors in (B, H, T, D) layout."""
+    """SDPA attention for tensors in (B, H, T, D) layout.
+
+    ``key_mask`` is an optional ``(B, t_k)`` boolean/float tensor (True/1 = attend)
+    used to drop padding keys during batched, variable-length cached decoding.
+    """
     t_q = q.size(2)
     t_k = k.size(2)
     left_window, right_window = window_size
@@ -150,10 +155,10 @@ def _sdpa_attention(
     # matrix. During cached decode (t_q=1, t_k>1) it would top-left-align a (1, t_k)
     # tril and let the lone query attend to key 0 only, so restrict the shortcut to
     # the non-causal or square cases and let the explicit paths below handle the rest.
-    if left_window < 0 and right_window < 0 and (not causal or t_q == t_k):
+    if key_mask is None and left_window < 0 and right_window < 0 and (not causal or t_q == t_k):
         return F.scaled_dot_product_attention(q, k, v, is_causal=causal, enable_gqa=enable_gqa)
 
-    if causal and t_q == 1:
+    if key_mask is None and causal and t_q == 1:
         if left_window >= 0 and left_window + 1 < t_k:
             start = max(0, t_k - left_window - 1)
             k = k[:, :, start:, :]
@@ -172,6 +177,15 @@ def _sdpa_attention(
     if right_window >= 0:
         mask = mask & ((col_idx - row_idx) <= right_window)
 
+    if key_mask is not None:
+        mask = (mask[None, None, :, :] & key_mask[:, None, None, :].to(torch.bool)).clone()
+        # A left-pad query position can have every key masked, which would NaN the
+        # softmax. Let every query attend to its own position (output is discarded
+        # for pad rows; for real queries this is already allowed).
+        q_idx = torch.arange(t_q, device=device)
+        k_idx = (t_k - t_q) + q_idx
+        mask[:, :, q_idx, k_idx] = True
+
     return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=enable_gqa)
 
 
@@ -181,9 +195,11 @@ def flash_attn_func(
     v: torch.Tensor,
     causal: bool = False,
     window_size: tuple[int, int] = (-1, -1),
+    key_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """FA3-compatible attention for training tensors in (B, T, H, D) layout."""
-    if _use_fa3(q, k, v):
+    # FA3 can't take an arbitrary key-padding mask; fall back to SDPA when one is set.
+    if key_mask is None and _use_fa3(q, k, v):
         return _call_fa3_flash_attn_func(q, k, v, causal=causal, window_size=window_size)
 
     q_sdpa = q.transpose(1, 2)
@@ -197,6 +213,7 @@ def flash_attn_func(
         causal=causal,
         window_size=window_size,
         enable_gqa=enable_gqa,
+        key_mask=key_mask,
     )
     return y.transpose(1, 2)
 
@@ -210,9 +227,11 @@ def flash_attn_with_kvcache(
     cache_seqlens: torch.Tensor | int | None = None,
     causal: bool = False,
     window_size: tuple[int, int] = (-1, -1),
+    key_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """FA3-compatible KV-cache attention with SDPA fallback."""
-    if _use_fa3(q, k_cache, v_cache):
+    # FA3 can't take an arbitrary key-padding mask; fall back to SDPA when one is set.
+    if key_mask is None and _use_fa3(q, k_cache, v_cache):
         return _call_fa3_flash_attn_with_kvcache(
             q,
             k_cache,
@@ -254,6 +273,7 @@ def flash_attn_with_kvcache(
         causal=causal,
         window_size=window_size,
         enable_gqa=enable_gqa,
+        key_mask=key_mask,
     )
     return y.transpose(1, 2)
 

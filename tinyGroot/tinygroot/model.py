@@ -133,15 +133,19 @@ class SelfAttention(nn.Module):
             k = apply_rotary_emb(k, cos[:, cache_pos : cache_pos + seq_len], sin[:, cache_pos : cache_pos + seq_len])
             q = norm(q) * 1.2
             k = norm(k) * 1.2
+            # ``attention_mask`` (a (B, total_len) key-validity mask) lets variable-length
+            # prompts be left-padded into one batch and decoded together; None keeps the
+            # fast unmasked path used by single-prompt generation.
+            key_mask = attention_mask
             if seq_len == 1:
                 y = flash_attn.flash_attn_with_kvcache(
-                    q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_pos, causal=causal
+                    q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_pos, causal=causal, key_mask=key_mask
                 )
             else:
                 end = cache_pos + seq_len
                 k_cache[:, cache_pos:end] = k
                 v_cache[:, cache_pos:end] = v
-                y = flash_attn.flash_attn_func(q, k_cache[:, :end], v_cache[:, :end], causal=causal)
+                y = flash_attn.flash_attn_func(q, k_cache[:, :end], v_cache[:, :end], causal=causal, key_mask=key_mask)
             y = y.contiguous().view(batch_size, seq_len, self.d_model)
             y = self.c_proj(y)
             return y, (k_cache, v_cache)

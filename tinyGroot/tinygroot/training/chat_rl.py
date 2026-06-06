@@ -373,6 +373,134 @@ def generate_batch_with_masks(
     return seqs, masks
 
 
+@torch.no_grad()
+def generate_rollouts_batched(
+    model: torch.nn.Module,
+    tokenizer: NanochatTokenizer,
+    prompts: list[list[int]],
+    *,
+    num_samples: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int | None,
+    seed: int,
+    stream_prefix: str | None = None,
+) -> list[tuple[list[list[int]], list[list[int]]]]:
+    """Decode ``num_samples`` rollouts for *every* prompt in one KV-cached batch.
+
+    All ``len(prompts) * num_samples`` rollouts share a single static cache. Prompts
+    have different lengths, so each is left-padded to the longest one (real tokens
+    right-aligned) and a key-validity mask drops the padding -- correctness validated
+    to machine precision against per-prompt decoding. Returns one ``(sequences, masks)``
+    tuple per prompt, with sequences excluding the left padding.
+    """
+    source = unwrap_model(model)
+    source.eval()
+    device = source.device
+    rng = torch.Generator(device=device)
+    rng.manual_seed(seed)
+
+    specials = ChatSpecialIds.from_tokenizer(tokenizer)
+    bos = tokenizer.bos_token_id
+    pad_id = specials.assistant_end
+
+    n_prompts = len(prompts)
+    rows = n_prompts * num_samples
+    prompt_of = [r // num_samples for r in range(rows)]  # row -> prompt index
+    max_prompt_len = max(len(p) for p in prompts)
+    max_tokens = min(max_new_tokens, max(0, source.config.max_seq_len - max_prompt_len))
+
+    seqs: list[list[int]] = [list(prompts[prompt_of[r]]) for r in range(rows)]
+    masks: list[list[int]] = [[0] * len(prompts[prompt_of[r]]) for r in range(rows)]
+    forced: list[list[int]] = [[] for _ in range(rows)]
+    in_python: list[bool] = [False] * rows
+    python_expr_tokens: list[list[int]] = [[] for _ in range(rows)]
+    completed: list[bool] = [False] * rows
+
+    should_stream = stream_prefix is not None and is_main_process()
+    if should_stream:
+        print(stream_prefix, end="", flush=True)
+
+    def advance(r: int, next_token: int, train_mask: int) -> None:
+        if next_token == specials.assistant_end or next_token == bos:
+            completed[r] = True
+            return
+        seqs[r].append(next_token)
+        masks[r].append(train_mask)
+        if should_stream and r == 0:
+            piece = tokenizer.decode([next_token], skip_special=True)
+            if piece:
+                print(piece, end="", flush=True)
+        if next_token == specials.python_start:
+            in_python[r] = True
+            python_expr_tokens[r] = []
+        elif next_token == specials.python_end and in_python[r]:
+            in_python[r] = False
+            expr = tokenizer.decode(python_expr_tokens[r], skip_special=True)
+            result = use_calculator(expr)
+            if result is not None:
+                forced[r].append(specials.output_start)
+                forced[r].extend(tokenizer.encode(str(result)))
+                forced[r].append(specials.output_end)
+            python_expr_tokens[r] = []
+        elif in_python[r]:
+            python_expr_tokens[r].append(next_token)
+
+    def grouped() -> list[tuple[list[list[int]], list[list[int]]]]:
+        return [
+            (seqs[e * num_samples : (e + 1) * num_samples], masks[e * num_samples : (e + 1) * num_samples])
+            for e in range(n_prompts)
+        ]
+
+    if max_tokens <= 0:
+        if should_stream:
+            print("", flush=True)
+        return grouped()
+
+    # Left-pad every row to max_prompt_len; key_mask hides the padding.
+    padded = [
+        [pad_id] * (max_prompt_len - len(prompts[prompt_of[r]])) + list(prompts[prompt_of[r]])
+        for r in range(rows)
+    ]
+    mask_rows = [
+        [0] * (max_prompt_len - len(prompts[prompt_of[r]])) + [1] * len(prompts[prompt_of[r]])
+        for r in range(rows)
+    ]
+    input_ids = torch.tensor(padded, dtype=torch.long, device=device)
+    key_mask = torch.tensor(mask_rows, dtype=torch.bool, device=device)
+
+    cache = source.make_static_cache(batch_size=rows, max_len=max_prompt_len + max_tokens)
+    logits, cache = source(input_ids, attention_mask=key_mask, causal=True, past_key_values=cache, use_cache=True)
+    logits = logits[:, -1, :]
+
+    for _token_step in range(max_tokens):
+        if all(completed):
+            break
+        sampled = sample_next_token(logits, rng, temperature=temperature, top_k=top_k).squeeze(1).tolist()
+        # One token per row keeps the cache rectangular; finished rows feed a sentinel.
+        token_column: list[int] = []
+        for r in range(rows):
+            if completed[r]:
+                token_column.append(pad_id)
+                continue
+            if forced[r]:
+                next_token, train_mask = forced[r].pop(0), 0
+            else:
+                next_token, train_mask = int(sampled[r]), 1
+            advance(r, next_token, train_mask)
+            token_column.append(next_token)
+        if all(completed):
+            break
+        key_mask = torch.cat([key_mask, torch.ones(rows, 1, dtype=torch.bool, device=device)], dim=1)
+        ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(1)
+        logits, cache = source(ids, attention_mask=key_mask, causal=True, past_key_values=cache, use_cache=True)
+        logits = logits[:, -1, :]
+
+    if should_stream:
+        print("", flush=True)
+    return grouped()
+
+
 def make_rollout_batch(
     tokenizer: NanochatTokenizer,
     prompt_len: int,
@@ -555,6 +683,8 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
         rollout_generate_time = 0.0
         loss_sum = 0.0
         loss_count = 0
+        # ---- Phase 1: gather this step's examples and batch-generate all rollouts ----
+        step_examples = []
         for example_step in range(examples_per_rank):
             example_idx = next(batch_iter)
             conversation = train_task[example_idx]
@@ -563,43 +693,69 @@ def train(args: argparse.Namespace, runtime: Runtime) -> None:
                 conversation,
                 max_tokens=max(1, source.config.max_seq_len - args.max_new_tokens),
             )
-            all_sequences: list[list[int]] = []
-            all_masks: list[list[int]] = []
-            for sampling_step, (sample_start, sample_end) in enumerate(
-                microbatch_ranges(args.num_samples, args.batch_size)
-            ):
-                seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
-                generate_start = time.time()
-                stream_prefix = None
-                if (
-                    args.stream_rollouts
-                    and args.log_rollouts_every > 0
-                    and step % args.log_rollouts_every == 0
-                    and example_step == 0
-                    and sampling_step == 0
-                    and is_main_process()
+            step_examples.append((example_step, example_idx, conversation, prompt_ids))
+
+        stream_prefix = None
+        if (
+            args.stream_rollouts
+            and args.log_rollouts_every > 0
+            and step % args.log_rollouts_every == 0
+            and is_main_process()
+        ):
+            stream_prefix = (
+                f"[rollout:live] step={step} example_idx={step_examples[0][1]} "
+                "sample=0 response: "
+            )
+
+        generate_start = time.time()
+        if args.kv_cache:
+            # All examples_per_rank * num_samples rollouts decoded as one KV-cached batch.
+            seed = hash((args.seed, step, rank())) & 0x7FFFFFFF
+            per_example = generate_rollouts_batched(
+                model,
+                tokenizer,
+                [ex[3] for ex in step_examples],
+                num_samples=args.num_samples,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_k=args.top_k if args.top_k > 0 else None,
+                seed=seed,
+                stream_prefix=stream_prefix,
+            )
+        else:
+            # Fallback: per-example no-cache decode (samples chunked by device batch).
+            per_example = []
+            for ex_i, (_, example_idx, _, prompt_ids) in enumerate(step_examples):
+                ex_sequences: list[list[int]] = []
+                ex_masks: list[list[int]] = []
+                for sampling_step, (sample_start, sample_end) in enumerate(
+                    microbatch_ranges(args.num_samples, args.batch_size)
                 ):
-                    stream_prefix = (
-                        f"[rollout:live] step={step} example_idx={example_idx} "
-                        "sample=0 response: "
+                    seed = hash((args.seed, step, example_idx, sampling_step, rank())) & 0x7FFFFFFF
+                    sp = stream_prefix if (ex_i == 0 and sampling_step == 0) else None
+                    sequences, masks = generate_batch_with_masks(
+                        model,
+                        tokenizer,
+                        prompt_ids,
+                        num_samples=sample_end - sample_start,
+                        max_new_tokens=args.max_new_tokens,
+                        temperature=args.temperature,
+                        top_k=args.top_k if args.top_k > 0 else None,
+                        seed=seed,
+                        stream_prefix=sp,
+                        use_kv_cache=False,
                     )
-                sequences, masks = generate_batch_with_masks(
-                    model,
-                    tokenizer,
-                    prompt_ids,
-                    num_samples=sample_end - sample_start,
-                    max_new_tokens=args.max_new_tokens,
-                    temperature=args.temperature,
-                    top_k=args.top_k if args.top_k > 0 else None,
-                    seed=seed,
-                    stream_prefix=stream_prefix,
-                    use_kv_cache=args.kv_cache,
-                )
-                rollout_generate_time += time.time() - generate_start
-                rollout_tokens += sum(max(0, len(seq) - len(prompt_ids)) for seq in sequences)
-                rollout_count += len(sequences)
-                all_sequences.extend(sequences)
-                all_masks.extend(masks)
+                    ex_sequences.extend(sequences)
+                    ex_masks.extend(masks)
+                per_example.append((ex_sequences, ex_masks))
+        rollout_generate_time += time.time() - generate_start
+
+        # ---- Phase 2: per-example reward + gradient accumulation (unchanged math) ----
+        for (example_step, example_idx, conversation, prompt_ids), (all_sequences, all_masks) in zip(
+            step_examples, per_example
+        ):
+            rollout_tokens += sum(max(0, len(seq) - len(prompt_ids)) for seq in all_sequences)
+            rollout_count += len(all_sequences)
             rewards = [
                 gsm_reward(conversation, tokenizer.decode(seq[len(prompt_ids):], skip_special=True))
                 for seq in all_sequences
